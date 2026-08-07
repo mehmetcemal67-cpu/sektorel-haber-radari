@@ -175,7 +175,7 @@ st.caption("Dezenformasyon, Manipülatif Söylem ve Negatif Haber Tespiti Platfo
 
 with st.sidebar:
     st.header("⚙️ Tarama Parametreleri")
-    api_key = st.text_input("NewsAPI Key:", value="db32a44046bb4e6ab4c629b6269d2336" type="password")
+    api_key = st.text_input("NewsAPI Key:", value="db32a44046bb4e6ab4c629b6269d2336", type="password")
     
     # Varsayılan Geniş Sanayi & Teknoloji Sorgusu
     default_query = "(sanayi OR teknoloji OR togg OR iha OR siha OR kaan OR aselsan OR tübitak OR " \
