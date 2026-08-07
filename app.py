@@ -207,40 +207,23 @@ with st.sidebar:
     st.header("⚙️ Tarama Parametreleri")
     api_key = st.text_input("NewsAPI Key:", value="db32a44046bb4e6ab4c629b6269d2336", type="password")
     
-    # Varsayılan Geniş Sanayi & Teknoloji Sorgusu
+    # Optimize Edilmiş ve Kırpılmayacak Arama Sorgusu
     default_query = (
         '('
-        # Savunma ve Havacılık
-        '"Savunma Sanayii" OR ASELSAN OR BAYKAR OR TUSAŞ OR "İnsansız Hava Aracı" OR SİHA OR Bayraktar OR "KAAN Uçağı" OR '
-        '"Çelik Kubbe" OR HİSAR OR SİPER OR "TÜBİTAK SAGE" OR ROKETSAN OR HAVELSAN OR "Savunma Fuarı" OR Kamikaze OR '
-        # Otomotiv ve Teknoloji
-        'TOGG OR "Elektrikli Otomobil" OR BYD OR ODMD OR "Şarj İstasyonu" OR "Şarj Soketi" OR '
-        '"Batarya Teknolojileri" OR "Yapay Zeka" OR Robot OR Çip OR Gemini OR ChatGPT OR "Açık Kaynak" OR '
-        # Stratejik Hamleler ve Dönüşüm
-        '"Teknoloji Odaklı Sanayi Hamlesi" OR "Hamle Programı" OR "Dijital Dönüşüm" OR "Yeşil Dönüşüm" OR '
-        '"Sınırda Karbon Düzenlemesi" OR "Milli Teknoloji Hamlesi" OR "Yüksek Teknoloji" OR "Model Fabrika" OR '
-        # Sanayi, Ekonomi ve İstatistikler
-        '"Sanayi ve Teknoloji Bakanlığı" OR "Mehmet Fatih Kacır" OR TÜBİTAK OR KOSGEB OR TÜBA OR '
-        '"Organize Sanayi Bölgesi" OR OSB OR OSBÜK OR "Endüstri Bölgeleri" OR "Yatırım Teşvik" OR '
-        '"İmalat Sanayii" OR "PMI Endeksi" OR "Reel Kesim Güven Endeksi" OR "Verimlilik İstatistikleri" OR '
-        '"Kapasite Kullanım Oranı" OR "Sanayi Ciro Endeksi" OR "Sanayi Üretim Endeksi" OR '
-        # Kurumsal ve Uzay
-        '"Alper Gezeravcı" OR "Türkiye Uzay Ajansı" OR TUA OR Roket OR "Türk Standardları Enstitüsü" OR '
-        'TSE OR TÜRKPATENT OR "Sınai Mülkiyet" OR "Ufuk Avrupa" OR "Kalkınma Ajansları" OR Teknofest OR NASA'
+        'sanayi OR teknoloji OR TOGG OR KAAN OR ASELSAN OR BAYKAR OR TUSAŞ OR "Çelik Kubbe" OR '
+        'SİHA OR IHA OR TÜBİTAK OR KOSGEB OR OSB OR TUA OR "Milli Teknoloji" OR çip OR "Yapay Zeka"'
         ') '
         'AND '
         '('
-        # Risk, Aksam ve Manipülasyon Tetikleyicileri
-        'kriz OR durdu OR iflas OR skandal OR iptal OR ambargo OR maliyet OR zarar OR iddia OR fiyasko OR '
-        'tehlike OR fason OR montaj OR gecikme OR yaptırım OR darlık OR kısıtlama OR engelleme OR şüphe'
+        'kriz OR durdu OR iflas OR skandal OR iptal OR ambargo OR maliyet OR zarar OR iddia OR fiyasko OR fason OR montaj'
         ')'
     )
 
     query = st.text_area(
         "Arama Sorgusu (Boolean Syntax):",
         value=default_query,
-        height=220,
-        help="Tüm sanayi, teknoloji, savunma ve uzay konuları varsayılan olarak yüklüdür. Dilerseniz bu alanı temizleyip özel aramalar yapabilirsiniz."
+        height=140,
+        help="Sorgu karakter limiti aşılmayacak şekilde ana kavramlarla optimize edilmiştir."
     )
     
     c1, c2 = st.columns(2)
