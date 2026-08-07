@@ -208,11 +208,40 @@ with st.sidebar:
     api_key = st.text_input("NewsAPI Key:", value="db32a44046bb4e6ab4c629b6269d2336", type="password")
     
     # Varsayılan Geniş Sanayi & Teknoloji Sorgusu
-    default_query = "(sanayi OR teknoloji OR togg OR iha OR siha OR kaan OR aselsan OR tübitak OR " \
-                    "yatırım OR ihracat OR çip) AND (kriz OR durdu OR iflas OR skandal OR iptal OR " \
-                    "ambargo OR maliyet OR zarar OR iddia OR fiyasko OR tehlike OR fuj)"
-                    
-    query = st.text_area("Arama Sorgusu (Boolean):", value=default_query, height=120)
+    default_query = (
+        '('
+        # Savunma ve Havacılık
+        '"Savunma Sanayii" OR ASELSAN OR BAYKAR OR TUSAŞ OR "İnsansız Hava Aracı" OR SİHA OR Bayraktar OR "KAAN Uçağı" OR '
+        '"Çelik Kubbe" OR HİSAR OR SİPER OR "TÜBİTAK SAGE" OR ROKETSAN OR HAVELSAN OR "Savunma Fuarı" OR Kamikaze OR '
+        # Otomotiv ve Teknoloji
+        'TOGG OR "Elektrikli Otomobil" OR BYD OR ODMD OR "Şarj İstasyonu" OR "Şarj Soketi" OR '
+        '"Batarya Teknolojileri" OR "Yapay Zeka" OR Robot OR Çip OR Gemini OR ChatGPT OR "Açık Kaynak" OR '
+        # Stratejik Hamleler ve Dönüşüm
+        '"Teknoloji Odaklı Sanayi Hamlesi" OR "Hamle Programı" OR "Dijital Dönüşüm" OR "Yeşil Dönüşüm" OR '
+        '"Sınırda Karbon Düzenlemesi" OR "Milli Teknoloji Hamlesi" OR "Yüksek Teknoloji" OR "Model Fabrika" OR '
+        # Sanayi, Ekonomi ve İstatistikler
+        '"Sanayi ve Teknoloji Bakanlığı" OR "Mehmet Fatih Kacır" OR TÜBİTAK OR KOSGEB OR TÜBA OR '
+        '"Organize Sanayi Bölgesi" OR OSB OR OSBÜK OR "Endüstri Bölgeleri" OR "Yatırım Teşvik" OR '
+        '"İmalat Sanayii" OR "PMI Endeksi" OR "Reel Kesim Güven Endeksi" OR "Verimlilik İstatistikleri" OR '
+        '"Kapasite Kullanım Oranı" OR "Sanayi Ciro Endeksi" OR "Sanayi Üretim Endeksi" OR '
+        # Kurumsal ve Uzay
+        '"Alper Gezeravcı" OR "Türkiye Uzay Ajansı" OR TUA OR Roket OR "Türk Standardları Enstitüsü" OR '
+        'TSE OR TÜRKPATENT OR "Sınai Mülkiyet" OR "Ufuk Avrupa" OR "Kalkınma Ajansları" OR Teknofest OR NASA'
+        ') '
+        'AND '
+        '('
+        # Risk, Aksam ve Manipülasyon Tetikleyicileri
+        'kriz OR durdu OR iflas OR skandal OR iptal OR ambargo OR maliyet OR zarar OR iddia OR fiyasko OR '
+        'tehlike OR fason OR montaj OR gecikme OR yaptırım OR darlık OR kısıtlama OR engelleme OR şüphe'
+        ')'
+    )
+
+    query = st.text_area(
+        "Arama Sorgusu (Boolean Syntax):",
+        value=default_query,
+        height=220,
+        help="Tüm sanayi, teknoloji, savunma ve uzay konuları varsayılan olarak yüklüdür. Dilerseniz bu alanı temizleyip özel aramalar yapabilirsiniz."
+    )
     
     c1, c2 = st.columns(2)
     with c1:
