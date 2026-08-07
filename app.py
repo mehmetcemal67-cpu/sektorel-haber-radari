@@ -25,25 +25,55 @@ def load_lexicon():
     except Exception:
         # Yedek temel sözlük
         return {
-            "başarı": 0.8, "büyüme": 0.7, "rekor": 0.8, "yerli": 0.5, "milli": 0.5,
-            "kriz": -0.8, "çöküş": -0.9, "iflas": -1.0, "durdu": -0.7, "fiyasko": -0.9,
-            "skandal": -0.9, "gizlenen": -0.7, "iddia": -0.4, "şüphe": -0.5, "gecikti": -0.6,
-            "iptal": -0.8, "ambargo": -0.7, "yetersiz": -0.6, "zarar": -0.7, "facia": -0.9
+            # Olumlu / Stratejik Kazanımlar
+        "yerlileşme": 0.8, "milli": 0.6, "rekor ihracat": 0.8, "seri üretim": 0.8,
+        "patent": 0.7, "tse onaylı": 0.6, "model fabrika": 0.6, "yeşil dönüşüm": 0.6,
+        "teslimat": 0.7, "başarılı entegrasyon": 0.8, "yatırım teşviki": 0.6,
+        
+        # Sanayi ve Teknolojiye Özel Ağır Risk / Manipülasyon
+        "fiyasko": -0.9, "skandal": -0.9, "fason": -0.8, "montaj": -0.7, "illüzyon": -0.8,
+        "israf": -0.8, "üretim durdu": -0.9, "şalter indirildi": -0.9, "ambargo": -0.8,
+        "testi geçemedi": -0.8, "gizli ambargo": -0.8, "batık proje": -0.9, "atıl": -0.7,
+        
+        # Makro / İstatistiksel Riskler
+        "daralma": -0.6, "sert düşüş": -0.7, "kapasite kaybı": -0.6, "gecikme": -0.5,
+        "iptal": -0.8, "askıya alındı": -0.8, "karbon engeli": -0.6, "çip krizi": -0.7
         }
 
 lexicon = load_lexicon()
 
 # --- MANİPÜLASYON VE SÖYLEM KELİME LİSTELERİ ---
 MANIPULATION_KEYWORDS = [
-    "fiyasko", "skandal", "gizlenen", "gerçekler", "şok", "iddia edildi", 
-    "facia", "çöktü", "hayal", "durdu", "balon", "vurgun", "sir"
+    "fiyasko", "skandal", "gizlenen", "gerçekler", "fason", "montaj", "yerli değil",
+    "illüzyon", "şişirme", "kandırıldık", "üretim durdu", "sümen altı", "israf",
+    "bağımlı", "teşvik vurgunu", "hayal kırıklığı", "yılan hikayesi", "rafa kaldırıldı"
 ]
 
 STRATEGIC_CATEGORIES = {
-    "Savunma Sanayii": ["iha", "siha", "kaan", "aselsan", "tusaş", "baykar", "mühimmat", "savunma", "roket", "radar"],
-    "Otomotiv & Mobilite": ["togg", "elektrikli araç", "batarya", "otomobil", "üretim hattı"],
-    "Teknoloji & Ar-Ge": ["çip", "yazılım", "yapay zeka", "tübitak", "uzay", "uydu", "tekno"],
-    "Ekonomi & Yatırım": ["yatırım", "teşvik", "sanayi üretimi", "ihracat", "fabrika", "istihdam"]
+    "Savunma & Havacılık": [
+        "aselsan", "baykar", "tusaş", "iha", "siha", "bayraktar", "kaan", 
+        "çelikkubbe", "hisar", "siper", "tübitak sage", "roketsan", "havelsan", "kamikaze"
+    ],
+    "Otomotiv & Mobilite": [
+        "togg", "elektrikli otomobil", "byd", "odmd", "şarj istasyonu", 
+        "şarj soketi", "batarya teknolojileri"
+    ],
+    "Stratejik Hamleler & Dönüşüm": [
+        "hamle programı", "dijital dönüşüm", "yeşil dönüşüm", "sınırda karbon", 
+        "milli teknoloji hamlesi", "yüksek teknoloji", "model fabrika"
+    ],
+    "Sanayi & Kurumsal Ekosistem": [
+        "sanayi ve teknoloji bakanlığı", "mehmet fatih kacır", "tübitak", "kosgeb", 
+        "tüba", "organize sanayi bölgesi", "osb", "osbük", "endüstri bölgeleri", "yatırım teşvik"
+    ],
+    "Ekonomik Göstergeler & İstatistikler": [
+        "imalat sanayii", "pmi endeksi", "reel kesim güven endeksi", "verimlilik", 
+        "kapasite kullanım", "sanayi ciro", "sanayi üretim endeksi"
+    ],
+    "Uzay, İleri Teknoloji & Kalite": [
+        "alper gezeravcı", "tua", "türkiye uzay ajansı", "tse", "türkpatent", 
+        "sınai mülkiyet", "ufuk avrupa", "kalkınma ajansları", "teknofest", "çip", "yapay zeka"
+    ]
 }
 
 # --- METİN ANALİZ MOTORU ---
@@ -175,7 +205,7 @@ st.caption("Dezenformasyon, Manipülatif Söylem ve Negatif Haber Tespiti Platfo
 
 with st.sidebar:
     st.header("⚙️ Tarama Parametreleri")
-    api_key = st.text_input("NewsAPI Key:", value="db32a44046bb4e6ab4c629b6269d2336", type="password")
+    api_key = st.text_input("NewsAPI Key:", value="db32a44046bb4e6ab4c629b6269d2336" type="password")
     
     # Varsayılan Geniş Sanayi & Teknoloji Sorgusu
     default_query = "(sanayi OR teknoloji OR togg OR iha OR siha OR kaan OR aselsan OR tübitak OR " \
