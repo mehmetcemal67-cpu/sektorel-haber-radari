@@ -231,6 +231,12 @@ with st.sidebar:
         s_date = st.date_input("Başlangıç", datetime.date.today() - datetime.timedelta(days=7))
     with c2:
         e_date = st.date_input("Bitiş", datetime.date.today())
+
+    # Bugüne ait haberlerin kaçmaması için +1 gün ekleme
+    api_e_date = e_date + datetime.timedelta(days=1)
+
+    max_news = st.slider("Maksimum Haber Sayısı:", 10, 100, 30)
+    only_negative = st.checkbox("Sadece Negatif/Riskli Haberleri Süz", value=False)
         
     max_news = st.slider("Maksimum Haber Sayısı:", 10, 100, 30)
     only_negative = st.checkbox("Sadece Negatif/Riskli Haberleri Süz", value=False)
