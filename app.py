@@ -4,17 +4,16 @@ import urllib.parse
 import pandas as pd
 import requests
 import datetime
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from email.utils import parsedate_to_datetime
 from io import BytesIO
 import re
-from bs4 import BeautifulSoup
+import html
 
 from docx import Document
 from docx.shared import Pt, RGBColor, Inches
 from docx.enum.text import WD_ALIGN_PARAGRAPH
-from docx.oxml import OxmlElement, parse_xml
-from docx.oxml.ns import qn, nsdecls
+from docx.oxml import parse_xml
 
 # --- ARAYÜZ AYARLARI ---
 st.set_page_config(
@@ -33,37 +32,26 @@ def load_lexicon():
         return {
             "yerlileşme": 0.8, "milli": 0.6, "rekor ihracat": 0.8, "seri üretim": 0.8,
             "patent": 0.7, "tse onaylı": 0.6, "model fabrika": 0.6, "yeşil dönüşüm": 0.6,
-            "teslimat": 0.7, "başarılı entegrasyon": 0.8, "yatırım teşviki": 0.6,
             "fiyasko": -0.9, "skandal": -0.9, "fason": -0.8, "montaj": -0.7, "illüzyon": -0.8,
             "israf": -0.8, "üretim durdu": -0.9, "şalter indirildi": -0.9, "ambargo": -0.8,
-            "testi geçemedi": -0.8, "gizli ambargo": -0.8, "batık proje": -0.9, "atıl": -0.7,
-            "daralma": -0.6, "sert düşüş": -0.7, "kapasite kaybı": -0.6, "gecikme": -0.5,
-            "iptal": -0.8, "askıya alındı": -0.8, "karbon engeli": -0.6, "çip krizi": -0.7
+            "daralma": -0.6, "sert düşüş": -0.7, "kapasite kaybı": -0.6, "kriz": -0.8
         }
 
 lexicon = load_lexicon()
 
-# --- MANİPÜLASYON, ALGI VE RİSK KELİME LİSTESİ ---
+# --- MANİPÜLASYON VE RİSK KELİME LİSTESİ ---
 MANIPULATION_KEYWORDS = [
-    # 1. Doğrudan Manipülasyon & Dezenformasyon Söylemleri
     "fiyasko", "skandal", "gizlenen", "gerçekler", "fason", "montaj", "yerli değil",
     "illüzyon", "şişirme", "kandırıldık", "sümen altı", "israf", "teşvik vurgunu",
     "hayal kırıklığı", "yılan hikayesi", "rafa kaldırıldı", "yalan", "sansür", "şüphe",
     "algı operasyonu", "makyajlı", "hayali", "balon", "vurgun", "pes dedirtti",
-
-    # 2. Üretim, Operasyon ve Proje Riskleri
     "üretim durdu", "şalter indirildi", "batık proje", "atıl", "gecikme", "iptal",
     "askıya alındı", "testi geçemedi", "arıza", "çöküş", "teslim edilemedi", "patladı",
     "kapasite kaybı", "sözleşme feshi", "hazır alım", "dışa bağımlı",
-
-    # 3. Ekonomik, Mali ve Finansal Sıkıntılar
     "kriz", "zarar", "iflas", "konkordato", "borç batağı", "maliyet artışı",
     "bütçe açığı", "daralma", "sert düşüş", "kaynak tükendi", "pazar kaybı",
-
-    # 4. Jeopolitik, Ambargo ve Bölgesel Gerilim Riskleri
     "ambargo", "gizli ambargo", "yaptırım", "çip krizi", "tedarik engeli",
-    "karbon engeli", "lisans reddi", "kırmızı çizgi", "blokaj", "provokasyon",
-    "tehdit", "gerilim", "panik", "meydan okuma"
+    "karbon engeli", "lisans reddi", "kırmızı çizgi", "blokaj", "provokasyon"
 ]
 
 STRATEGIC_CATEGORIES = {
@@ -72,24 +60,19 @@ STRATEGIC_CATEGORIES = {
         "çelikkubbe", "hisar", "siper", "tübitak sage", "roketsan", "havelsan", "kamikaze"
     ],
     "Otomotiv & Mobilite": [
-        "togg", "elektrikli otomobil", "byd", "odmd", "şarj istasyonu", 
-        "şarj soketi", "batarya teknolojileri"
+        "togg", "elektrikli otomobil", "byd", "odmd", "şarj istasyonu", "batarya"
     ],
     "Bölgesel Güvenlik & Jeopolitik": [
         "yunanistan", "yunan basını", "atina", "kathimerini", "ta nea", "protothema",
-        "ege", "doğu akdeniz", "rafale", "f-16", "fir hattı", "silahsızlandırılma"
-    ],
-    "Stratejik Hamleler & Dönüşüm": [
-        "hamle programı", "dijital dönüşüm", "yeşil dönüşüm", "sınırda karbon", 
-        "milli teknoloji hamlesi", "yüksek teknoloji", "model fabrika"
+        "ege", "doğu akdeniz", "rafale", "f-16", "fir hattı"
     ],
     "Sanayi & Kurumsal Ekosistem": [
         "sanayi ve teknoloji bakanlığı", "mehmet fatih kacır", "tübitak", "kosgeb", 
-        "tüba", "organize sanayi bölgesi", "osb", "osbük", "endüstri bölgeleri", "yatırım teşvik"
+        "organize sanayi bölgesi", "osb", "yatırım teşvik"
     ],
     "Uzay, İleri Teknoloji & Kalite": [
         "alper gezeravcı", "tua", "türkiye uzay ajansı", "tse", "türkpatent", 
-        "sınai mülkiyet", "ufuk avrupa", "kalkınma ajansları", "teknofest", "çip", "yapay zeka"
+        "teknofest", "çip", "yapay zeka"
     ]
 }
 
@@ -148,24 +131,10 @@ def fetch_news_rss(query, time_range="1d", max_results=50):
         except:
             formatted_date = datetime.now().strftime('%d %b %Y %H:%M')
             
-        summary_html = entry.get('summary', '')
-        image_url = ""
-        clean_desc = ""
-        
-        if summary_html:
-            soup = BeautifulSoup(summary_html, 'html.parser')
-            img_tag = soup.find('img')
-            if img_tag and img_tag.get('src'):
-                image_url = img_tag['src']
-                if image_url.startswith("//"):
-                    image_url = "https:" + image_url
-            clean_desc = soup.get_text()
-
         articles.append({
             'title': entry.get('title', ''),
-            'description': clean_desc,
+            'description': entry.get('summary', ''),
             'url': entry.get('link', ''),
-            'image_url': image_url,
             'publishedAt': formatted_date,
             'source': {'name': entry.get('source', {}).get('title', 'Google News')}
         })
@@ -175,23 +144,18 @@ def fetch_news_rss(query, time_range="1d", max_results=50):
             
     return articles
 
-# --- WORD İÇİN LİNK VE GÖRSEL YARDIMCI FONKSİYONLARI ---
+# --- GÜVENLİ WORD KÖPRÜ LİNK FONKSİYONU ---
 def add_hyperlink(paragraph, url, text):
     part = paragraph.part
     r_id = part.relate_to(url, "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink", is_external=True)
+    
+    # XML karakter çökmesini engellemek için metin escape edilir
+    safe_text = html.escape(text)
+    
     hyperlink = parse_xml(f'<w:hyperlink xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" r:id="{r_id}"/>')
-    new_run = parse_xml(f'<w:r xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:rPr><w:rStyle w:val="Hyperlink"/><w:color w:val="0000FF"/><w:u w:val="single"/></w:rPr><w:t>{text}</w:t></w:r>')
+    new_run = parse_xml(f'<w:r xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:rPr><w:rStyle w:val="Hyperlink"/><w:color w:val="0000FF"/><w:u w:val="single"/></w:rPr><w:t>{safe_text}</w:t></w:r>')
     hyperlink.append(new_run)
     paragraph._p.append(hyperlink)
-
-def download_image_to_bytes(img_url):
-    try:
-        resp = requests.get(img_url, timeout=4)
-        if resp.status_code == 200:
-            return BytesIO(resp.content)
-    except:
-        pass
-    return None
 
 # --- BİLGİ NOTU / RAPOR ÜRETİCİ (.DOCX) ---
 def generate_osint_docx(query, df_all, stats):
@@ -222,38 +186,23 @@ def generate_osint_docx(query, df_all, stats):
     risk_df = df_all[df_all['Risk_Durumu'] == 'Yüksek Risk']
     
     if not risk_df.empty:
-        table = doc.add_table(rows=1, cols=5)
+        table = doc.add_table(rows=1, cols=4)
         table.style = 'Table Grid'
         hdr = table.rows[0].cells
-        hdr[0].text = 'Görsel'
-        hdr[1].text = 'Tarih / Kaynak'
-        hdr[2].text = 'Kategori'
-        hdr[3].text = 'Haber Başlığı (Bağlantı)'
-        hdr[4].text = 'Tespit Edilen Söylem'
+        hdr[0].text = 'Tarih / Kaynak'
+        hdr[1].text = 'Kategori'
+        hdr[2].text = 'Haber Başlığı (Bağlantılı)'
+        hdr[3].text = 'Tespit Edilen Söylem'
         
         for _, r in risk_df.iterrows():
             row_cells = table.add_row().cells
+            row_cells[0].text = f"{r['Tarih']}\n{r['Kaynak']}"
+            row_cells[1].text = r['Kategori']
             
-            if r['Görsel_URL']:
-                img_data = download_image_to_bytes(r['Görsel_URL'])
-                if img_data:
-                    try:
-                        p_img = row_cells[0].paragraphs[0]
-                        p_img.add_run().add_picture(img_data, width=Inches(1.0))
-                    except:
-                        row_cells[0].text = "Görsel Yok"
-                else:
-                    row_cells[0].text = "Görsel Yok"
-            else:
-                row_cells[0].text = "Görsel Yok"
-
-            row_cells[1].text = f"{r['Tarih']}\n{r['Kaynak']}"
-            row_cells[2].text = r['Kategori']
-            
-            p_link = row_cells[3].paragraphs[0]
+            p_link = row_cells[2].paragraphs[0]
             add_hyperlink(p_link, r['URL'], r['Başlık'])
             
-            row_cells[4].text = ", ".join(r['Manipülasyon_Kelimeleri']) if r['Manipülasyon_Kelimeleri'] else "Yüksek Negatif Ton"
+            row_cells[3].text = ", ".join(r['Manipülasyon_Kelimeleri']) if r['Manipülasyon_Kelimeleri'] else "Yüksek Negatif Ton"
     else:
         doc.add_paragraph("Kritik düzeyde manipülatif söylem barındıran haber tespit edilmemiştir.")
         
@@ -265,7 +214,7 @@ def generate_osint_docx(query, df_all, stats):
     hdr2[0].text = 'Tarih'
     hdr2[1].text = 'Kaynak'
     hdr2[2].text = 'Kategori'
-    hdr2[3].text = 'Başlık (Link)'
+    hdr2[3].text = 'Başlık (Bağlantılı)'
     hdr2[4].text = 'Duygu / Skor'
     
     for _, r in df_all.iterrows():
@@ -297,14 +246,13 @@ with st.sidebar:
         'Siber Güvenlik OR Uzay Ajansı OR TUA OR Organize Sanayi OR OSB OR Yatırım Teşvik OR '
         'İmalat Sanayii OR Yerli Üretim OR Kalkınma Ajansı OR Dijital Dönüşüm OR Yeşil Dönüşüm OR '
         'Yunanistan OR Yunan basını OR Atina OR Kathimerini OR Ta Nea OR Protothema OR '
-        'Ege OR Doğu Akdeniz OR F-16 OR Rafale OR FIR hattı OR silahsızlandırılma'
+        'Ege OR Doğu Akdeniz OR F-16 OR Rafale OR FIR hattı'
     )
 
     query = st.text_area(
         "Arama Sorgusu (Ana Terimler):",
         value=default_query,
-        height=150,
-        help="Sorgudaki tırnak işaretleri otomatik temizlenerek Google zaman filtresinin bozulması engellenir."
+        height=150
     )
     
     time_filter = st.selectbox(
@@ -343,8 +291,7 @@ if btn_run:
                     "Skor": score,
                     "Risk_Durumu": risk,
                     "Manipülasyon_Kelimeleri": manip_words,
-                    "URL": a.get('url', ''),
-                    "Görsel_URL": a.get('image_url', '')
+                    "URL": a.get('url', '')
                 })
             
             df = pd.DataFrame(parsed_data)
