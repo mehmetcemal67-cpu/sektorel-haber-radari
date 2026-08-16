@@ -212,6 +212,62 @@ SOCIAL_SEARCH_DOMAINS = [
 ]
 
 
+
+# V5: Haber gerçekten sanayi/teknoloji bağlamında mı?
+# "yatırım", "araç", "enerji", "eylem" gibi tek başına çok geniş
+# kelimeler spor/gündem/hava durumu vb. sonuçları içeri sokabiliyor.
+CORE_TOPIC_TERMS = [
+    "sanayi", "imalat", "üretim", "fabrika", "osb", "organize sanayi",
+    "teknoloji", "teknolojik", "ar-ge", "arge", "inovasyon", "patent",
+    "dijital dönüşüm", "endüstri 4.0", "otomasyon", "robotik",
+    "yapay zeka", "yapay zekâ", "makine öğrenmesi", "siber güvenlik",
+    "siber saldırı", "veri merkezi", "bulut bilişim", "yazılım",
+    "çip", "mikroçip", "yarı iletken", "işlemci", "elektronik",
+    "telekom", "5g", "6g", "kuantum", "biyoteknoloji", "nanoteknoloji",
+    "savunma sanay", "savunma sanayii", "savunma teknoloj", "askeri teknoloji",
+    "aselsan", "tusaş", "tusas", "roketsan", "havelsan", "baykar",
+    "bayraktar", "iha", "siha", "drone", "insansız", "kaan", "kızılelma",
+    "siper", "hisar", "füze", "roket", "uydu", "uzay", "havacılık",
+    "otomotiv", "elektrikli araç", "elektrikli otomobil", "batarya",
+    "şarj istasyonu", "enerji depolama", "güneş enerjisi", "rüzgar enerjisi",
+    "hidrojen", "nükleer enerji", "enerji teknoloj", "petrokimya", "kimya",
+    "demir çelik", "çelik", "metalurji", "maden", "madencilik",
+    "tekstil", "gıda teknoloj", "tarım teknoloj", "lojistik teknoloj",
+    "gemi inşa", "tersane", "yerlileştirme", "millileştirme", "tedarik zinciri",
+    "tübitak", "kosgeb", "sanayi ve teknoloji bakanlığı", "teknopark",
+    "teknofest", "türk patent", "türkpatent", "yatırım teşvik",
+]
+
+# Negatif sorgularda konu bağını daha da güçlendiriyoruz.
+NEGATIVE_EVENT_TERMS = [
+    "iflas", "konkordato", "üretim durdu", "üretim durduruldu", "fabrika kapandı",
+    "fabrika kapanıyor", "işten çıkarma", "işçi çıkarma", "grev", "lokavt",
+    "soruşturma", "dava", "ceza", "geri çağırma", "siber saldırı",
+    "veri sızıntısı", "fidye yazılımı", "ambargo", "yaptırım", "ihracat yasağı",
+    "ithalat yasağı", "sözleşme feshi", "ihale iptal", "askıya alındı",
+    "ertelendi", "gecikme", "tedarik krizi", "çip krizi", "daralma",
+    "kapasite kaybı", "güvenlik açığı", "zafiyet", "usulsüzlük", "yolsuzluk",
+]
+
+
+def is_relevant_industry_tech(title, snippet=""):
+    text = normalize_text(f"{title} {snippet}")
+    # Bir çekirdek konu terimi yoksa haber konu dışıdır.
+    if not any(k in text for k in CORE_TOPIC_TERMS):
+        return False
+    return True
+
+
+def is_turkish_priority_source(url):
+    d = domain_of(url)
+    return (
+        any(x in d for x in TR_MAIN_DOMAINS)
+        or any(x in d for x in TR_TECH_DEFENSE_DOMAINS)
+        or any(x in d for x in TR_OFFICIAL_DOMAINS)
+        or any(x in d for x in SOCIAL_SEARCH_DOMAINS)
+        or any(x in d for x in GR_DOMAINS)
+    )
+
 def source_group(url):
     d = domain_of(url)
     if any(x in d for x in TR_OFFICIAL_DOMAINS):
@@ -503,19 +559,28 @@ def gdelt_news(query, max_records=50, timespan="1d"):
 
 
 def fetch_targeted_turkish_sources(queries, when="1d", max_per_query=80):
+    """V5: Google News'i dev bir site:... OR zinciriyle boğmadan,
+    Türkiye odaklı 4 geniş konu sorgusuyla tarar. Sonuçlar daha sonra
+    Türk kaynak + konu alaka filtresinden geçirilir.
     """
-    HIZLI KATMAN: onlarca ayrı Google News isteği yerine 4-5 toplu sorgu.
-    Böylece Türk kaynak önceliği korunurken network round-trip sayısı ciddi azalır.
-    """
+    topic = (
+        '"sanayi" OR "teknoloji" OR "üretim" OR "fabrika" OR "imalat" OR '
+        '"savunma sanayii" OR "havacılık" OR "otomotiv" OR "yapay zeka" OR '
+        '"siber güvenlik" OR "çip" OR "yarı iletken" OR "enerji" OR '
+        '"batarya" OR "robotik" OR "otomasyon" OR "uzay" OR "uydu" OR '
+        '"Ar-Ge" OR "patent" OR "TÜBİTAK" OR "KOSGEB" OR "OSB"'
+    )
+    negative = (
+        '(' + ' OR '.join(f'"{x}"' for x in NEGATIVE_EVENT_TERMS[:18]) + ') '
+        'AND (' + ' OR '.join(f'"{x}"' for x in CORE_TOPIC_TERMS[:45]) + ')'
+    )
+    user_terms = " OR ".join(f'"{q}"' for q in queries[:18])
     jobs = [
-        make_source_query(" OR ".join(f"({q})" for q in queries[:12]), TR_MAIN_DOMAINS, when),
-        make_source_query(" OR ".join(f"({q})" for q in queries[:16]), TR_TECH_DEFENSE_DOMAINS, when),
-        make_source_query(" OR ".join(f"({q})" for q in queries[:10]), TR_OFFICIAL_DOMAINS, when),
+        make_source_query(topic, None, when),
+        make_source_query(f'({user_terms})', None, when),
+        make_source_query(negative, None, when),
+        make_source_query('"ASELSAN" OR "TUSAŞ" OR "ROKETSAN" OR "HAVELSAN" OR "Baykar" OR "TOGG" OR "TÜBİTAK"', None, when),
     ]
-    # Negatif odaklı tek toplu Türkçe sorgu: kaçırma olasılığını korur.
-    negative_terms = '(kriz OR iflas OR konkordato OR soruşturma OR yaptırım OR "üretim durdu" OR "fabrika kapandı" OR "siber saldırı" OR iptal OR gecikme)'
-    jobs.append(make_source_query(negative_terms, TR_MAIN_DOMAINS + TR_TECH_DEFENSE_DOMAINS, when))
-
     rows = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
         futures = [ex.submit(google_news_rss, q, max_per_query) for q in jobs]
@@ -692,15 +757,20 @@ def fetch_news(user_query, time_hours=24, max_results=150,
     records.extend(fetch_targeted_turkish_sources(queries, when=when, max_per_query=80))
 
     # 2) DDGS: yalnızca tamamlayıcı 12 sorgu
-    ddgs_queries = list(dict.fromkeys(queries[:8]))
+    ddgs_queries = [
+        'Türkiye sanayi teknoloji üretim fabrika savunma sanayii',
+        'Türkiye yapay zeka siber güvenlik çip yarı iletken',
+        'Türkiye otomotiv batarya enerji teknoloji',
+        'Türkiye havacılık uzay uydu İHA SİHA savunma',
+    ]
     if negative_boost:
         ddgs_queries += [
-            'sanayi teknoloji (kriz OR iflas OR konkordato OR soruşturma)',
-            'savunma sanayii (iptal OR gecikme OR yaptırım OR soruşturma)',
-            'fabrika üretim (durduruldu OR kapandı OR grev OR işten çıkarma)',
-            'teknoloji (siber saldırı OR veri sızıntısı OR güvenlik açığı)',
+            'Türkiye sanayi teknoloji (iflas OR konkordato OR üretim durdu OR soruşturma)',
+            'Türkiye savunma sanayii (iptal OR gecikme OR yaptırım OR soruşturma)',
+            'Türkiye fabrika üretim (kapandı OR grev OR işten çıkarma)',
+            'Türkiye teknoloji (siber saldırı OR veri sızıntısı OR güvenlik açığı)',
         ]
-    ddgs_queries = list(dict.fromkeys(ddgs_queries))[:12]
+    ddgs_queries = list(dict.fromkeys(ddgs_queries))[:8]
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
         futures = [ex.submit(ddgs_news, q, "tr-tr", 15) for q in ddgs_queries]
@@ -749,6 +819,10 @@ def fetch_news(user_query, time_hours=24, max_results=150,
         dt = parse_dt(r.get("date") or r.get("seendate") or r.get("publishedAt"))
         if dt and dt < cutoff:
             continue
+        if time_hours <= 3 and not dt:
+            # Anlık modda yayın zamanı bilinmeyen kayıtları göstermiyoruz;
+            # aksi halde eski haberler 3 saatlik akışa sızabiliyor.
+            continue
         nt = normalize_title(title)
         title_key = " ".join(nt.split()[:10])
         if url in seen_urls or title_key in seen_titles:
@@ -757,6 +831,24 @@ def fetch_news(user_query, time_hours=24, max_results=150,
         effective_domain = domain_of(url)
         if "news.google.com" in effective_domain and source_url:
             effective_domain = domain_of(source_url)
+
+        # V5: konu dışı haberleri burada kesiyoruz. Böylece spor, hava durumu,
+        # genel magazin/gündem vb. sonuçlar Türk bir kaynaktan gelmiş olsa bile
+        # haber havuzuna giremiyor.
+        snippet_candidate = r.get("body") or r.get("snippet") or ""
+        if not is_relevant_industry_tech(title, snippet_candidate):
+            continue
+
+        # Genel yabancı kaynakları kapalı modda kesin olarak dışarıda bırak.
+        candidate_domain = effective_domain or domain_of(url)
+        is_gr = any(x in candidate_domain for x in GR_DOMAINS)
+        if not is_turkish_priority_source(candidate_domain):
+            continue
+        if is_gr:
+            probe = {"domain": candidate_domain, "title": title, "snippet": snippet_candidate}
+            if not is_greek_turkish_defense(probe):
+                continue
+
         item = {
             "title": html.unescape(title),
             "url": url,
