@@ -230,6 +230,144 @@ def classify(title,snippet,source_domain=''):
     if not reasons: reasons=['olumsuz risk sinyali tespit edilmedi']
     return sentiment,score,status,neg,risk,cat,reasons
 
+def rss(query, timeout=7):
+    try:
+        r=requests.get('https://news.google.com/rss/search',params={'q':query,'hl':'tr','gl':'TR','ceid':'TR:tr'},headers=HEADERS,timeout=timeout)
+        r.raise_for_status(); root=ET.fromstring(r.content); out=[]
+        for it in root.findall('.//item'):
+            src=it.find('source')
+            out.append({
+                'title':html.unescape(it.findtext('title') or ''),
+                'url':it.findtext('link') or '',
+                'date':it.findtext('pubDate') or '',
+                'snippet':BeautifulSoup(it.findtext('description') or '','html.parser').get_text(' ',strip=True),
+                'source':src.text if src is not None else '',
+                'source_url':src.get('url','') if src is not None else ''
+            })
+        return out
+    except Exception:
+        return []
+
+def ddgs_text(q):
+    try:
+        from ddgs import DDGS
+    except Exception:
+        try: from duckduckgo_search import DDGS
+        except Exception: return []
+    try:
+        with DDGS() as d: return list(d.text(q,region='tr-tr',timelimit='d',max_results=40))
+    except Exception: return []
+
+def gdelt(q, timespan):
+    try:
+        r=requests.get('https://api.gdeltproject.org/api/v2/doc/doc',params={'query':q,'mode':'artlist','maxrecords':250,'format':'json','sort':'HybridRel','timespan':timespan},headers=HEADERS,timeout=8)
+        r.raise_for_status(); return r.json().get('articles',[]) or []
+    except Exception: return []
+
+def period_window(hours):
+    if hours<=3: return '6h'
+    if hours<=24: return '1d'
+    if hours<=48: return '2d'
+    if hours<=168: return '7d'
+    return '30d'
+
+def _query_terms(user_query):
+    parts=re.split(r'\bOR\b|,|;|\n',user_query or '',flags=re.I)
+    out=[]; seen=set()
+    for x in parts:
+        x=x.strip().strip('"').strip("'")
+        if len(x)>=3 and norm(x) not in seen:
+            seen.add(norm(x)); out.append(x)
+    return out
+
+def build_turkish_queries(when, user_query=''):
+    # Geniş arama evreni: tek dev sorgu yerine konu kümeleri paralel taranır.
+    # Böylece kapsam genişlerken Google News sorguları aşırı ağırlaşmaz.
+    groups=[
+        '(sanayi OR imalat OR üretim OR fabrika OR tesis OR OSB OR "organize sanayi" OR endüstri)',
+        '(makine OR otomasyon OR robotik OR "endüstri 4.0" OR kapasite OR "kapasite kullanım")',
+        '(teknoloji OR inovasyon OR "Ar-Ge" OR Arge OR patent OR "dijital dönüşüm" OR teknopark)',
+        '("yapay zeka" OR "yapay zekâ" OR "makine öğrenmesi" OR yazılım OR SaaS OR bulut)',
+        '("siber güvenlik" OR "siber saldırı" OR "veri sızıntısı" OR kuantum OR blockchain OR fintech)',
+        '(çip OR mikroçip OR "yarı iletken" OR semiconductor OR işlemci OR wafer OR elektronik OR PCB OR sensör)',
+        '("savunma sanayii" OR "savunma sanayi" OR ASELSAN OR TUSAŞ OR ROKETSAN OR HAVELSAN OR Baykar OR Bayraktar)',
+        '(İHA OR SİHA OR drone OR KAAN OR Kızılelma OR HİSAR OR SİPER OR füze OR roket OR radar OR "elektronik harp")',
+        '(havacılık OR "havacılık sanayii" OR uçak OR helikopter OR uzay OR uydu OR "roket fırlatma" OR "Türkiye Uzay Ajansı")',
+        '(otomotiv OR TOGG OR "elektrikli araç" OR "hibrit araç" OR "otonom araç" OR batarya OR şarj OR mobilite)',
+        '(enerji OR "enerji depolama" OR "güneş enerjisi" OR "rüzgar enerjisi" OR hidrojen OR "yakıt hücresi" OR "nükleer enerji")',
+        '(kimya OR petrokimya OR plastik OR polimer OR "demir çelik" OR çelik OR metal OR alüminyum OR bakır)',
+        '(madencilik OR maden OR tekstil OR "gıda teknolojisi" OR "gıda sanayii" OR "tarım teknolojisi" OR seracılık)',
+        '(lojistik OR "tedarik zinciri" OR tersane OR "gemi inşa" OR denizcilik OR demiryolu OR "raylı sistem")',
+        '(biyoteknoloji OR biyomedikal OR nanoteknoloji OR "medikal cihaz" OR "sağlık teknolojisi" OR "ileri malzeme" OR kompozit)',
+        '(TÜBİTAK OR KOSGEB OR "Sanayi ve Teknoloji Bakanlığı" OR TürkPatent OR TEKNOFEST OR "yatırım teşvik" OR "teknoloji transferi")',
+        '(startup OR "start-up" OR girişimcilik OR "yatırım turu" OR "venture capital" OR "Ar-Ge merkezi" OR "tasarım merkezi")',
+        '(ihracat OR ithalat OR "yüksek teknoloji" OR "orta yüksek teknoloji" OR "kritik teknoloji" OR "stratejik ürün" OR yerlileştirme)'
+    ]
+    qs=[f'Türkiye {g} when:{when}' for g in groups]
+    # Kullanıcının kutuya eklediği özel terimler de ayrıca taranır.
+    custom=[x for x in _query_terms(user_query) if norm(x) not in {'sanayi','teknoloji','üretim','imalat','fabrika','türkiye','türk'}]
+    for term in custom[:20]:
+        qs.append(f'Türkiye ("{term}") when:{when}')
+    return qs
+
+def build_negative_queries(when):
+    return [f'Türkiye (iflas OR konkordato OR "üretim durdu" OR "fabrika kapandı" OR "işten çıkarma" OR grev OR soruşturma OR dava OR ceza OR "geri çağırma" OR "siber saldırı" OR "veri sızıntısı" OR yaptırım OR ambargo OR "ihale iptal" OR ertelendi OR gecikme OR "tedarik krizi" OR daralma OR zafiyet OR usulsüzlük OR yolsuzluk) (sanayi OR teknoloji OR üretim OR fabrika OR savunma OR otomotiv OR enerji OR şirket OR tesis OR proje) when:{when}']
+
+def build_greek_queries(when):
+    site='('+' OR '.join('site:'+x for x in GR)+')'
+    return [
+        f'(Turkey OR Türkiye OR Turkish OR Τουρκία OR τουρκική) (defense OR defence OR savunma OR άμυνα OR arms) {site} when:{when}',
+        f'(Baykar OR Bayraktar OR ASELSAN OR TUSAŞ OR Roketsan OR HAVELSAN OR KAAN OR Kızılelma OR SİPER OR HİSAR) {site} when:{when}',
+        f'(Turkey OR Turkish OR Τουρκία) (drone OR UAV OR missile OR fighter OR frigate OR submarine OR defense industry) {site} when:{when}'
+    ]
+
+def build_social_queries(when):
+    site='('+' OR '.join('site:'+x for x in SOCIAL)+')'
+    return [
+        f'(Türkiye OR Türk) (sanayi OR teknoloji OR üretim OR savunma OR yapay zeka OR siber) {site} when:{when}',
+        f'(ASELSAN OR TUSAŞ OR ROKETSAN OR HAVELSAN OR Baykar OR TOGG OR TÜBİTAK) {site} when:{when}',
+        f'(iflas OR üretim durdu OR fabrika kapandı OR soruşturma OR siber saldırı OR yaptırım) (sanayi OR teknoloji OR savunma) {site} when:{when}'
+    ]
+
+def normalize_rows(raw, cutoff, mode, user_query):
+    out=[]; reasons={'zaman':0,'konu':0,'kaynak':0,'yunan':0,'gecersiz':0}
+    for r in raw:
+        url=(r.get('url') or r.get('link') or '').strip(); title=html.unescape((r.get('title') or '').strip())
+        if not url or not title: reasons['gecersiz']+=1; continue
+        dt=parse_dt(r.get('date') or r.get('publishedAt') or r.get('seendate'))
+        if dt and dt<cutoff: reasons['zaman']+=1; continue
+        if not dt and mode=='turkish':
+            # tarih yoksa hızlı bakışta atmayalım; sadece sıralamada alta al.
+            pass
+        snippet=html.unescape((r.get('snippet') or r.get('body') or r.get('description') or '').strip())
+        src=r.get('source') or ''
+        d=infer_source(src,r.get('source_url',''),url)
+        t=f'{title} {snippet}'
+        if mode=='greek':
+            if d not in GR or not greek_defense(t): reasons['yunan']+=1; continue
+        elif mode=='social':
+            if d not in SOCIAL: reasons['kaynak']+=1; continue
+            if not relevant(t,user_query): reasons['konu']+=1; continue
+        elif mode=='global':
+            if not relevant(t,user_query): reasons['konu']+=1; continue
+        else:
+            # Türk batch'inde kaynak filtresi YOK. Arama zaten Türkiye odaklı.
+            # Bu, Google News'in yayıncı URL'sini Google domaininde tuttuğu durumlarda
+            # Türk haberlerinin 0'a düşmesini engeller. Türk kaynakları sıralamada öne çıkar.
+            if not relevant(t,user_query): reasons['konu']+=1; continue
+        sentiment,score,status,neg,risk,cat,reasons=classify(title,snippet,d)
+        out.append({
+            'Tarih_dt':dt,'Tarih':fmt_dt(dt),'Başlık':title,'İçerik_Özeti':snippet or title,
+            'URL':url,'RSS_URL':url,'Kaynak':(src if norm(src) not in {'google haberler','google news','google'} else (d or src or 'Açık Kaynak')),
+            'Yayıncı_URL':(r.get('source_url') or '').strip(),'Yayıncı':src or d or 'Açık Kaynak',
+            'Domain':d,'Kaynak_Grubu':source_group(d),
+            'Kategori':cat,'Duygu':sentiment,'Skor':score,'Risk_Skoru':score,'Risk_Durumu':status,
+            'Risk_Gerekçesi':'; '.join(reasons),'Negatif_Sinyaller':neg,'Risk_Sinyalleri':risk,
+            'Seç':False,'Görsel_URL':'','_mode':mode
+        })
+    return out,reasons
+
+
 def source_reliability(domain_name, source_name=''):
     d=domain(domain_name); n=norm(source_name)
     if d in TR_OFFICIAL: return '🟢 A — Birincil / resmî'
@@ -955,7 +1093,8 @@ if 'docx_bytes' not in st.session_state: st.session_state.docx_bytes=None
 if 'note_bytes' not in st.session_state: st.session_state.note_bytes=None
 
 if run:
-    cutoff=datetime.now(timezone.utc)-timedelta(hours=hours); when=period_window(hours)
+    cutoff=datetime.now(timezone.utc)-timedelta(hours=hours)
+    when=period_window(hours)
     batches=[('🇹🇷 Türk medya / sanayi-teknoloji',build_turkish_queries(when,query),'turkish')]
     if neg: batches.append(('⚠️ Negatif haber taraması',build_negative_queries(when),'negative'))
     if greek: batches.append(('🇬🇷 Yunan medyası / Türk savunma',build_greek_queries(when),'greek'))
