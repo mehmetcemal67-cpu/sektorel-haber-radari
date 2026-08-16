@@ -109,7 +109,30 @@ def analyze_article(title, description):
             
     return round(score, 2), sentiment, risk_level, found_manipulative, detected_category
 
-# --- HABER ÇEKME MOTORU (ÇALIŞAN DOKUNULMAYAN KISIM) ---
+# --- SAYFA DETAYI VE GÖRSEL ÇEKİCİ ---
+def fetch_page_metadata(url):
+    img_url = ""
+    summary_text = ""
+    try:
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        resp = requests.get(url, headers=headers, timeout=3.5, allow_redirects=True)
+        if resp.status_code == 200:
+            soup = BeautifulSoup(resp.text, 'html.parser')
+            
+            # Ana Görsel
+            og_img = soup.find('meta', property='og:image') or soup.find('meta', attrs={'name': 'twitter:image'})
+            if og_img and og_img.get('content'):
+                img_url = og_img['content']
+                
+            # Özeti Alma
+            og_desc = soup.find('meta', property='og:description') or soup.find('meta', attrs={'name': 'description'})
+            if og_desc and og_desc.get('content'):
+                summary_text = og_desc['content'].strip()
+    except Exception:
+        pass
+    return img_url, summary_text
+
+# --- HABER ÇEKME MOTORU ---
 def fetch_robust_news(query_text, time_range="1d", max_results=50):
     articles = []
     seen_urls = set()
@@ -178,23 +201,22 @@ def fetch_robust_news(query_text, time_range="1d", max_results=50):
                         formatted_date = datetime.now().strftime('%d %b %Y %H:%M')
 
                     summary_html = entry.get('summary', '')
-                    img_src = ""
                     clean_desc = summary_html
                     if summary_html:
                         soup = BeautifulSoup(summary_html, 'html.parser')
-                        img_tag = soup.find('img')
-                        if img_tag and img_tag.get('src'):
-                            img_src = img_tag['src']
-                            if img_src.startswith("//"):
-                                img_src = "https:" + img_src
                         clean_desc = soup.get_text()
+
+                    # Sayfaya gidip resmi ve detayı çek
+                    fetched_img, fetched_desc = fetch_page_metadata(url)
+                    if fetched_desc:
+                        clean_desc = fetched_desc
 
                     seen_urls.add(url)
                     articles.append({
                         'title': entry.get('title', ''),
                         'description': clean_desc,
                         'url': url,
-                        'image_url': img_src,
+                        'image_url': fetched_img,
                         'publishedAt': formatted_date,
                         'source': {'name': entry.get('source', {}).get('title', 'Google News')}
                     })
@@ -205,22 +227,16 @@ def fetch_robust_news(query_text, time_range="1d", max_results=50):
 
     return articles[:max_results]
 
-# --- WORD DOKÜMAN BİÇİMLENDİRME VE İŞLEME YARDIMCILARI ---
-def add_hyperlink(paragraph, url, text):
-    try:
-        part = paragraph.part
-        safe_url = html.escape(url)
-        safe_text = html.escape(text)
-        
-        r_id = part.relate_to(safe_url, "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink", is_external=True)
-        hyperlink = parse_xml(f'<w:hyperlink xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" r:id="{r_id}"/>')
-        new_run = parse_xml(f'<w:r xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:rPr><w:rStyle w:val="Hyperlink"/><w:color w:val="0000FF"/><w:u w:val="single"/></w:rPr><w:t>{safe_text}</w:t></w:r>')
-        hyperlink.append(new_run)
-        paragraph._p.append(hyperlink)
-    except Exception:
-        paragraph.add_run(text)
+# --- WORD LINK VE GÖRSEL YARDIMCILARI ---
+def add_hyperlink_to_paragraph(paragraph, url, text):
+    part = paragraph.part
+    r_id = part.relate_to(url, "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink", is_external=True)
+    hyperlink = parse_xml(f'<w:hyperlink xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" r:id="{r_id}"/>')
+    new_run = parse_xml(f'<w:r xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:rPr><w:rStyle w:val="Hyperlink"/><w:color w:val="0000FF"/><w:u w:val="single"/></w:rPr><w:t>{html.escape(text)}</w:t></w:r>')
+    hyperlink.append(new_run)
+    paragraph._p.append(hyperlink)
 
-def download_image_to_bytes(img_url):
+def download_image_stream(img_url):
     if not img_url:
         return None
     try:
@@ -232,7 +248,19 @@ def download_image_to_bytes(img_url):
         pass
     return None
 
-def style_cell(cell, bg_hex=None, bold=False, font_size=8.5, color_rgb=(0,0,0)):
+def format_analyst_summary(text):
+    text = text.strip()
+    if not text:
+        return "İçerik detayı açık kaynaktan çekilmiştir."
+    if not text.endswith(('.', '!', '?')):
+        text += "."
+    # Miştir dili ile analiz cümlesine dönüştürme
+    text = re.sub(r'\b(etti|oldu|açıkladı|yapıldı|geldi|bildirildi)\b', r'\1ği kaydedilmiştir', text)
+    if "kaydedilmiştir" not in text and "belirtilmiştir" not in text:
+        text += " Konunun gelişimi takip edilmektedir."
+    return text
+
+def style_table_cell(cell, bg_hex=None, bold=False, font_size=8.5, color_rgb=(0,0,0)):
     if bg_hex:
         shd = parse_xml(f'<w:shd {nsdecls("w")} w:fill="{bg_hex}"/>')
         cell._tc.get_or_add_tcPr().append(shd)
@@ -255,18 +283,16 @@ def style_cell(cell, bg_hex=None, bold=False, font_size=8.5, color_rgb=(0,0,0)):
             r.font.bold = bold
             r.font.color.rgb = RGBColor(*color_rgb)
 
-# --- YENİDEN TASARLANAN VE ÖZET SENTEZLEYEN RAPOR MOTORU ---
+# --- GELİŞMİŞ RAPOR OLUŞTURUCU ---
 def generate_osint_docx(query, df_all, stats):
     doc = Document()
     
-    # Sayfa Boyut & Kenar Ayarları
     for section in doc.sections:
-        section.top_margin = Inches(0.7)
-        section.bottom_margin = Inches(0.7)
-        section.left_margin = Inches(0.7)
-        section.right_margin = Inches(0.7)
+        section.top_margin = Inches(0.6)
+        section.bottom_margin = Inches(0.6)
+        section.left_margin = Inches(0.6)
+        section.right_margin = Inches(0.6)
 
-    # Başlık Paneli
     h = doc.add_heading("T.C. AÇIK KAYNAK MEDYA TARAMA VE İSTİHBARAT RAPORU", level=0)
     h.alignment = WD_ALIGN_PARAGRAPH.CENTER
     for r in h.runs:
@@ -284,94 +310,91 @@ def generate_osint_docx(query, df_all, stats):
         r.font.name = 'Arial'
         r.font.size = Pt(9)
 
-    # 1. YÖNETİCİ ÖZETİ (MİŞTİR/MİŞTİR ANALİZ DİLİ İLE)
     doc.add_heading("1. Yönetici Özeti ve Risk Değerlendirmesi", level=1)
     p_sum = doc.add_paragraph()
     p_sum.add_run(
-        f"Seçilen zaman diliminde açık kaynaklardan derlenen toplam {stats['total']} adet haber ve veri içeriği "
+        f"Seçilen zaman diliminde açık kaynaklardan derlenen toplam {stats['total']} adet haber ve içerik "
         f"sistem tarafından incelenmiştir. Yapılan detaylı metin analizleri sonucunda haberlerin "
         f"%{stats['neg_ratio']:.1f}'inin ({stats['neg']} adet) olumsuz/negatif ton taşıdığı tespit edilmiştir. "
-        f"Ayrıca {stats['risk_count']} adet içerikte kamuoyunu yönlendirmeye veya stratejik algı oluşturmaya dönük "
+        f"Ayrıca {stats['risk_count']} adet içerikte kamuoyunu yönlendirmeye dönük "
         f"manipülatif söylem kalıplarının kullanıldığı belirlenmiştir."
     )
     for r in p_sum.runs:
         r.font.name = 'Arial'
         r.font.size = Pt(9.5)
 
-    # 2. KRİTİK HABERLER
     doc.add_heading("2. Kritik / Manipülatif Söylem Barındıran Haberler", level=1)
     risk_df = df_all[df_all['Risk_Durumu'] == 'Yüksek Risk']
     
     if not risk_df.empty:
-        table = doc.add_table(rows=1, cols=5)
+        table = doc.add_table(rows=1, cols=6)
         table.style = 'Table Grid'
         hdr_cells = table.rows[0].cells
-        headers = ['Görsel', 'Tarih / Kaynak', 'Kategori', 'Haber Başlığı', 'Tespit Edilen Söylem']
+        headers = ['Görsel', 'Tarih / Kaynak', 'Kategori', 'Haber Başlığı (Bağlantılı)', 'Haber Özeti & Analizi', 'Tespit Edilen Söylem']
         for i, title in enumerate(headers):
             hdr_cells[i].text = title
-            style_cell(hdr_cells[i], bg_hex="1B365D", bold=True, font_size=9, color_rgb=(255, 255, 255))
+            style_table_cell(hdr_cells[i], bg_hex="1B365D", bold=True, font_size=9, color_rgb=(255, 255, 255))
 
         for _, r in risk_df.iterrows():
             row_cells = table.add_row().cells
             
-            # Görsel Ekleme
-            img_bytes = download_image_to_bytes(r.get('Görsel_URL', ''))
-            if img_bytes:
+            img_stream = download_image_stream(r.get('Görsel_URL', ''))
+            if img_stream:
                 try:
                     p_img = row_cells[0].paragraphs[0]
-                    p_img.add_run().add_picture(img_bytes, width=Inches(0.85))
+                    p_img.add_run().add_picture(img_stream, width=Inches(0.9))
                 except Exception:
-                    row_cells[0].text = "[Görsel]"
+                    row_cells[0].text = "Görsel Alınamadı"
             else:
-                row_cells[0].text = "[Görsel]"
+                row_cells[0].text = "Görsel Yok"
 
             row_cells[1].text = f"{r['Tarih']}\n{r['Kaynak']}"
             row_cells[2].text = r['Kategori']
             
             p_link = row_cells[3].paragraphs[0]
-            add_hyperlink(p_link, r['URL'], r['Başlık'])
+            add_hyperlink_to_paragraph(p_link, r['URL'], r['Başlık'])
             
-            row_cells[4].text = ", ".join(r['Manipülasyon_Kelimeleri']) if r['Manipülasyon_Kelimeleri'] else "Yüksek Negatif Ton"
+            row_cells[4].text = format_analyst_summary(r['Özet'])
+            row_cells[5].text = ", ".join(r['Manipülasyon_Kelimeleri']) if r['Manipülasyon_Kelimeleri'] else "Yüksek Negatif Ton"
             
             for c in row_cells:
-                style_cell(c, font_size=8)
+                style_table_cell(c, font_size=8)
     else:
         doc.add_paragraph("Kritik düzeyde manipülatif söylem barındıran haber tespit edilmemiştir.")
         
-    # 3. TÜM HABER AKIŞI TABLOSU
     doc.add_heading("3. Genel Haber Akışı ve Duygu Dağılımı", level=1)
     table2 = doc.add_table(rows=1, cols=6)
     table2.style = 'Table Grid'
     hdr_cells2 = table2.rows[0].cells
-    headers2 = ['Görsel', 'Tarih', 'Kaynak', 'Kategori', 'Haber Başlığı', 'Duygu / Skor']
+    headers2 = ['Görsel', 'Tarih / Kaynak', 'Kategori', 'Haber Başlığı (Bağlantılı)', 'Haber Özeti & Analizi', 'Duygu / Skor']
     for i, title in enumerate(headers2):
         hdr_cells2[i].text = title
-        style_cell(hdr_cells2[i], bg_hex="1B365D", bold=True, font_size=9, color_rgb=(255, 255, 255))
+        style_table_cell(hdr_cells2[i], bg_hex="1B365D", bold=True, font_size=9, color_rgb=(255, 255, 255))
 
     for _, r in df_all.iterrows():
         rc = table2.add_row().cells
         
-        img_bytes = download_image_to_bytes(r.get('Görsel_URL', ''))
-        if img_bytes:
+        img_stream = download_image_stream(r.get('Görsel_URL', ''))
+        if img_stream:
             try:
                 p_img = rc[0].paragraphs[0]
-                p_img.add_run().add_picture(img_bytes, width=Inches(0.85))
+                p_img.add_run().add_picture(img_stream, width=Inches(0.9))
             except Exception:
-                rc[0].text = "[Görsel]"
+                rc[0].text = "Görsel Alınamadı"
         else:
-            rc[0].text = "[Görsel]"
+            rc[0].text = "Görsel Yok"
 
-        rc[1].text = r['Tarih']
-        rc[2].text = r['Kaynak']
-        rc[3].text = r['Kategori']
+        rc[1].text = f"{r['Tarih']}\n{r['Kaynak']}"
+        rc[2].text = r['Kategori']
         
-        p_link2 = rc[4].paragraphs[0]
-        add_hyperlink(p_link2, r['URL'], r['Başlık'])
+        p_link2 = rc[3].paragraphs[0]
+        add_hyperlink_to_paragraph(p_link2, r['URL'], r['Başlık'])
         
+        rc[4].text = format_analyst_summary(r['Özet'])
         rc[5].text = f"{r['Duygu']} ({r['Skor']})"
         
         for c in rc:
-            style_cell(c, font_size=8)
+            style_table_cell(c, font_size=8)
         
     buf = BytesIO()
     doc.save(buf)
@@ -413,7 +436,7 @@ with st.sidebar:
     btn_run = st.button("🔍 Açık Kaynak Taramasını Başlat", type="primary", use_container_width=True)
 
 if btn_run:
-    with st.spinner("Anlık canlı haber kaynakları taranıyor..."):
+    with st.spinner("Anlık canlı haber kaynakları taranıyor ve görseller çıkarılıyor..."):
         articles = fetch_robust_news(query, time_range=time_filter, max_results=max_news)
         
         if articles:
@@ -458,17 +481,17 @@ if btn_run:
             
             risk_df_display = df[df['Risk_Durumu'] == 'Yüksek Risk']
             if not risk_df_display.empty:
-                st.warning(f"Toplam {len(risk_df_display)} haberde manipülatif dil/yüksek negatiflik tespit edildi!")
+                st.warning(f"Toplam {len(risk_df_display)} haberde manipülatif dil/yüksek negatiflik tespit edilmiştir!")
                 st.dataframe(
                     risk_df_display[['Tarih', 'Kaynak', 'Kategori', 'Başlık', 'Risk_Durumu', 'URL']],
                     use_container_width=True
                 )
             else:
-                st.success("Seçilen zaman aralığında kritik düzeyde manipülatif dil barındıran haber bulunamadı.")
+                st.success("Seçilen zaman aralığında kritik düzeyde manipülatif dil barındıran haber bulunamamıştır.")
             
             st.subheader("📋 Canlı Haber Akışı ve Analiz Tablosu")
             st.dataframe(
-                df[['Tarih', 'Kaynak', 'Kategori', 'Başlık', 'Duygu', 'Skor', 'Risk_Durumu', 'URL']],
+                df[['Tarih', 'Kaynak', 'Kategori', 'Başlık', 'Özet', 'Duygu', 'Skor', 'Risk_Durumu', 'URL']],
                 use_container_width=True
             )
             
@@ -483,4 +506,4 @@ if btn_run:
                 type="primary"
             )
         else:
-            st.info("Seçilen zaman diliminde kriterlere uygun haber bulunamadı.")
+            st.info("Seçilen zaman diliminde kriterlere uygun haber bulunamamıştır.")
