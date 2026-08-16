@@ -25,7 +25,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# --- SÖZLÜK YÜKLEME ---
+# --- SÖZLÜK VE MANİPÜLASYON VERİSİ ---
 @st.cache_data
 def load_lexicon():
     try:
@@ -78,6 +78,7 @@ STRATEGIC_CATEGORIES = {
     ]
 }
 
+# --- ANALİZ MOTORU ---
 def analyze_article(title, description):
     full_text = f"{title} {description}".lower()
     words = re.sub(r'[^\w\s]', ' ', full_text).split()
@@ -109,7 +110,7 @@ def analyze_article(title, description):
             
     return round(score, 2), sentiment, risk_level, found_manipulative, detected_category
 
-# --- SAYFA DETAYI VE GÖRSEL ÇEKİCİ ---
+# --- GERÇEK HABER GÖRSELİ VE DETAY ÇEKİCİ ---
 def fetch_page_metadata(url):
     img_url = ""
     summary_text = ""
@@ -119,9 +120,12 @@ def fetch_page_metadata(url):
         if resp.status_code == 200:
             soup = BeautifulSoup(resp.text, 'html.parser')
             
+            # Google News logosu gibi jenerik görselleri engelle
             og_img = soup.find('meta', property='og:image') or soup.find('meta', attrs={'name': 'twitter:image'})
             if og_img and og_img.get('content'):
-                img_url = og_img['content']
+                candidate_img = og_img['content']
+                if "gstatic.com" not in candidate_img and "google" not in candidate_img.lower():
+                    img_url = candidate_img
                 
             og_desc = soup.find('meta', property='og:description') or soup.find('meta', attrs={'name': 'description'})
             if og_desc and og_desc.get('content'):
@@ -130,7 +134,23 @@ def fetch_page_metadata(url):
         pass
     return img_url, summary_text
 
-# --- HABER ÇEKME MOTORU ---
+# --- DİNAMİK ANALİST ÖZETİ URETİCİ ---
+def format_analyst_summary(title, text):
+    title = title.strip()
+    text = text.strip() if text else ""
+    
+    if not text or "Comprehensive up-to-date" in text or "İçerik detayları açık kaynak" in text:
+        return f"'{title}' konusu açık kaynak medya takibi kapsamında incelemeye alınmıştır. İlgili gelişmenin sektörel etkileri ve yansımaları takip edilmektedir."
+    
+    if not text.endswith(('.', '!', '?')):
+        text += "."
+    
+    text = re.sub(r'\b(etti|oldu|açıkladı|yapıldı|geldi|bildirildi)\b', r'\1ği kaydedilmiştir', text)
+    if "kaydedilmiştir" not in text and "belirtilmiştir" not in text:
+        text += " Konuya ilişkin stratejik süreçler yakından izlenmektedir."
+    return text
+
+# --- GELİŞMİŞ HABER ÇEKME MOTORU ---
 def fetch_robust_news(query_text, time_range="1d", max_results=50):
     articles = []
     seen_urls = set()
@@ -226,23 +246,20 @@ def fetch_robust_news(query_text, time_range="1d", max_results=50):
 
 # --- HATA VERMEYEN GÜVENLİ WORD LINK VE GÖRSEL YARDIMCILARI ---
 def add_safe_hyperlink(paragraph, url, text):
-    """lxml XML parse hatası üretmeyen %100 korumalı köprü bağlantısı"""
+    """lxml XML parse hatası üretmeyen, tıklanabilir Word linki ekler"""
     try:
         part = paragraph.part
-        safe_url = html.escape(url)
-        safe_text = html.escape(text)
-        
         r_id = part.relate_to(url, "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink", is_external=True)
+        safe_text = html.escape(text)
         
         xml_str = f'<w:hyperlink xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" r:id="{r_id}"><w:r><w:rPr><w:rStyle w:val="Hyperlink"/><w:color w:val="0000FF"/><w:u w:val="single"/></w:rPr><w:t>{safe_text}</w:t></w:r></w:hyperlink>'
         hyperlink = parse_xml(xml_str)
         paragraph._p.append(hyperlink)
     except Exception:
-        # XML çökse dahi uygulamayı durdurmayıp düz metin olarak ekler
-        paragraph.add_run(f"{text}")
+        paragraph.add_run(f"{text} (Link: {url})")
 
 def download_image_stream(img_url):
-    if not img_url:
+    if not img_url or "gstatic.com" in img_url:
         return None
     try:
         headers = {'User-Agent': 'Mozilla/5.0'}
@@ -252,18 +269,6 @@ def download_image_stream(img_url):
     except Exception:
         pass
     return None
-
-def format_analyst_summary(text):
-    text = text.strip()
-    if not text or "Comprehensive up-to-date" in text:
-        return "İçerik detayları açık kaynak taraması kapsamında kaydedilmiştir."
-    if not text.endswith(('.', '!', '?')):
-        text += "."
-    
-    text = re.sub(r'\b(etti|oldu|açıkladı|yapıldı|geldi|bildirildi)\b', r'\1ği kaydedilmiştir', text)
-    if "kaydedilmiştir" not in text and "belirtilmiştir" not in text:
-        text += " Konunun gelişimi takip edilmektedir."
-    return text
 
 def style_table_cell(cell, bg_hex=None, bold=False, font_size=8.5, color_rgb=(0,0,0)):
     if bg_hex:
@@ -288,7 +293,7 @@ def style_table_cell(cell, bg_hex=None, bold=False, font_size=8.5, color_rgb=(0,
             r.font.bold = bold
             r.font.color.rgb = RGBColor(*color_rgb)
 
-# --- GELİŞMİŞ VE ÇÖKMEYEN RAPOR OLUŞTURUCU ---
+# --- WORD RAPOR OLUŞTURUCU ---
 def generate_osint_docx(query, df_all, stats):
     doc = Document()
     
@@ -359,7 +364,7 @@ def generate_osint_docx(query, df_all, stats):
             p_link = row_cells[3].paragraphs[0]
             add_safe_hyperlink(p_link, r['URL'], r['Başlık'])
             
-            row_cells[4].text = format_analyst_summary(r['Özet'])
+            row_cells[4].text = format_analyst_summary(r['Başlık'], r['Özet'])
             row_cells[5].text = ", ".join(r['Manipülasyon_Kelimeleri']) if r['Manipülasyon_Kelimeleri'] else "Yüksek Negatif Ton"
             
             for c in row_cells:
@@ -395,7 +400,7 @@ def generate_osint_docx(query, df_all, stats):
         p_link2 = rc[3].paragraphs[0]
         add_safe_hyperlink(p_link2, r['URL'], r['Başlık'])
         
-        rc[4].text = format_analyst_summary(r['Özet'])
+        rc[4].text = format_analyst_summary(r['Başlık'], r['Özet'])
         rc[5].text = f"{r['Duygu']} ({r['Skor']})"
         
         for c in rc:
@@ -456,7 +461,7 @@ if btn_run:
                     "Kaynak": a.get('source', {}).get('name', 'Bilinmiyor'),
                     "Kategori": category,
                     "Başlık": title,
-                    "Özet": desc,
+                    "Özet": format_analyst_summary(title, desc),
                     "Duygu": sentiment,
                     "Skor": score,
                     "Risk_Durumu": risk,
@@ -489,6 +494,7 @@ if btn_run:
                 st.warning(f"Toplam {len(risk_df_display)} haberde manipülatif dil/yüksek negatiflik tespit edilmiştir!")
                 st.dataframe(
                     risk_df_display[['Tarih', 'Kaynak', 'Kategori', 'Başlık', 'Risk_Durumu', 'URL']],
+                    column_config={"URL": st.column_config.LinkColumn("Haber Linki")},
                     use_container_width=True
                 )
             else:
@@ -497,6 +503,7 @@ if btn_run:
             st.subheader("📋 Canlı Haber Akışı ve Analiz Tablosu")
             st.dataframe(
                 df[['Tarih', 'Kaynak', 'Kategori', 'Başlık', 'Özet', 'Duygu', 'Skor', 'Risk_Durumu', 'URL']],
+                column_config={"URL": st.column_config.LinkColumn("Haber Linki")},
                 use_container_width=True
             )
             
