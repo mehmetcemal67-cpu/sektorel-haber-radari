@@ -3,4 +3,5 @@ pandas
 requests
 beautifulsoup4
 python-docx
-feedparser
+ddgs
+pillow
