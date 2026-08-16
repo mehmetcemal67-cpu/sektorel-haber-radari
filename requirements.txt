@@ -2,6 +2,6 @@ streamlit
 pandas
 requests
 beautifulsoup4
+pillow
 python-docx
 ddgs
-pillow
