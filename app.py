@@ -232,6 +232,25 @@ def greek_defense(text):
     terms=['turkey','türkiye','turkish','türk','τουρκ','aselsan','tusaş','tusas','roketsan','havelsan','baykar','bayraktar','kaan','kızılelma','siper','hisar','iha','siha','drone','uav','missile','fighter','frigate','submarine','defense','defence','savunma','άμυνα']
     return any(x in t for x in terms)
 
+
+OSB_FIRE_LOCATION_TERMS = [
+    'osb','organize sanayi','organize sanayi bölgesi','organize sanayi bölgesinde',
+    'organize sanayi bölgesindeki','organize sanayi sitesinde'
+]
+OSB_FIRE_EVENT_TERMS = [
+    'yangın','yangını','yangin','alev','alevler','yanıyor','yaniyor','yandı','yandi',
+    'fabrika yangını','tesis yangını'
+]
+
+def is_osb_fire(title, snippet=''):
+    """Organize sanayi bölgesi + yangın bağlamı birlikte geçiyorsa özel alarm üretir."""
+    t=norm(f'{title} {snippet}')
+    return (
+        any(term in t for term in OSB_FIRE_LOCATION_TERMS)
+        and any(term in t for term in OSB_FIRE_EVENT_TERMS)
+    )
+
+
 def classify(title,snippet,source_domain=''):
     t=norm(f'{title} {snippet}')
     neg=[x for x in NEGATIVE_TERMS if x in t]
@@ -355,7 +374,10 @@ def build_turkish_queries(when, user_query=''):
     return qs
 
 def build_negative_queries(when):
-    return [f'Türkiye (iflas OR konkordato OR "üretim durdu" OR "fabrika kapandı" OR "işten çıkarma" OR grev OR soruşturma OR dava OR ceza OR "geri çağırma" OR "siber saldırı" OR "veri sızıntısı" OR yaptırım OR ambargo OR "ihale iptal" OR ertelendi OR gecikme OR "tedarik krizi" OR daralma OR zafiyet OR usulsüzlük OR yolsuzluk) (sanayi OR teknoloji OR üretim OR fabrika OR savunma OR otomotiv OR enerji OR şirket OR tesis OR proje) when:{when}']
+    return [
+        f'Türkiye (iflas OR konkordato OR "üretim durdu" OR "fabrika kapandı" OR "işten çıkarma" OR grev OR soruşturma OR dava OR ceza OR "geri çağırma" OR "siber saldırı" OR "veri sızıntısı" OR yaptırım OR ambargo OR "ihale iptal" OR ertelendi OR gecikme OR "tedarik krizi" OR daralma OR zafiyet OR usulsüzlük OR yolsuzluk) (sanayi OR teknoloji OR üretim OR fabrika OR savunma OR otomotiv OR enerji OR şirket OR tesis OR proje) when:{when}',
+        f'Türkiye (OSB OR "organize sanayi" OR "organize sanayi bölgesi") (yangın OR yangını OR alev OR "fabrika yangını" OR "tesis yangını") when:{when}'
+    ]
 
 def build_greek_queries(when):
     site='('+' OR '.join('site:'+x for x in GR)+')'
@@ -1294,10 +1316,11 @@ if run:
             return False
         alerted_keys.add(key)
         risk_score=int(row.get('Risk_Skoru',row.get('Skor',0)) or 0)
-        is_high=row.get('Risk_Durumu')=='Yüksek Risk' or risk_score>=70
+        osb_fire=is_osb_fire(row.get('Başlık',''),row.get('İçerik_Özeti',''))
+        is_high=row.get('Risk_Durumu')=='Yüksek Risk' or risk_score>=70 or osb_fire
         live_alerts.insert(0,{
             'Tarih':str(row.get('Tarih','')),
-            'Seviye':'YÜKSEK RİSK' if is_high else 'NEGATİF',
+            'Seviye':'🔥 OSB YANGINI' if osb_fire else ('YÜKSEK RİSK' if is_high else 'NEGATİF'),
             'Kaynak':str(row.get('Kaynak','Açık Kaynak')),
             'Başlık':str(row.get('Başlık','')),
             'Risk':risk_score,
@@ -1362,6 +1385,25 @@ if run:
                     chunk=[]
                 stat['Ham sonuç']+=len(chunk)
                 supplemental_raw_by_mode.setdefault(mode,[]).extend(chunk)
+
+                # ÖZEL OSB YANGINI ALARMI:
+                # İlgili sorgu döner dönmez tüm tamamlayıcı taramanın bitmesini beklemeden bildir.
+                if instant_alerts and chunk:
+                    quick_rows,_quick_reasons=normalize_rows(chunk,cutoff,mode,query)
+                    for qr in quick_rows:
+                        if is_osb_fire(qr.get('Başlık',''),qr.get('İçerik_Özeti','')):
+                            qkey=_alert_key(qr)
+                            if qkey not in alerted_keys:
+                                _register_alert(qr)
+                                st.toast(
+                                    f'🔥 OSB YANGINI: {str(qr.get("Başlık",""))[:105]}',
+                                    icon='🔥'
+                                )
+                                live_alarm_box.error(
+                                    f'🔥 **ORGANİZE SANAYİ BÖLGESİ YANGIN ALARMI** — '
+                                    f'{qr.get("Tarih","")} · {qr.get("Kaynak","Açık Kaynak")} · '
+                                    f'{str(qr.get("Başlık",""))[:140]}'
+                                )
 
     # Mode bazlı normalize + birleştirme.
     for mode,raw in supplemental_raw_by_mode.items():
@@ -1440,6 +1482,20 @@ else:
                     use_container_width=True,
                     height=min(420, 42+35*len(alert_df))
                 )
+
+        # Organize Sanayi Bölgesi yangınları için özel kalıcı alarm bölümü
+        osb_fire_mask=df.apply(
+            lambda r:is_osb_fire(r.get('Başlık',''),r.get('İçerik_Özeti','')),
+            axis=1
+        )
+        osb_fires=df[osb_fire_mask].sort_values('Tarih_dt',ascending=False)
+        if not osb_fires.empty:
+            st.error(f'🔥 **OSB YANGIN ALARMI — {len(osb_fires)} içerik tespit edildi**')
+            st.dataframe(
+                osb_fires[['Tarih','Kaynak','Başlık','Risk_Skoru','URL']],
+                column_config={'URL':st.column_config.LinkColumn('Haber Linki')},
+                hide_index=True,use_container_width=True,height=min(300,60+36*len(osb_fires))
+            )
 
         # Alarm bandı
         alarms=df[(df.Risk_Skoru>=70) | (df.Duygu=='Negatif')].sort_values(['Risk_Skoru','Tarih_dt'],ascending=[False,False])
