@@ -114,24 +114,38 @@ def analyze_article(title, description):
     return round(score, 2), sentiment, risk_level, found_manipulative, detected_category
 
 # --- NEWSAPI HABER ÇEKME ---
-def fetch_news_rss(query, max_results=30):
-    # Türkçe haberler için Google News RSS URL'si oluşturma
+import feedparser
+import urllib.parse
+from datetime import datetime
+from email.utils import parsedate_to_datetime
+
+def fetch_news_rss(query, s_date, e_date, max_results=30):
     encoded_query = urllib.parse.quote(query)
     rss_url = f"https://news.google.com/rss/search?q={encoded_query}&hl=tr&gl=TR&ceid=TR:tr"
     
     feed = feedparser.parse(rss_url)
     articles = []
     
-    for entry in feed.entries[:max_results]:
-        # Google News verisini uygulamanızın beklediği veri formatına dönüştürme
-        articles.append({
-            'title': entry.get('title', ''),
-            'description': entry.get('summary', ''),
-            'url': entry.get('link', ''),
-            'publishedAt': entry.get('published', ''),
-            'source': {'name': entry.get('source', {}).get('title', 'Google News')}
-        })
-        
+    for entry in feed.entries:
+        pub_date_str = entry.get('published', '')
+        try:
+            pub_dt = parsedate_to_datetime(pub_date_str).date()
+        except:
+            pub_dt = datetime.today().date()
+            
+        # Sadece arayüzde seçilen tarih aralığındaki haberleri süz
+        if s_date <= pub_dt <= e_date:
+            articles.append({
+                'title': entry.get('title', ''),
+                'description': entry.get('summary', ''),
+                'url': entry.get('link', ''),
+                'publishedAt': pub_dt.strftime('%d %b %Y'),
+                'source': {'name': entry.get('source', {}).get('title', 'Google News')}
+            })
+            
+        if len(articles) >= max_results:
+            break
+            
     return articles
 
 # --- BİLGİ NOTU / RAPOR ÜRETİCİ (.DOCX) ---
@@ -251,7 +265,7 @@ if btn_run:
         st.error("Lütfen sol panelden NewsAPI Key bilginizi giriniz.")
     else:
         with st.spinner("Açık kaynaklar taranıyor, dezenformasyon ve negatif söylemler analiz ediliyor..."):
-            articles = fetch_news_rss(query, max_news)
+            articles = fetch_news_rss(query, s_date, e_date, max_news)
             
             if articles:
                 parsed_data = []
