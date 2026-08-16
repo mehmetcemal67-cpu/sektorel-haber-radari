@@ -75,7 +75,18 @@ BROAD_TERM_BANK = [
     "savunma sanayii", "havacılık ve uzay", "roket teknolojisi", "insansız hava aracı",
     "telekomünikasyon", "5G", "veri merkezi", "bulut bilişim", "kuantum teknoloji",
     "nanoteknoloji", "biyoteknoloji", "3 boyutlu yazıcı", "akıllı fabrika",
-    "ihracat rakamları", "start-up", "girişim sermayesi", "teknopark", "patent başvurusu"
+    "ihracat rakamları", "start-up", "girişim sermayesi", "teknopark", "patent başvurusu",
+    "otomotiv sanayii", "demir çelik", "petrokimya", "kimya sanayii", "tekstil teknolojisi",
+    "gıda teknolojisi", "tarım teknolojisi", "sağlık teknolojisi", "medikal cihaz",
+    "lojistik teknolojisi", "inşaat teknolojisi", "çevre teknolojisi", "geri dönüşüm",
+    "blockchain", "kripto para", "nesnelerin interneti", "sensör teknolojisi",
+    "lazer teknolojisi", "malzeme bilimi", "kompozit malzeme", "seri üretim",
+  "dış ticaret", "teknoloji transferi", "know-how", "lisanslama", "OEM üretim",
+    "milli teknoloji hamlesi", "sanayi bakanlığı", "TOBB", "TİM", "sanayi odası",
+    "ticaret odası", "üretici firma", "fabrika açılışı", "yatırım anlaşması",
+    "test merkezi", "sertifikasyon", "kalite kontrol", "tedarik zinciri",
+    "mikroçip", "işlemci üretimi", "elektronik kart", "PCB üretimi", "otonom sistemler",
+    "insansız deniz aracı", "denizcilik teknolojisi", "tersane", "gemi inşa"
 ]
 
 STRATEGIC_CATEGORIES = {
@@ -204,96 +215,106 @@ def normalize_title(t):
     t = re.sub(r'\s+', ' ', t).strip()
     return t
 
+# --- TEK BİR ARAMA TERİMİNİ ÇALIŞTIRIR (paralel çalışacak şekilde tasarlandı) ---
+def _run_single_search(term, region, time_ddg, per_query_results=10):
+    try:
+        from ddgs import DDGS
+    except ImportError:
+        from duckduckgo_search import DDGS
+    try:
+        with DDGS() as ddgs:
+            results = list(ddgs.news(keywords=term, region=region, timelimit=time_ddg, max_results=per_query_results))
+            return results or []
+    except Exception:
+        return []
+
 # --- HABER TOPLAMA MOTORU ---
 def fetch_robust_news(query_text, time_range="1d", max_results=50,
-                       negative_boost=True, extra_regions=True, broad_mode=True):
+                       negative_boost=True, extra_regions=True, broad_mode=True,
+                       search_workers=10):
     """
     - query_text gerçekten kullanılıyor (OR / virgülle ayrılmış terimlere bölünür).
     - broad_mode=True: kullanıcı sorgusu, geniş sanayi/teknoloji terim bankasıyla
       birleştirilir -> "her şey girsin" isteği için kapsamı otomatik genişletir.
-    - negative_boost=True: her ana terim, 2 farklı kritik/negatif kelimeyle
+    - negative_boost=True: TÜM ana terimler, 2 farklı kritik/negatif kelimeyle
       birleştirilip ayrıca aranır -> negatif/riskli haberi yakalama olasılığı artar.
     - extra_regions=True: bazı terimler 'wt-wt' (dünya geneli) bölgesinde de aranır
       -> yabancı basın (ör. Yunan basını) da yakalanabilir.
+    - Hız: tüm arama terimleri artık TEK TEK/SIRALI değil, eş zamanlı (paralel)
+      olarak çalıştırılıyor (search_workers kadar iş parçacığıyla) -> tarama
+      süresi eski sürüme göre kat kat kısalıyor.
     """
     articles = []
     seen_urls = set()
     seen_titles = set()
     time_ddg = {"1d": "d", "7d": "w", "14d": "w"}.get(time_range, "d")
 
-    base_terms = build_search_terms(query_text, max_terms=20)
+    base_terms = build_search_terms(query_text, max_terms=25)
     if broad_mode:
-        base_terms = merge_with_bank(base_terms, BROAD_TERM_BANK, cap=35)
+        base_terms = merge_with_bank(base_terms, BROAD_TERM_BANK, cap=55)
 
     search_jobs = [(t, "tr-tr") for t in base_terms]
 
     if extra_regions:
-        for t in base_terms[:6]:
+        for t in base_terms[:8]:
             search_jobs.append((t, "wt-wt"))
 
     if negative_boost:
         half = max(1, len(NEGATIVE_BOOST_KEYWORDS) // 2)
-        for i, t in enumerate(base_terms[:20]):
+        for i, t in enumerate(base_terms):
             kw1 = NEGATIVE_BOOST_KEYWORDS[i % len(NEGATIVE_BOOST_KEYWORDS)]
             kw2 = NEGATIVE_BOOST_KEYWORDS[(i + half) % len(NEGATIVE_BOOST_KEYWORDS)]
             search_jobs.append((f"{t} {kw1}", "tr-tr"))
             search_jobs.append((f"{t} {kw2}", "tr-tr"))
 
-    search_jobs = search_jobs[:130]  # güvenlik / rate-limit sınırı
+    search_jobs = search_jobs[:220]  # güvenlik / rate-limit sınırı
 
-    try:
-        from ddgs import DDGS
-    except ImportError:
-        from duckduckgo_search import DDGS
+    with concurrent.futures.ThreadPoolExecutor(max_workers=search_workers) as ex:
+        future_map = {
+            ex.submit(_run_single_search, term, region, time_ddg): (term, region)
+            for term, region in search_jobs
+        }
+        for fut in concurrent.futures.as_completed(future_map):
+            if len(articles) >= max_results:
+                break
+            try:
+                results = fut.result()
+            except Exception:
+                continue
 
-    try:
-        with DDGS() as ddgs:
-            for term, region in search_jobs:
+            for r in results:
                 if len(articles) >= max_results:
                     break
-                try:
-                    results = ddgs.news(keywords=term, region=region, timelimit=time_ddg, max_results=10)
-                except Exception:
-                    time.sleep(1.0)
+
+                url = r.get('url', '')
+                title = r.get('title', '') or ''
+                norm_title = normalize_title(title)
+                title_key = " ".join(norm_title.split()[:8])
+
+                if not url or url in seen_urls:
+                    continue
+                if title_key and title_key in seen_titles:
                     continue
 
-                for r in results or []:
-                    url = r.get('url', '')
-                    title = r.get('title', '') or ''
-                    norm_title = normalize_title(title)
-                    title_key = " ".join(norm_title.split()[:8])
+                seen_urls.add(url)
+                if title_key:
+                    seen_titles.add(title_key)
 
-                    if not url or url in seen_urls:
-                        continue
-                    if title_key and title_key in seen_titles:
-                        continue
+                raw_date = r.get('date', '')
+                try:
+                    dt = datetime.fromisoformat(raw_date.replace('Z', '+00:00'))
+                    formatted_date = dt.strftime('%d %b %Y %H:%M')
+                except Exception:
+                    formatted_date = datetime.now().strftime('%d %b %Y %H:%M')
 
-                    seen_urls.add(url)
-                    if title_key:
-                        seen_titles.add(title_key)
-
-                    raw_date = r.get('date', '')
-                    try:
-                        dt = datetime.fromisoformat(raw_date.replace('Z', '+00:00'))
-                        formatted_date = dt.strftime('%d %b %Y %H:%M')
-                    except Exception:
-                        formatted_date = datetime.now().strftime('%d %b %Y %H:%M')
-
-                    articles.append({
-                        'title': title,
-                        'body': r.get('body', ''),
-                        'url': url,
-                        'image_url': r.get('image', ''),
-                        'publishedAt': formatted_date,
-                        'source': {'name': r.get('source', 'Açık Basın')}
-                    })
-
-                    if len(articles) >= max_results:
-                        break
-
-                time.sleep(0.3)
-    except Exception:
-        pass
+                articles.append({
+                    'title': title,
+                    'body': r.get('body', ''),
+                    'url': url,
+                    'image_url': r.get('image', ''),
+                    'publishedAt': formatted_date,
+                    'source': {'name': r.get('source', 'Açık Basın')}
+                })
 
     return articles[:max_results]
 
@@ -317,7 +338,7 @@ def fetch_article_fulltext(url, timeout=5):
     except Exception:
         return ""
 
-def fetch_fulltexts_parallel(urls, max_workers=8, per_call_timeout=5):
+def fetch_fulltexts_parallel(urls, max_workers=15, per_call_timeout=4):
     """Haber tam metinlerini paralel olarak çeker (çok sayıda haberde makul sürede tamamlanması için)."""
     results = {}
     unique_urls = [u for u in dict.fromkeys(urls) if u]
@@ -630,10 +651,11 @@ with st.sidebar:
         value=True
     )
     full_text_mode = st.checkbox(
-        "Tam Metin ile Zenginleştir (Haberin Tamamının Özeti — Daha Yavaş)",
+        "Tam Metin ile Zenginleştir (Haberin Tamamının Özeti)",
         value=True,
-        help="Her haberin orijinal sayfasına gidip tam metnini çeker; özet bu metinden üretilir. Kapalıyken sadece kısa haber özeti kullanılır (daha hızlı)."
+        help="Özeti kısa gelen haberler için orijinal sayfaya gidip tam metni paralel olarak çeker. Kapalıyken sadece DDGS'den gelen kısa özet kullanılır (en hızlı seçenek)."
     )
+    st.caption("ℹ️ Aramalar ve tam metin çekme paralel çalışır; yine de çok geniş kapsamda (Kapsamlı Tarama + Negatif Güçlendirme birlikte açıkken) tarama biraz zaman alabilir.")
 
     btn_run = st.button("🔍 Taramayı Başlat", type="primary", use_container_width=True)
 
@@ -655,8 +677,15 @@ if btn_run:
     if articles:
         fulltext_map = {}
         if full_text_mode:
-            with st.spinner(f"{len(articles)} haberin tam metni çekiliyor (haberin tamamının özeti için)..."):
-                fulltext_map = fetch_fulltexts_parallel([a.get('url', '') for a in articles])
+            # Zaten yeterince uzun (>=500 karakter) özeti olan haberler için tam metin
+            # çekmeye gerek yok -> gereksiz istek sayısı azaltılarak süre kısaltılıyor.
+            urls_needing_fulltext = [
+                a.get('url', '') for a in articles
+                if a.get('url') and len(a.get('body', '') or '') < 500
+            ]
+            if urls_needing_fulltext:
+                with st.spinner(f"{len(urls_needing_fulltext)} haberin tam metni çekiliyor (haberin tamamının özeti için)..."):
+                    fulltext_map = fetch_fulltexts_parallel(urls_needing_fulltext)
 
         with st.spinner("Duygu/risk analizi ve düzyazı özetler oluşturuluyor..."):
             parsed_data = []
