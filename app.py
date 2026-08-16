@@ -250,13 +250,20 @@ NEGATIVE_EVENT_TERMS = [
 ]
 
 
-def is_relevant_industry_tech(title, snippet=""):
+def is_relevant_industry_tech(title, snippet="", user_terms=None):
     text = normalize_text(f"{title} {snippet}")
-    # Bir çekirdek konu terimi yoksa haber konu dışıdır.
-    if not any(k in text for k in CORE_TOPIC_TERMS):
-        return False
-    return True
-
+    # Haber, sanayi/teknoloji ekseninde en az bir güçlü çekirdek terim
+    # veya kullanıcının açıkça verdiği bir terim içermeli.
+    core_hits = [k for k in CORE_TOPIC_TERMS if k in text]
+    user_hits = []
+    for k in (user_terms or []):
+        k = normalize_text(k)
+        if k and k in text:
+            user_hits.append(k)
+    # Çok genel kullanıcı kelimeleri tek başına konu filtresi olmasın.
+    generic = {"yatırım", "araç", "enerji", "risk", "haber", "türkiye", "türk"}
+    strong_user_hits = [k for k in user_hits if k not in generic]
+    return bool(core_hits or strong_user_hits)
 
 def is_turkish_priority_source(url):
     d = domain_of(url)
@@ -558,39 +565,44 @@ def gdelt_news(query, max_records=50, timespan="1d"):
         return []
 
 
-def fetch_targeted_turkish_sources(queries, when="1d", max_per_query=80):
-    """V5: Google News'i dev bir site:... OR zinciriyle boğmadan,
-    Türkiye odaklı 4 geniş konu sorgusuyla tarar. Sonuçlar daha sonra
-    Türk kaynak + konu alaka filtresinden geçirilir.
+def fetch_targeted_turkish_sources(user_terms, when="1d", max_per_query=80):
+    """Türk kaynaklarını gerçekten domain-hedefli sorgularla toplar.
+    Tek dev OR sorgusu yerine birkaç paralel kaynak/konu sepeti kullanır.
     """
-    topic = (
-        '"sanayi" OR "teknoloji" OR "üretim" OR "fabrika" OR "imalat" OR '
-        '"savunma sanayii" OR "havacılık" OR "otomotiv" OR "yapay zeka" OR '
-        '"siber güvenlik" OR "çip" OR "yarı iletken" OR "enerji" OR '
-        '"batarya" OR "robotik" OR "otomasyon" OR "uzay" OR "uydu" OR '
-        '"Ar-Ge" OR "patent" OR "TÜBİTAK" OR "KOSGEB" OR "OSB"'
-    )
-    negative = (
-        '(' + ' OR '.join(f'"{x}"' for x in NEGATIVE_EVENT_TERMS[:18]) + ') '
-        'AND (' + ' OR '.join(f'"{x}"' for x in CORE_TOPIC_TERMS[:45]) + ')'
-    )
-    user_terms = " OR ".join(f'"{q}"' for q in queries[:18])
-    jobs = [
-        make_source_query(topic, None, when),
-        make_source_query(f'({user_terms})', None, when),
-        make_source_query(negative, None, when),
-        make_source_query('"ASELSAN" OR "TUSAŞ" OR "ROKETSAN" OR "HAVELSAN" OR "Baykar" OR "TOGG" OR "TÜBİTAK"', None, when),
+    main_1 = TR_MAIN_DOMAINS[:18]
+    main_2 = TR_MAIN_DOMAINS[18:]
+    tech = TR_TECH_DEFENSE_DOMAINS
+    official = TR_OFFICIAL_DOMAINS
+    all_tr = list(dict.fromkeys(TR_MAIN_DOMAINS + TR_TECH_DEFENSE_DOMAINS + TR_OFFICIAL_DOMAINS))
+
+    topic_queries = [
+        '"sanayi" OR "üretim" OR "fabrika" OR "imalat" OR "OSB"',
+        '"teknoloji" OR "yapay zeka" OR "siber güvenlik" OR "yazılım" OR "çip" OR "Ar-Ge"',
+        '"savunma sanayii" OR "ASELSAN" OR "TUSAŞ" OR "ROKETSAN" OR "HAVELSAN" OR "Baykar" OR "İHA" OR "KAAN"',
+        '"otomotiv" OR "TOGG" OR "batarya" OR "enerji" OR "havacılık" OR "uzay" OR "uydu"',
     ]
+    user_q = " OR ".join(f'"{q}"' for q in user_terms[:20] if len(q) > 2)
+    negative_q = '("iflas" OR "konkordato" OR "üretim durdu" OR "fabrika kapandı" OR "işten çıkarma" OR "soruşturma" OR "yaptırım" OR "siber saldırı" OR "veri sızıntısı" OR "ihale iptal" OR "gecikme" OR "tedarik krizi") AND (' + ' OR '.join(f'"{x}"' for x in CORE_TOPIC_TERMS[:55]) + ')'
+
+    jobs = [
+        (f'({topic_queries[0]})', main_1),
+        (f'({topic_queries[1]})', main_2),
+        (f'({topic_queries[2]})', tech),
+        (f'({topic_queries[3]})', all_tr),
+        (negative_q, all_tr),
+    ]
+    if user_q:
+        jobs.append((f'({user_q})', all_tr))
+
     rows = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
-        futures = [ex.submit(google_news_rss, q, max_per_query) for q in jobs]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(6, len(jobs))) as ex:
+        futures = [ex.submit(google_news_rss, make_source_query(q, domains, when), max_per_query) for q, domains in jobs]
         for f in concurrent.futures.as_completed(futures):
             try:
                 rows.extend(f.result())
             except Exception:
                 pass
     return rows
-
 
 def fetch_greek_defense_sources(when="1d", max_per_query=60):
     """Yunan medyasını sadece Türkiye/Türk savunma bağlamında getirir."""
@@ -739,12 +751,18 @@ def summarize_text(title, body, max_chars=1800):
 def fetch_news(user_query, time_hours=24, max_results=150,
                broad=True, negative_boost=True, include_greek=True,
                include_global=False, include_social=True):
-    """Hızlı iki aşamalı haber toplama. İlk ekranda yalnızca başlık/snippet."""
-    queries = build_queries(user_query, broad, negative_boost, cap=45)
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=time_hours)
+    """V6: hızlı, Türk medya öncelikli, teşhis edilebilir tarama."""
+    user_terms = split_query(user_query)
+    if broad:
+        for term in BROAD_TERM_BANK:
+            if term.lower() not in {x.lower() for x in user_terms} and len(user_terms) < 35:
+                user_terms.append(term)
 
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=time_hours)
+    # 3 saatlik pencerede 6 saatlik kaynak tarayıp Python tarafında 3 saate kesiyoruz;
+    # aksi halde dar RSS penceresi bazı yayıncıları kaçırabiliyor.
     if time_hours <= 3:
-        when = "3h"
+        when = "6h"
     elif time_hours <= 24:
         when = "1d"
     elif time_hours <= 24 * 7:
@@ -752,137 +770,77 @@ def fetch_news(user_query, time_hours=24, max_results=150,
     else:
         when = "30d"
 
-    records = []
-    # 1) Türk kaynakları: 4 toplu RSS sorgusu
-    records.extend(fetch_targeted_turkish_sources(queries, when=when, max_per_query=80))
+    records = fetch_targeted_turkish_sources(user_terms, when=when, max_per_query=80)
 
-    # 2) DDGS: yalnızca tamamlayıcı 12 sorgu
-    ddgs_queries = [
-        'Türkiye sanayi teknoloji üretim fabrika savunma sanayii',
-        'Türkiye yapay zeka siber güvenlik çip yarı iletken',
-        'Türkiye otomotiv batarya enerji teknoloji',
-        'Türkiye havacılık uzay uydu İHA SİHA savunma',
-    ]
-    if negative_boost:
-        ddgs_queries += [
-            'Türkiye sanayi teknoloji (iflas OR konkordato OR üretim durdu OR soruşturma)',
-            'Türkiye savunma sanayii (iptal OR gecikme OR yaptırım OR soruşturma)',
-            'Türkiye fabrika üretim (kapandı OR grev OR işten çıkarma)',
-            'Türkiye teknoloji (siber saldırı OR veri sızıntısı OR güvenlik açığı)',
-        ]
-    ddgs_queries = list(dict.fromkeys(ddgs_queries))[:8]
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
-        futures = [ex.submit(ddgs_news, q, "tr-tr", 15) for q in ddgs_queries]
-        for f in concurrent.futures.as_completed(futures):
-            try:
-                records.extend(f.result())
-            except Exception:
-                pass
-
-    # 3) Sosyal lead: sadece 3 paralel sorgu
     if include_social:
-        records.extend(fetch_social_leads(queries, when=when, max_results=15))
+        social_queries = [
+            'Türkiye sanayi teknoloji üretim savunma',
+            'ASELSAN TUSAŞ ROKETSAN HAVELSAN Baykar TOGG',
+            'Türkiye teknoloji siber çip yapay zeka',
+        ]
+        if negative_boost:
+            social_queries.append('Türkiye sanayi teknoloji kriz iflas soruşturma siber saldırı')
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
+            futures = [ex.submit(ddgs_text, q, "tr-tr", 20) for q in social_queries]
+            for f in concurrent.futures.as_completed(futures):
+                try: records.extend(f.result())
+                except Exception: pass
 
-    # 4) Yunanistan: 4 paralel hedefli sorgu
     if include_greek:
-        greek = fetch_greek_defense_sources(when=when, max_per_query=50)
+        greek = fetch_greek_defense_sources(when=when, max_per_query=60)
         records.extend([r for r in greek if is_greek_turkish_defense({
             "domain": domain_of(r.get("url", "")),
             "title": r.get("title", ""),
             "snippet": r.get("snippet", ""),
         })])
 
-    # 5) Genel yabancı basın yalnızca kullanıcı açarsa
     if include_global:
         gdelt_queries = [
             '(industry OR manufacturing OR technology) (Turkey OR Türkiye)',
             '(defense OR aerospace OR automotive OR semiconductor) (Turkey OR Türkiye)',
         ]
-        if negative_boost:
-            gdelt_queries.append('(Turkey OR Türkiye) (factory OR defense OR technology) (crisis OR shutdown OR sanction OR cyberattack OR cancellation)')
-        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as ex:
-            futures = [ex.submit(gdelt_news, q, 60, when) for q in gdelt_queries]
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as ex:
+            futures = [ex.submit(gdelt_news, q, 80, when) for q in gdelt_queries]
             for f in concurrent.futures.as_completed(futures):
-                try:
-                    records.extend(f.result())
-                except Exception:
-                    pass
+                try: records.extend(f.result())
+                except Exception: pass
 
-    normalized = []
-    seen_urls, seen_titles = set(), set()
+    normalized, seen_urls, seen_titles = [], set(), set()
+    stats = {"ham": len(records), "zaman": 0, "konu": 0, "kaynak": 0, "yunan": 0}
     for r in records:
         url = r.get("url") or r.get("url_mobile") or ""
         title = r.get("title") or ""
-        if not url or not title:
-            continue
+        if not url or not title: continue
         dt = parse_dt(r.get("date") or r.get("seendate") or r.get("publishedAt"))
         if dt and dt < cutoff:
-            continue
+            stats["zaman"] += 1; continue
         if time_hours <= 3 and not dt:
-            # Anlık modda yayın zamanı bilinmeyen kayıtları göstermiyoruz;
-            # aksi halde eski haberler 3 saatlik akışa sızabiliyor.
-            continue
+            stats["zaman"] += 1; continue
+
+        source_url = r.get("source_url") or ""
+        candidate_domain = domain_of(source_url) or domain_of(url)
+        snippet = r.get("body") or r.get("snippet") or ""
+        if not is_relevant_industry_tech(title, snippet, user_terms):
+            stats["konu"] += 1; continue
+        if not is_turkish_priority_source(candidate_domain):
+            stats["kaynak"] += 1; continue
+        if any(x in candidate_domain for x in GR_DOMAINS) and not is_greek_turkish_defense({"domain": candidate_domain, "title": title, "snippet": snippet}):
+            stats["yunan"] += 1; continue
+
         nt = normalize_title(title)
         title_key = " ".join(nt.split()[:10])
-        if url in seen_urls or title_key in seen_titles:
-            continue
-        source_url = r.get("source_url") or ""
-        effective_domain = domain_of(url)
-        if "news.google.com" in effective_domain and source_url:
-            effective_domain = domain_of(source_url)
-
-        # V5: konu dışı haberleri burada kesiyoruz. Böylece spor, hava durumu,
-        # genel magazin/gündem vb. sonuçlar Türk bir kaynaktan gelmiş olsa bile
-        # haber havuzuna giremiyor.
-        snippet_candidate = r.get("body") or r.get("snippet") or ""
-        if not is_relevant_industry_tech(title, snippet_candidate):
-            continue
-
-        # Genel yabancı kaynakları kapalı modda kesin olarak dışarıda bırak.
-        candidate_domain = effective_domain or domain_of(url)
-        is_gr = any(x in candidate_domain for x in GR_DOMAINS)
-        if not is_turkish_priority_source(candidate_domain):
-            continue
-        if is_gr:
-            probe = {"domain": candidate_domain, "title": title, "snippet": snippet_candidate}
-            if not is_greek_turkish_defense(probe):
-                continue
-
+        if url in seen_urls or title_key in seen_titles: continue
         item = {
-            "title": html.unescape(title),
-            "url": url,
-            "published_dt": dt,
-            "published": fmt_dt(dt),
-            "source": str(r.get("source") or r.get("domain") or effective_domain or "Açık Kaynak"),
-            "domain": effective_domain,
-            "snippet": html.unescape(r.get("body") or r.get("snippet") or ""),
+            "title": html.unescape(title), "url": url, "published_dt": dt,
+            "published": fmt_dt(dt), "source": str(r.get("source") or candidate_domain or "Açık Kaynak"),
+            "domain": candidate_domain, "snippet": html.unescape(snippet),
             "image_url": r.get("image") or r.get("socialimage") or "",
+            "Kaynak_Grubu": source_group(candidate_domain),
         }
-        item["Kaynak_Grubu"] = source_group(source_url or url)
-        if item["Kaynak_Grubu"].startswith("🇬🇷") and not is_greek_turkish_defense(item):
-            continue
-        normalized.append(item)
-        seen_urls.add(url)
-        seen_titles.add(title_key)
+        normalized.append(item); seen_urls.add(url); seen_titles.add(title_key)
 
-    # Redirect çözümünü sadece ilk adaylara uygula.
-    for item in normalized[:max_results * 2]:
-        if "news.google.com" in domain_of(item["url"]):
-            resolved = resolve_google_news_url(item["url"], item.get("domain", ""))
-            if resolved:
-                item["url"] = resolved
-                item["domain"] = domain_of(resolved) or item["domain"]
-                if source_group(resolved) != "🌍 Diğer Yabancı":
-                    item["Kaynak_Grubu"] = source_group(resolved)
-
-    normalized.sort(
-        key=lambda x: (
-            x["published_dt"] or datetime.min.replace(tzinfo=timezone.utc),
-            source_priority(x["url"]),
-        ), reverse=True
-    )
-    return normalized[:max_results]
+    normalized.sort(key=lambda x: (x["published_dt"] or datetime.min.replace(tzinfo=timezone.utc), source_priority(x["url"])), reverse=True)
+    return normalized[:max_results], stats
 
 # -------------------------
 # DOCX
@@ -1074,7 +1032,7 @@ with st.sidebar:
     )
     enrich = st.checkbox(
         "Haber sayfasından tam metin + görsel çek",
-        value=True,
+        value=False,
     )
 
     period_label = st.selectbox(
@@ -1116,11 +1074,16 @@ if "df" not in st.session_state:
 if "last_query" not in st.session_state:
     st.session_state.last_query = ""
 
-should_run = run or (st.session_state.df is None and auto_start)
+if "boot_scan_done" not in st.session_state:
+    st.session_state.boot_scan_done = False
+
+should_run = run or (auto_start and not st.session_state.boot_scan_done)
+if should_run:
+    st.session_state.boot_scan_done = True
 
 if should_run:
     with st.spinner("Türk basını + Türk teknoloji/savunma medyası + Yunan/Türk savunma + sosyal açık kaynaklar taranıyor..."):
-        raw = fetch_news(
+        raw, scan_stats = fetch_news(
             query,
             time_hours=hours,
             max_results=max_news,
@@ -1189,8 +1152,12 @@ if should_run:
 
 df = st.session_state.df
 
+if "scan_stats" in locals() and should_run:
+    with st.expander("🧪 Tarama teşhisi", expanded=False):
+        st.write(scan_stats)
+
 if df is None:
-    st.info("Soldaki ayarlardan sorguyu belirleyip **TARAMAYI BAŞLAT / YENİLE** düğmesine basın.")
+    st.info("Tarama başlatılmadı. **TARAMAYI BAŞLAT / YENİLE** düğmesine basın veya otomatik başlangıcı açık bırakın.")
 elif df.empty:
     st.warning("Seçilen zaman penceresinde haber bulunamadı.")
 else:
