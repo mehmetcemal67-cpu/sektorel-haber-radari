@@ -3,7 +3,7 @@ import pandas as pd
 import requests
 import concurrent.futures
 import xml.etree.ElementTree as ET
-import re, html
+import re, html, json
 from datetime import datetime, timedelta, timezone, date
 from urllib.parse import urlparse
 from email.utils import parsedate_to_datetime
@@ -339,7 +339,9 @@ def normalize_rows(raw, cutoff, mode, user_query):
         sentiment,score,status,neg,risk,cat=classify(title,snippet)
         out.append({
             'Tarih_dt':dt,'Tarih':fmt_dt(dt),'Başlık':title,'İçerik_Özeti':snippet or title,
-            'URL':url,'Kaynak':src or d or 'Açık Kaynak','Domain':d,'Kaynak_Grubu':source_group(d),
+            'URL':url,'RSS_URL':url,'Kaynak':(src if norm(src) not in {'google haberler','google news','google'} else (d or src or 'Açık Kaynak')),
+            'Yayıncı_URL':(r.get('source_url') or '').strip(),'Yayıncı':src or d or 'Açık Kaynak',
+            'Domain':d,'Kaynak_Grubu':source_group(d),
             'Kategori':cat,'Duygu':sentiment,'Skor':score,'Risk_Durumu':status,
             'Negatif_Sinyaller':neg,'Risk_Sinyalleri':risk,'Seç':False,'Görsel_URL':'','_mode':mode
         })
@@ -359,84 +361,186 @@ def dedupe(rows):
 # Tarama motoru korunur. Yalnızca seçilen haberlerin rapora aktarılması değiştirilmiştir.
 # -----------------------------
 @st.cache_data(ttl=1800, show_spinner=False)
-def article_detail(url):
+@st.cache_data(ttl=1800, show_spinner=False)
+def article_detail(row):
     """
-    RSS/Google News URL'si verilse bile gerçek haber sayfasını bulmaya çalışır.
-    Ardından gerçek yayıncı, başlık, canonical URL, tarih, haber gövdesi ve ana görseli çıkarır.
+    Seçilen kayıt için gerçek yayıncı URL'sini ve gerçek haber sayfasını bulur.
+    Google News'in kodlanmış RSS bağlantıları doğrudan yayıncı adresi değilse
+    sırasıyla decoder, HTTP redirect, GDELT ve DuckDuckGo üzerinden çözülür.
     """
+    if isinstance(row, str):
+        row = {"URL": row}
+
+    original_url = str(row.get("URL") or "").strip()
+    fallback_title = str(row.get("Başlık") or "").strip()
+    fallback_snippet = str(row.get("İçerik_Özeti") or "").strip()
+    publisher_url = str(row.get("Yayıncı_URL") or "").strip()
+    publisher_name = str(row.get("Yayıncı") or row.get("Kaynak") or "").strip()
+
     out = {
-        "title": "",
-        "canonical": url or "",
-        "published": "",
-        "text": "",
+        "title": fallback_title,
+        "canonical": original_url,
+        "published": str(row.get("Tarih") or ""),
+        "text": fallback_snippet,
         "images": [],
-        "source": "",
+        "source": publisher_name,
     }
-    if not url:
-        return out
 
-    try:
-        r = requests.get(
-            url,
-            headers={
-                **HEADERS,
-                "Accept-Language": "tr-TR,tr;q=0.9,en;q=0.7",
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            },
-            timeout=15,
-            allow_redirects=True,
-        )
+    def is_google(u):
+        try:
+            h = urlparse(u).netloc.lower()
+            return h == "news.google.com" or h.endswith(".google.com")
+        except Exception:
+            return False
 
-        # Google News redirect bazen son URL'ye yönlenir.
-        # Yönlenmediyse HTML içinden gerçek hedef URL'yi arıyoruz.
-        soup = BeautifulSoup(r.text or "", "html.parser") if r.text else BeautifulSoup("", "html.parser")
+    def valid_article_url(u):
+        if not u or not u.startswith("http"):
+            return False
+        h = urlparse(u).netloc.lower()
+        return h not in {"news.google.com", "www.google.com", "google.com"} and "google.com" not in h
 
-        def first_url():
-            # canonical
+    def fetch_page(u):
+        try:
+            rr = requests.get(
+                u,
+                headers={
+                    **HEADERS,
+                    "Accept-Language": "tr-TR,tr;q=0.9,en;q=0.7",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                },
+                timeout=12,
+                allow_redirects=True,
+            )
+            if rr.status_code >= 400 or not rr.text:
+                return None, None
+            return rr, BeautifulSoup(rr.text, "html.parser")
+        except Exception:
+            return None, None
+
+    def decode_with_package(u):
+        try:
+            from googlenewsdecoder import gnewsdecoder
+            result = gnewsdecoder(u, interval=0.2)
+            if isinstance(result, dict) and result.get("status"):
+                decoded = result.get("decoded_url")
+                if valid_article_url(decoded):
+                    return decoded
+        except Exception:
+            pass
+        return ""
+
+    def decode_with_http(u):
+        rr, soup = fetch_page(u)
+        if rr and valid_article_url(rr.url):
+            return rr.url
+
+        if soup:
+            for attrs in (
+                {"property": "og:url"},
+                {"name": "twitter:url"},
+            ):
+                tag = soup.find("meta", attrs=attrs)
+                if tag and valid_article_url(tag.get("content", "")):
+                    return requests.compat.urljoin(rr.url, tag["content"])
+
             tag = soup.find("link", rel=lambda x: x and "canonical" in str(x).lower())
-            if tag and tag.get("href"):
-                return requests.compat.urljoin(r.url or url, tag["href"])
+            if tag and valid_article_url(requests.compat.urljoin(rr.url, tag.get("href", ""))):
+                return requests.compat.urljoin(rr.url, tag.get("href"))
 
-            # og:url
-            tag = soup.find("meta", attrs={"property": "og:url"})
-            if tag and tag.get("content"):
-                return requests.compat.urljoin(r.url or url, tag["content"])
+        return ""
 
-            # Google News sayfasındaki linklerde olası gerçek yayıncı bağlantısı
-            for a in soup.find_all("a", href=True):
-                href = requests.compat.urljoin(r.url or url, a["href"])
-                host = urlparse(href).netloc.lower()
-                if host and "news.google." not in host and "google.com" not in host:
-                    if href.startswith("http"):
-                        return href
-            return r.url or url
+    def decode_with_search(title):
+        if not title:
+            return ""
 
-        real_url = first_url()
-        if real_url and real_url != r.url and "news.google." in (r.url or "").lower():
+        # Önce GDELT: sonuçlar doğrudan yayıncı URL'si verir.
+        try:
+            q = '"' + title.replace('"', " ")[:240] + '"'
+            r = requests.get(
+                "https://api.gdeltproject.org/api/v2/doc/doc",
+                params={
+                    "query": q,
+                    "mode": "artlist",
+                    "maxrecords": 20,
+                    "format": "json",
+                    "sort": "HybridRel",
+                    "timespan": "30d",
+                },
+                headers=HEADERS,
+                timeout=8,
+            )
+            if r.ok:
+                arts = r.json().get("articles", []) or []
+                target = norm(title)
+                for art in arts:
+                    u = art.get("url") or ""
+                    t = norm(art.get("title") or "")
+                    if valid_article_url(u):
+                        # Exact/near exact başlık eşleşmesi öncelikli.
+                        if target and (target in t or t in target):
+                            return u
+                for art in arts:
+                    u = art.get("url") or ""
+                    if valid_article_url(u):
+                        return u
+        except Exception:
+            pass
+
+        # Son fallback: DuckDuckGo doğrudan yayıncı URL'si döndürebilir.
+        try:
+            from ddgs import DDGS
+        except Exception:
             try:
-                rr = requests.get(
-                    real_url,
-                    headers={**HEADERS, "Accept-Language": "tr-TR,tr;q=0.9,en;q=0.7"},
-                    timeout=15,
-                    allow_redirects=True,
-                )
-                if rr.status_code == 200:
-                    r = rr
-                    soup = BeautifulSoup(rr.text, "html.parser")
+                from duckduckgo_search import DDGS
+            except Exception:
+                DDGS = None
+
+        if DDGS:
+            try:
+                with DDGS() as d:
+                    results = list(d.text(f'"{title}"', region="tr-tr", timelimit="m", max_results=8))
+                target = norm(title)
+                for item in results:
+                    u = item.get("href") or item.get("url") or ""
+                    t = norm(item.get("title") or "")
+                    if valid_article_url(u) and target and (target in t or t in target):
+                        return u
+                for item in results:
+                    u = item.get("href") or item.get("url") or ""
+                    if valid_article_url(u):
+                        return u
             except Exception:
                 pass
+
+        return ""
+
+    # 1) Google News bağlantısını çöz.
+    real_url = ""
+    if is_google(original_url):
+        real_url = decode_with_package(original_url)
+        if not real_url:
+            real_url = decode_with_http(original_url)
+        if not real_url:
+            real_url = decode_with_search(fallback_title)
+    elif valid_article_url(original_url):
+        real_url = original_url
+    else:
+        real_url = decode_with_search(fallback_title)
+
+    # 2) Gerçek sayfayı indir.
+    rr, soup = fetch_page(real_url) if real_url else (None, None)
+
+    if rr and soup:
+        out["canonical"] = real_url or rr.url
 
         # Canonical
         can = soup.find("link", rel=lambda x: x and "canonical" in str(x).lower())
         if can and can.get("href"):
-            out["canonical"] = requests.compat.urljoin(r.url, can["href"])
+            out["canonical"] = requests.compat.urljoin(rr.url, can["href"])
         else:
             ogurl = soup.find("meta", attrs={"property": "og:url"})
-            out["canonical"] = (
-                requests.compat.urljoin(r.url, ogurl["content"])
-                if ogurl and ogurl.get("content")
-                else r.url or url
-            )
+            if ogurl and ogurl.get("content"):
+                out["canonical"] = requests.compat.urljoin(rr.url, ogurl["content"])
 
         # Başlık
         for attrs in (
@@ -450,20 +554,6 @@ def article_detail(url):
         if not out["title"] and soup.title:
             out["title"] = soup.title.get_text(" ", strip=True)
 
-        # Tarih
-        for attrs in (
-            {"property": "article:published_time"},
-            {"property": "article:modified_time"},
-            {"name": "date"},
-            {"name": "pubdate"},
-            {"name": "publish-date"},
-            {"itemprop": "datePublished"},
-        ):
-            t = soup.find("meta", attrs=attrs)
-            if t and t.get("content"):
-                out["published"] = t["content"].strip()
-                break
-
         # Yayıncı
         for attrs in (
             {"property": "og:site_name"},
@@ -474,25 +564,34 @@ def article_detail(url):
                 out["source"] = t["content"].strip()
                 break
 
+        # Tarih
+        for attrs in (
+            {"property": "article:published_time"},
+            {"itemprop": "datePublished"},
+            {"name": "date"},
+            {"name": "pubdate"},
+        ):
+            t = soup.find("meta", attrs=attrs)
+            if t and t.get("content"):
+                out["published"] = t["content"].strip()
+                break
+
         bodies = []
         images = []
 
-        # JSON-LD: NewsArticle / Article en güvenilir kaynaklardan biri.
         def walk_json(obj):
             if isinstance(obj, dict):
                 typ = str(obj.get("@type", "")).lower()
                 if "article" in typ or "news" in typ:
-                    if obj.get("headline") and not out["title"]:
+                    if obj.get("headline"):
                         out["title"] = str(obj["headline"])
-                    if obj.get("datePublished") and not out["published"]:
+                    if obj.get("datePublished"):
                         out["published"] = str(obj["datePublished"])
                     if obj.get("articleBody"):
                         bodies.append(str(obj["articleBody"]))
-
-                    publisher = obj.get("publisher")
-                    if isinstance(publisher, dict) and publisher.get("name") and not out["source"]:
-                        out["source"] = str(publisher["name"])
-
+                    pub = obj.get("publisher")
+                    if isinstance(pub, dict) and pub.get("name"):
+                        out["source"] = str(pub["name"])
                     im = obj.get("image") or obj.get("thumbnailUrl")
                     if isinstance(im, str):
                         images.append(im)
@@ -504,24 +603,20 @@ def article_detail(url):
                                 images.append(str(x["url"]))
                     elif isinstance(im, dict) and im.get("url"):
                         images.append(str(im["url"]))
-
                 for v in obj.values():
                     walk_json(v)
             elif isinstance(obj, list):
                 for x in obj:
                     walk_json(x)
 
-        for tag in soup.find_all(
-            "script", attrs={"type": re.compile(r"application/ld\+json", re.I)}
-        ):
+        for tag in soup.find_all("script", attrs={"type": re.compile(r"application/ld\+json", re.I)}):
             try:
                 raw = tag.string or tag.get_text()
                 if raw:
                     walk_json(json.loads(raw))
             except Exception:
-                continue
+                pass
 
-        # OG/Twitter görsel
         for attrs in (
             {"property": "og:image"},
             {"property": "og:image:url"},
@@ -530,9 +625,8 @@ def article_detail(url):
         ):
             t = soup.find("meta", attrs=attrs)
             if t and t.get("content"):
-                images.append(requests.compat.urljoin(r.url, t["content"].strip()))
+                images.append(requests.compat.urljoin(rr.url, t["content"]))
 
-        # Haber gövdesi için güçlü seçiciler
         selectors = [
             '[itemprop="articleBody"]',
             "article",
@@ -546,7 +640,6 @@ def article_detail(url):
             '[class*="content-body"]',
             "main",
         ]
-
         for selector in selectors:
             for node in soup.select(selector)[:4]:
                 parts = []
@@ -559,69 +652,64 @@ def article_detail(url):
                     if len(candidate) >= 250:
                         bodies.append(candidate)
 
-        # Son çare: anlamlı p etiketleri
         if not bodies:
             for p in soup.find_all("p"):
                 txt = p.get_text(" ", strip=True)
                 if len(txt) >= 45:
                     bodies.append(txt)
 
-        # Sayfadaki görseller
         for img in soup.find_all("img"):
             for attr in ("src", "data-src", "data-lazy-src", "data-original", "data-image"):
                 value = img.get(attr)
                 if value:
-                    images.append(requests.compat.urljoin(r.url, value))
+                    images.append(requests.compat.urljoin(rr.url, value))
 
-            srcset = img.get("srcset") or img.get("data-srcset")
-            if srcset:
-                for item in srcset.split(","):
-                    value = item.strip().split(" ")[0]
-                    if value:
-                        images.append(requests.compat.urljoin(r.url, value))
+        # Temizle
+        seen=set()
+        out["images"]=[]
+        for u in images:
+            if not isinstance(u,str): continue
+            u=u.strip()
+            if not u or u in seen: continue
+            if any(x in u.lower() for x in ("favicon","sprite","avatar","logo")): continue
+            seen.add(u); out["images"].append(u)
+            if len(out["images"]) >= 20: break
 
-        # Görsel adaylarını temizle
-        clean_images = []
-        seen_images = set()
-        for value in images:
-            if not isinstance(value, str):
-                continue
-            value = value.strip()
-            if not value or value in seen_images:
-                continue
-            low = value.lower()
-            if any(x in low for x in ("favicon", "sprite", "avatar", "logo")):
-                continue
-            seen_images.add(value)
-            clean_images.append(value)
-        out["images"] = clean_images[:30]
-
-        # Metinleri temizle ve birleştir
-        clean_bodies = []
-        seen_bodies = set()
+        texts=[]
+        seen_t=set()
         for body in bodies:
-            body = re.sub(r"\s+", " ", html.unescape(body)).strip()
-            if len(body) < 120:
-                continue
-            key = norm(body[:600])
-            if key in seen_bodies:
-                continue
-            seen_bodies.add(key)
-            clean_bodies.append(body)
+            body=re.sub(r"\s+"," ",html.unescape(body)).strip()
+            if len(body)<120: continue
+            key=norm(body[:700])
+            if key in seen_t: continue
+            seen_t.add(key); texts.append(body)
+        texts.sort(key=len, reverse=True)
+        if texts:
+            out["text"]=" ".join(texts[:4])[:18000]
 
-        clean_bodies.sort(key=len, reverse=True)
-        out["text"] = " ".join(clean_bodies[:4])[:20000]
+    # 3) Sayfa erişilemediyse bile RSS kaydını çöp etmiyoruz.
+    # Generic Google Haberler adını asla gerçek yayıncı olarak rapora yazma.
+    generic = {"google haberler","google news","google","google news rss","rss"}
+    if norm(out["source"]) in generic:
+        if publisher_name and norm(publisher_name) not in generic:
+            out["source"] = publisher_name
+        elif publisher_url:
+            out["source"] = urlparse(publisher_url).netloc.replace("www.", "")
+        else:
+            out["source"] = "Açık Kaynak"
 
-        # Gerçek yayıncı adı hâlâ yoksa domain'den al
-        if not out["source"]:
-            host = urlparse(out["canonical"]).netloc.lower().replace("www.", "")
-            out["source"] = host
+    # Başlık generic ise snippet/ekran başlığı kullan.
+    if norm(out["title"]) in generic or not out["title"]:
+        out["title"] = fallback_title or fallback_snippet
 
-        return out
+    if not out["text"] or len(out["text"]) < 250:
+        out["text"] = fallback_snippet or out["title"]
 
-    except Exception:
-        return out
+    # Eğer gerçek URL çözüldüyse onu kullan; çözülmediyse Google News linkini rapora koyma.
+    if not valid_article_url(out["canonical"]):
+        out["canonical"] = publisher_url or original_url
 
+    return out
 
 def _download_report_image(url):
     if not url:
@@ -684,20 +772,24 @@ def _word_hyperlink(paragraph, url, label):
 
 
 def _real_source(row, detail, real_url):
-    # Gerçek haber sayfasından gelen site adı önceliklidir.
-    if detail.get("source"):
-        source = detail["source"].strip()
-        if source.lower() not in {"google news", "google"}:
-            return source
+    generic = {"google haberler", "google news", "google", "google news rss", "rss"}
 
-    # Ekrandaki kaynak adı Google News ise onu kullanma.
-    source = str(row.get("Kaynak", "") or "").strip()
-    if source and source.lower() not in {"google news", "google news rss", "rss"}:
-        return source
+    for value in (
+        detail.get("source"),
+        row.get("Yayıncı"),
+        row.get("Kaynak"),
+    ):
+        value = str(value or "").strip()
+        if value and norm(value) not in generic:
+            return value
 
-    host = urlparse(real_url).netloc.lower().replace("www.", "")
-    return host or "Açık Kaynak"
+    for value in (row.get("Yayıncı_URL"), real_url):
+        value = str(value or "").strip()
+        if valid_host := (urlparse(value).netloc.lower().replace("www.", "") if value else ""):
+            if "google.com" not in valid_host:
+                return valid_host
 
+    return "Açık Kaynak"
 
 def _expanded_report_text(title, body):
     body = re.sub(r"\s+", " ", (body or "")).strip()
@@ -776,9 +868,9 @@ def make_docx(rows):
 
     # Haberler
     for i, row in enumerate(rows, 1):
-        detail = article_detail(row.get("URL", ""))
+        detail = article_detail(row)
 
-        real_url = detail.get("canonical") or row.get("URL", "")
+        real_url = detail.get("canonical") or row.get("Yayıncı_URL") or row.get("URL", "")
         title = (detail.get("title") or row.get("Başlık") or "").strip()
         source = _real_source(row, detail, real_url)
         body = detail.get("text") or row.get("İçerik_Özeti") or title
@@ -797,7 +889,7 @@ def make_docx(rows):
             f'“{source}” isimli internet sitesinde, “{title}” başlığıyla bir haber '
             "yayımlanmıştır. ("
         )
-        _word_hyperlink(p, real_url, "Haber Linki")
+        _word_hyperlink(p, real_url, real_url if real_url else "Haber Linki")
         p.add_run(") Söz konusu haber içeriğinde, ")
         p.add_run(expanded)
 
@@ -832,7 +924,7 @@ def make_docx(rows):
             lp.alignment = WD_ALIGN_PARAGRAPH.CENTER
             lp.paragraph_format.space_after = Pt(12)
             lp.add_run("(")
-            _word_hyperlink(lp, image_url, "Görsel Linki")
+            _word_hyperlink(lp, image_url, image_url if image_url else "Görsel Linki")
             lp.add_run(")")
         else:
             lp = doc.add_paragraph()
