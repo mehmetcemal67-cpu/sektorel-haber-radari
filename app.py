@@ -1,5 +1,9 @@
 import streamlit as st
 import feedparser
+from datetime import date, timedelta
+import feedparser
+import urllib.parse
+from email.utils import parsedate_to_datetime
 import urllib.parse
 import pandas as pd
 import requests
@@ -248,9 +252,9 @@ with st.sidebar:
     
     c1, c2 = st.columns(2)
     with c1:
-        s_date = st.date_input("Başlangıç", datetime.date.today() - datetime.timedelta(days=7))
+        s_date = st.date_input("Başlangıç", date.today() - timedelta(days=7))
     with c2:
-        e_date = st.date_input("Bitiş", datetime.date.today())
+        e_date = st.date_input("Bitiş", date.today())
 
     # Bugüne ait haberlerin kaçmaması için +1 gün ekleme
     api_e_date = e_date + datetime.timedelta(days=1)
