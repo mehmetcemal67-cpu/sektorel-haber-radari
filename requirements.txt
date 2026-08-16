@@ -1,7 +1,6 @@
-streamlit
-pandas
-requests
-beautifulsoup4
-pillow
-python-docx
-ddgs
+streamlit>=1.40
+pandas>=2.0
+requests>=2.31
+beautifulsoup4>=4.12
+pillow>=10.0
+python-docx>=1.1
