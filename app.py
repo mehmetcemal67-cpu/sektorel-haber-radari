@@ -151,7 +151,43 @@ def parse_dt(v):
         return d.astimezone(timezone.utc)
     except: return None
 
+def _to_utc_datetime(value):
+    """datetime / pandas.Timestamp / string değerlerini güvenli biçimde UTC-aware datetime'a çevirir."""
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except Exception:
+        pass
+
+    try:
+        if isinstance(value, pd.Timestamp):
+            ts = value
+            if ts.tzinfo is None:
+                ts = ts.tz_localize('UTC')
+            else:
+                ts = ts.tz_convert('UTC')
+            return ts.to_pydatetime()
+    except Exception:
+        pass
+
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+
+    try:
+        ts = pd.to_datetime(value, utc=True, errors='coerce')
+        if pd.isna(ts):
+            return None
+        return ts.to_pydatetime()
+    except Exception:
+        return None
+
+
 def fmt_dt(d):
+    d = _to_utc_datetime(d)
     return d.astimezone().strftime('%d.%m.%Y %H:%M:%S') if d else 'Tarih/saat bilinmiyor'
 
 def infer_source(source_name='',source_url='',article_url=''):
@@ -421,6 +457,10 @@ def dedupe(rows):
 
 def enrich_rows(rows):
     # Haber satırlarını analitik katmanla zenginleştirir; ağ çağrısı yapmaz.
+    # DataFrame -> dict dönüşümünde datetime değerleri pandas.Timestamp'a dönüşebilir.
+    # Olay zaman çizelgesinde tz-naive/tz-aware çakışmasını önlemek için hepsini UTC datetime'a normalize et.
+    for r in rows:
+        r['Tarih_dt'] = _to_utc_datetime(r.get('Tarih_dt'))
     for r in rows:
         sentiment,score,status,neg,risk,cat,reasons=classify(r.get('Başlık',''),r.get('İçerik_Özeti',''),r.get('Domain',''))
         r['Duygu']=sentiment; r['Risk_Skoru']=score; r['Risk_Durumu']=status
@@ -445,7 +485,11 @@ def enrich_rows(rows):
     for r in rows:
         g=groups.get(r['Olay_ID'],[])
         r['Olay_Kaynak_Sayisi']=len({x.get('Domain') for x in g if x.get('Domain')})
-        times=[x.get('Tarih_dt') for x in g if x.get('Tarih_dt')]
+        times=[]
+        for x in g:
+            dt_value=_to_utc_datetime(x.get('Tarih_dt'))
+            if dt_value is not None:
+                times.append(dt_value)
         r['Olay_İlk_Görülme']=fmt_dt(min(times)) if times else r.get('Tarih','')
         r['Olay_Son_Görülme']=fmt_dt(max(times)) if times else r.get('Tarih','')
         r['Doğrulama']=verification_status(r,rows)
@@ -1146,7 +1190,11 @@ if rows is None:
 else:
     df=pd.DataFrame(rows)
     if not df.empty:
-        df=enrich_rows(df.to_dict('records')); df=pd.DataFrame(df).sort_values('Tarih_dt',ascending=False,na_position='last').reset_index(drop=True)
+        df=enrich_rows(df.to_dict('records'))
+        df=pd.DataFrame(df)
+        # Pandas tarafında da tek tip UTC zaman kolonu kullan.
+        df['Tarih_dt']=pd.to_datetime(df['Tarih_dt'],utc=True,errors='coerce')
+        df=df.sort_values('Tarih_dt',ascending=False,na_position='last').reset_index(drop=True)
         st.session_state.rows=df.to_dict('records')
     st.caption(f'Son tarama: {st.session_state.scan_time.strftime("%d.%m.%Y %H:%M:%S") if st.session_state.scan_time else "-"}')
     with st.expander('🧪 Tarama teşhisi',False): st.json(st.session_state.stats)
