@@ -1,20 +1,17 @@
 import streamlit as st
 import feedparser
-from datetime import date, timedelta
-import feedparser
-import urllib.parse
-from email.utils import parsedate_to_datetime
 import urllib.parse
 import pandas as pd
 import requests
+import datetime
+from datetime import date, datetime, timedelta
+from email.utils import parsedate_to_datetime
 from io import BytesIO
 from docx import Document
 from docx.shared import Pt, RGBColor, Inches
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
-import datetime
-
 # --- ARAYÜZ AYARLARI ---
 st.set_page_config(
     page_title="Açık Kaynak Tarama & Manipülasyon Radarı",
@@ -250,6 +247,7 @@ with st.sidebar:
         help="Sorgu karakter limiti aşılmayacak şekilde ana kavramlarla optimize edilmiştir."
     )
     
+    # Tarih Seçim Alanı
     c1, c2 = st.columns(2)
     with c1:
         s_date = st.date_input("Başlangıç", date.today() - timedelta(days=7))
