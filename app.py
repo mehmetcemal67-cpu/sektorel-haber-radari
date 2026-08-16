@@ -1143,6 +1143,8 @@ with st.sidebar:
     greek=st.checkbox('🇬🇷 Yunan medyası — yalnızca Türk savunma sanayii',True)
     social=st.checkbox('📱 Türk açık sosyal / indeks kaynakları',True)
     global_on=st.checkbox('🌍 Global basın (opsiyonel)',False)
+    instant_alerts=st.checkbox('🔔 Tarama sırasında negatif/yüksek risk bildirimi göster',True,
+                               help='Tarama devam ederken yeni negatif veya yüksek riskli içerik yakalanırsa ekranda anlık bildirim gösterir.')
     period=st.selectbox('🕒 Haber dönemi',['⚡ Son 3 saat','📅 Son 24 saat','📆 Son 48 saat','📆 Son 1 hafta','🗓️ Son 1 ay'],index=1)
     hours={'⚡ Son 3 saat':3,'📅 Son 24 saat':24,'📆 Son 48 saat':48,'📆 Son 1 hafta':168,'🗓️ Son 1 ay':720}[period]
     run=st.button('🔍 TARAMAYI BAŞLAT / YENİLE',type='primary',use_container_width=True)
@@ -1150,6 +1152,7 @@ with st.sidebar:
 if 'rows' not in st.session_state: st.session_state.rows=None
 if 'scan_time' not in st.session_state: st.session_state.scan_time=None
 if 'stats' not in st.session_state: st.session_state.stats={}
+if 'last_scan_alerts' not in st.session_state: st.session_state.last_scan_alerts=[]
 if 'docx_bytes' not in st.session_state: st.session_state.docx_bytes=None
 if 'note_bytes' not in st.session_state: st.session_state.note_bytes=None
 
@@ -1165,24 +1168,98 @@ if run:
         f'(Turkey OR Turkish) (Baykar OR ASELSAN OR TUSAŞ OR ROKETSAN OR HAVELSAN OR KAAN OR drone OR missile) timespan:{when}'
     ],'global'))
     all_rows=[]; stat={'Ham sonuç':0,'Zaman dışı':0,'Konu dışı':0,'Yunan dışı':0,'Kaynak dışı':0,'Sonuç':0,'Olay':0}
-    placeholder=st.empty(); status_box=st.status('🔎 Tarama başlıyor...',expanded=True)
+    placeholder=st.empty()
+    live_alarm_box=st.empty()
+    status_box=st.status('🔎 Tarama başlıyor...',expanded=True)
+
+    # Bu taramadaki bildirimleri tekilleştirmek için.
+    alerted_keys=set()
+    live_alerts=[]
+
+    def _alert_key(row):
+        return row.get('URL') or title_key(row.get('Başlık',''))
+
+    def _push_live_alert(row):
+        """Tarama devam ederken toast + kalıcı canlı alarm listesi üretir."""
+        key=_alert_key(row)
+        if not key or key in alerted_keys:
+            return
+        alerted_keys.add(key)
+
+        risk_score=int(row.get('Risk_Skoru', row.get('Skor', 0)) or 0)
+        is_high=(row.get('Risk_Durumu')=='Yüksek Risk' or risk_score>=70)
+        icon='🚨' if is_high else '⚠️'
+        label='YÜKSEK RİSK' if is_high else 'NEGATİF'
+        title=str(row.get('Başlık','')).strip()
+        source=str(row.get('Kaynak','Açık Kaynak')).strip()
+        when_text=str(row.get('Tarih',''))
+
+        live_alerts.insert(0,{
+            'Tarih':when_text,
+            'Seviye':label,
+            'Kaynak':source,
+            'Başlık':title,
+            'Risk':risk_score,
+            'URL':row.get('URL','')
+        })
+        del live_alerts[20:]
+
+        if instant_alerts:
+            # Streamlit toast kısa süreli anlık bildirimdir.
+            st.toast(
+                f'{icon} {label}: {title[:110]}\n{source} · Risk {risk_score}/100',
+                icon='🚨' if is_high else '⚠️'
+            )
+
+        # Toast kaybolsa bile tarama boyunca ekranda kalıcı canlı alarm paneli.
+        if live_alerts:
+            live_alarm_box.warning(
+                f'🔔 Tarama devam ediyor — {len(live_alerts)} yeni negatif/riskli içerik yakalandı. '
+                f'Son alarm: {live_alerts[0]["Başlık"][:120]}'
+            )
+
     for idx,(label,queries,mode) in enumerate(batches):
         status_box.write(f'{label} — {len(queries)} paralel arama')
         with concurrent.futures.ThreadPoolExecutor(max_workers=min(8,len(queries))) as ex:
-            fs=[ex.submit(rss,q) for q in queries]; raw=[]
+            fs=[ex.submit(rss,q) for q in queries]
+            raw=[]
             for f in concurrent.futures.as_completed(fs):
-                try: raw.extend(f.result())
-                except: pass
+                try:
+                    chunk=f.result() or []
+                    raw.extend(chunk)
+
+                    # Sorgu tamamlandığı anda, tüm batch'in bitmesini beklemeden
+                    # negatif/yüksek risk adaylarını kontrol et.
+                    if instant_alerts and chunk:
+                        chunk_rows,_chunk_reasons=normalize_rows(chunk,cutoff,mode,query)
+                        for ar in chunk_rows:
+                            if ar.get('Duygu')=='Negatif' or ar.get('Risk_Durumu')=='Yüksek Risk':
+                                _push_live_alert(ar)
+                except Exception:
+                    pass
+
         stat['Ham sonuç']+=len(raw)
         norm_rows,reasons=normalize_rows(raw,cutoff,mode,query)
         stat['Zaman dışı']+=reasons['zaman']; stat['Konu dışı']+=reasons['konu']; stat['Yunan dışı']+=reasons['yunan']; stat['Kaynak dışı']+=reasons['kaynak']
         all_rows=enrich_rows(dedupe(all_rows+norm_rows)); stat['Sonuç']=len(all_rows); stat['Olay']=len(set(r.get('Olay_ID') for r in all_rows))
+
+        # enrich_rows sonrası risk skoru yükselen içerikleri de alarma dahil et.
+        if instant_alerts:
+            for ar in all_rows:
+                if ar.get('Duygu')=='Negatif' or ar.get('Risk_Durumu')=='Yüksek Risk' or int(ar.get('Risk_Skoru',0) or 0)>=70:
+                    _push_live_alert(ar)
+
         if all_rows:
             pv=pd.DataFrame(all_rows).sort_values(['Tarih_dt','Domain'],ascending=[False,True],na_position='last')
             show=pv[['Tarih','Kaynak_Grubu','Kaynak','Başlık','İçerik_Özeti','Duygu','Risk_Skoru','Risk_Durumu','URL']]
             placeholder.dataframe(show,column_config={'URL':st.column_config.LinkColumn('Haber Linki'),'İçerik_Özeti':st.column_config.TextColumn('İçerik / Özet',width='large'),'Risk_Skoru':st.column_config.NumberColumn('Risk',format='%d/100')},hide_index=True,use_container_width=True,height=520)
+
         status_box.update(label=f'✅ {label} tamamlandı — toplam {len(all_rows)} haber / {len(set(r.get("Olay_ID") for r in all_rows))} olay',state='complete' if idx==len(batches)-1 else 'running')
-    st.session_state.rows=all_rows; st.session_state.scan_time=datetime.now().astimezone(); st.session_state.stats=stat
+
+    st.session_state.rows=all_rows
+    st.session_state.scan_time=datetime.now().astimezone()
+    st.session_state.stats=stat
+    st.session_state.last_scan_alerts=live_alerts
 
 rows=st.session_state.rows
 if rows is None:
@@ -1201,6 +1278,19 @@ else:
     else:
         total=len(df); negc=int((df.Duygu=='Negatif').sum()); riskc=int((df.Risk_Durumu=='Yüksek Risk').sum()); trc=int(df.Kaynak_Grubu.astype(str).str.startswith('🇹🇷').sum()); grc=int(df.Kaynak_Grubu.astype(str).str.startswith('🇬🇷').sum()); events=df['Olay_ID'].nunique()
         a,b,c,d,e,f=st.columns(6); a.metric('Toplam',total); b.metric('Olay',events); c.metric('Negatif',negc); d.metric('Yüksek Risk',riskc); e.metric('🇹🇷 Türk',trc); f.metric('🇬🇷 Yunan',grc)
+
+        # Son taramada anlık yakalanan bildirimlerin kalıcı özeti
+        recent_alerts=st.session_state.get('last_scan_alerts',[])
+        if recent_alerts:
+            with st.expander(f'🔔 Son taramada yakalanan yeni negatif/riskli içerikler ({len(recent_alerts)})',True):
+                alert_df=pd.DataFrame(recent_alerts)
+                st.dataframe(
+                    alert_df,
+                    column_config={'URL':st.column_config.LinkColumn('Haber Linki')},
+                    hide_index=True,
+                    use_container_width=True,
+                    height=min(420, 42+35*len(alert_df))
+                )
 
         # Alarm bandı
         alarms=df[(df.Risk_Skoru>=70) | (df.Duygu=='Negatif')].sort_values(['Risk_Skoru','Tarih_dt'],ascending=[False,False])
