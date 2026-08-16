@@ -1188,14 +1188,12 @@ rows=st.session_state.rows
 if rows is None:
     st.info('👋 Hazır. Tarama başlamaz. Zaman aralığını seçip **TARAMAYI BAŞLAT / YENİLE** düğmesine basın.')
 else:
+    # Tarama sırasında satırlar zaten enrich_rows() ile zenginleştiriliyor.
+    # Checkbox / sekme / buton gibi UI etkileşimlerinde pahalı analizi tekrar çalıştırmıyoruz.
     df=pd.DataFrame(rows)
     if not df.empty:
-        df=enrich_rows(df.to_dict('records'))
-        df=pd.DataFrame(df)
-        # Pandas tarafında da tek tip UTC zaman kolonu kullan.
         df['Tarih_dt']=pd.to_datetime(df['Tarih_dt'],utc=True,errors='coerce')
         df=df.sort_values('Tarih_dt',ascending=False,na_position='last').reset_index(drop=True)
-        st.session_state.rows=df.to_dict('records')
     st.caption(f'Son tarama: {st.session_state.scan_time.strftime("%d.%m.%Y %H:%M:%S") if st.session_state.scan_time else "-"}')
     with st.expander('🧪 Tarama teşhisi',False): st.json(st.session_state.stats)
     if df.empty:
@@ -1215,8 +1213,28 @@ else:
         tabs=st.tabs([f'📰 Kronolojik ({total})',f'⚠️ Negatif ({negc})',f'🚨 Yüksek Risk ({riskc})',f'🇹🇷 Türk ({trc})',f'🇬🇷 Yunan ({grc})',f'🧩 Olaylar ({events})', '📈 Trend / Analiz', '⭐ Takip Listesi'])
         cols=['Seç','Tarih','Kaynak_Grubu','Kaynak','Kategori','Başlık','İçerik_Özeti','Duygu','Risk_Skoru','Risk_Durumu','Kaynak_Güvenilirliği','Doğrulama','URL']
         with tabs[0]:
-            edited=st.data_editor(df[cols],column_config={'Seç':st.column_config.CheckboxColumn('Seç'),'URL':st.column_config.LinkColumn('Haber Linki'),'İçerik_Özeti':st.column_config.TextColumn('İçerik / Özet',width='large'),'Risk_Skoru':st.column_config.NumberColumn('Risk',format='%d/100')},disabled=[x for x in cols if x!='Seç'],hide_index=True,use_container_width=True,height=650,key=f'editor_{st.session_state.scan_time}')
-            df.loc[edited.index,'Seç']=edited['Seç']; st.session_state.rows=df.to_dict('records')
+            st.caption('☑️ İstediğiniz haberleri işaretleyin. Sayfa her tıkta yeniden çalışmaz; seçimlerinizi bitirince **SEÇİMLERİ KAYDET** düğmesine basın.')
+            with st.form(key=f'selection_form_{st.session_state.scan_time}', clear_on_submit=False):
+                edited=st.data_editor(
+                    df[cols],
+                    column_config={
+                        'Seç':st.column_config.CheckboxColumn('Seç'),
+                        'URL':st.column_config.LinkColumn('Haber Linki'),
+                        'İçerik_Özeti':st.column_config.TextColumn('İçerik / Özet',width='large'),
+                        'Risk_Skoru':st.column_config.NumberColumn('Risk',format='%d/100')
+                    },
+                    disabled=[x for x in cols if x!='Seç'],
+                    hide_index=True,
+                    use_container_width=True,
+                    height=650,
+                    key=f'editor_{st.session_state.scan_time}'
+                )
+                save_selection=st.form_submit_button('✅ SEÇİMLERİ KAYDET',use_container_width=True)
+            if save_selection:
+                # İndeksler resetlenmiş olduğu için editor ile df satırları birebir eşleşir.
+                df.loc[edited.index,'Seç']=edited['Seç'].astype(bool)
+                st.session_state.rows=df.to_dict('records')
+                st.success(f'✅ {int(df["Seç"].sum())} haber seçildi.')
         with tabs[1]:
             st.dataframe(df[df.Duygu=='Negatif'][['Tarih','Kaynak','Kategori','Başlık','Risk_Skoru','Risk_Gerekçesi','Doğrulama','URL']],column_config={'URL':st.column_config.LinkColumn('Haber Linki')},hide_index=True,use_container_width=True,height=650)
         with tabs[2]:
@@ -1246,7 +1264,12 @@ else:
             if not hits.empty: st.dataframe(hits[['Tarih','Kaynak','Kategori','Başlık','Risk_Skoru','Duygu','URL']],column_config={'URL':st.column_config.LinkColumn('Haber Linki')},hide_index=True,use_container_width=True,height=550)
 
         st.markdown('---'); st.subheader('📝 Seçilen haberlerden çıktı üret')
-        selected=df[df['Seç']==True]
+        # Form gönderildiyse session_state güncellenmiştir; aksi halde mevcut kayıtlı seçimleri kullan.
+        current_rows=st.session_state.rows or []
+        selected_df=pd.DataFrame(current_rows)
+        if not selected_df.empty and 'Tarih_dt' in selected_df.columns:
+            selected_df['Tarih_dt']=pd.to_datetime(selected_df['Tarih_dt'],utc=True,errors='coerce')
+        selected=selected_df[selected_df.get('Seç',False)==True] if not selected_df.empty and 'Seç' in selected_df.columns else pd.DataFrame()
         st.write(f'{len(selected)} haber seçildi. Tarama sırasında görsel/tam metin indirilmez; yalnızca seçtiğiniz içerikler için derin zenginleştirme yapılır.')
         c1,c2=st.columns(2)
         with c1:
