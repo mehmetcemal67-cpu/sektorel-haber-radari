@@ -251,7 +251,7 @@ if btn_run:
         st.error("Lütfen sol panelden NewsAPI Key bilginizi giriniz.")
     else:
         with st.spinner("Açık kaynaklar taranıyor, dezenformasyon ve negatif söylemler analiz ediliyor..."):
-            articles = fetch_news(api_key, query, s_date.strftime('%Y-%m-%d'), e_date.strftime('%Y-%m-%d'), max_news)
+            articles = fetch_news_rss(query, max_news)
             
             if articles:
                 parsed_data = []
