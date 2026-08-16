@@ -6,6 +6,9 @@ from datetime import date, datetime
 from io import BytesIO
 import re
 import html
+import feedparser
+import urllib.parse
+from email.utils import parsedate_to_datetime
 from duckduckgo_search import DDGS
 
 from docx import Document
@@ -104,44 +107,92 @@ def analyze_article(title, description):
             
     return round(score, 2), sentiment, risk_level, found_manipulative, detected_category
 
-# --- DUCKDUCKGO İLE GERÇEK ZAMANLI CANLI HABER MOTORU ---
-def fetch_live_news_ddg(query, time_range="d", max_results=50):
+# --- KORUMALI & HİBRİT HABER ÇEKME MOTORU ---
+def fetch_robust_news(query_text, time_range="1d", max_results=50):
     articles = []
+    seen_urls = set()
+    today = date.today()
+    days_limit = {"1d": 1, "7d": 7, "14d": 14}.get(time_range, 1)
+
+    # 1. YÖNTEM: DuckDuckGo (Temizlenmiş Alt Arama Grupları ile Ratelimit Engelini Aşma)
+    raw_keywords = [k.strip().replace('"', '') for k in query_text.split('OR')]
+    # En önemli ilk 5 temel arama kümesine bölme
+    sub_queries = [
+        " ".join(raw_keywords[:4]),
+        " ".join(raw_keywords[4:8]),
+        " ".join(raw_keywords[8:12])
+    ]
     
-    # Zaman Filtresi Eşleşmesi: d=Son 24 Saat, w=Son 1 Hafta, m=Son 1 Ay
-    time_map = {"1d": "d", "7d": "w", "14d": "w"}
-    selected_time = time_map.get(time_range, "d")
-    
+    time_ddg = {"1d": "d", "7d": "w", "14d": "w"}.get(time_range, "d")
+
     try:
         with DDGS() as ddgs:
-            results = ddgs.news(
-                keywords=query, 
-                region="tr-tr", 
-                timelimit=selected_time, 
-                max_results=max_results
-            )
-            
-            for r in results:
-                # Tarih Formatı Temizleme
-                raw_date = r.get('date', '')
-                try:
-                    dt = datetime.fromisoformat(raw_date.replace('Z', '+00:00'))
-                    formatted_date = dt.strftime('%d %b %Y %H:%M')
-                except:
-                    formatted_date = datetime.now().strftime('%d %b %Y %H:%M')
+            for sq in sub_queries:
+                if len(articles) >= max_results:
+                    break
+                if not sq.strip():
+                    continue
+                results = ddgs.news(keywords=sq, region="tr-tr", timelimit=time_ddg, max_results=20)
+                for r in results:
+                    url = r.get('url', '')
+                    if url and url not in seen_urls:
+                        seen_urls.add(url)
+                        raw_date = r.get('date', '')
+                        try:
+                            dt = datetime.fromisoformat(raw_date.replace('Z', '+00:00'))
+                            if (today - dt.date()).days > days_limit:
+                                continue
+                            formatted_date = dt.strftime('%d %b %Y %H:%M')
+                        except:
+                            formatted_date = datetime.now().strftime('%d %b %Y %H:%M')
 
-                articles.append({
-                    'title': r.get('title', ''),
-                    'description': r.get('body', ''),
-                    'url': r.get('url', ''),
-                    'publishedAt': formatted_date,
-                    'source': {'name': r.get('source', 'Web')}
-                })
-    except Exception as e:
-        st.error(f"Haber çekilirken hata oluştu: {e}")
+                        articles.append({
+                            'title': r.get('title', ''),
+                            'description': r.get('body', ''),
+                            'url': url,
+                            'publishedAt': formatted_date,
+                            'source': {'name': r.get('source', 'Web')}
+                        })
+    except Exception:
+        pass  # DuckDuckGo engel yerse sessizce Google RSS yedeğine geç
+
+    # 2. YÖNTEM (YEDEK): Google RSS (Katı Tarih Filtreli Fallback)
+    if len(articles) < 5:
+        clean_q = " OR ".join(raw_keywords[:6])
+        search_query = f"{clean_q} when:{time_range}"
+        encoded_query = urllib.parse.quote(search_query)
+        rss_url = f"https://news.google.com/rss/search?q={encoded_query}&hl=tr&gl=TR&ceid=TR:tr"
         
-    return articles
+        try:
+            feed = feedparser.parse(rss_url)
+            for entry in feed.entries:
+                url = entry.get('link', '')
+                if url and url not in seen_urls:
+                    pub_date_str = entry.get('published', '')
+                    try:
+                        pub_dt = parsedate_to_datetime(pub_date_str)
+                        if (today - pub_dt.date()).days > days_limit:
+                            continue
+                        formatted_date = pub_dt.strftime('%d %b %Y %H:%M')
+                    except:
+                        formatted_date = datetime.now().strftime('%d %b %Y %H:%M')
 
+                    seen_urls.add(url)
+                    articles.append({
+                        'title': entry.get('title', ''),
+                        'description': entry.get('summary', ''),
+                        'url': url,
+                        'publishedAt': formatted_date,
+                        'source': {'name': entry.get('source', {}).get('title', 'Google News')}
+                    })
+                    if len(articles) >= max_results:
+                        break
+        except Exception:
+            pass
+
+    return articles[:max_results]
+
+# --- GÜVENLİ WORD KÖPRÜ LİNK FONKSİYONU ---
 def add_hyperlink(paragraph, url, text):
     try:
         part = paragraph.part
@@ -153,8 +204,8 @@ def add_hyperlink(paragraph, url, text):
         new_run = parse_xml(f'<w:r xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:rPr><w:rStyle w:val="Hyperlink"/><w:color w:val="0000FF"/><w:u w:val="single"/></w:rPr><w:t>{safe_text}</w:t></w:r>')
         hyperlink.append(new_run)
         paragraph._p.append(hyperlink)
-    except:
-        paragraph.add_run(f"{text} - {url}")
+    except Exception:
+        paragraph.add_run(f"{text} ({url})")
 
 def generate_osint_docx(query, df_all, stats):
     doc = Document()
@@ -237,8 +288,8 @@ with st.sidebar:
     
     default_query = (
         'sanayi OR teknoloji OR TOGG OR KAAN OR ASELSAN OR BAYKAR OR TUSAŞ OR ROKETSAN OR HAVELSAN OR '
-        'TÜBİTAK OR KOSGEB OR "Çelik Kubbe" OR SİHA OR İHA OR "Milli Teknoloji" OR çip OR "Yapay Zeka" OR '
-        'Yunanistan OR "Yunan basını" OR Atina OR Kathimerini OR "Doğu Akdeniz" OR F-16 OR Rafale'
+        'TÜBİTAK OR KOSGEB OR Çelik Kubbe OR SİHA OR İHA OR Milli Teknoloji OR çip OR Yapay Zeka OR '
+        'Yunanistan OR Yunan basını OR Atina OR Kathimerini OR Doğu Akdeniz OR F-16 OR Rafale'
     )
 
     query = st.text_area(
@@ -264,7 +315,7 @@ with st.sidebar:
 
 if btn_run:
     with st.spinner("Anlık canlı haber kaynakları taranıyor..."):
-        articles = fetch_live_news_ddg(query, time_range=time_filter, max_results=max_news)
+        articles = fetch_robust_news(query, time_range=time_filter, max_results=max_news)
         
         if articles:
             parsed_data = []

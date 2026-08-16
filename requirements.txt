@@ -3,3 +3,4 @@ pandas
 requests
 python-docx
 duckduckgo_search
+feedparser
