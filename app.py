@@ -678,124 +678,177 @@ def _note_source_sentence(r):
         return f"{when} tarihinde {source} tarafından yayımlanan “{title}” başlıklı içerik, {cat.lower() if cat else 'sanayi ve teknoloji'} alanındaki gelişmelere ilişkindir."
     return f"{source} tarafından yayımlanan “{title}” başlıklı içerik, {cat.lower() if cat else 'sanayi ve teknoloji'} alanındaki gelişmelere ilişkindir."
 
+def _detail_sentences(text, title=''):
+    """Haber gövdesinden bilgi taşıyan cümleleri temizler; ayrıntıyı korur."""
+    text=_clean_note_text(text)
+    if not text:
+        return []
+    raw=_sentence_split_tr(text)
+    title_n=norm(title)
+    boiler=[
+        'çerez','cookie','abonelik','abone ol','reklam','tüm hakları saklıdır',
+        'gizlilik politikası','kullanım koşulları','google news','bildirimleri aç',
+        'uygulamamızı indirin','facebook','instagram','twitter','whatsapp',
+        'son dakika haberleri için','haberlerimizi takip'
+    ]
+    out=[]; seen=set()
+    for s in raw:
+        sn=norm(s)
+        if len(s)<28 or sn==title_n or any(b in sn for b in boiler):
+            continue
+        key=' '.join(sn.split()[:16])
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(s.strip())
+    return out
+
+
+def _sent_score(s):
+    """Bilgi yoğun cümlelere öncelik verir."""
+    n=norm(s)
+    score=0
+    if re.search(r'\b\d+(?:[.,]\d+)?\b', s): score+=3
+    if any(x in n for x in ['tarih','saat','yıl','ay','gün','bugün','dün']): score+=2
+    if any(x in n for x in ['bakan','başkan','valilik','belediye','şirket','kurum','bakanlık','müdür','yetkili','açıkladı','bildirdi','belirtti']): score+=3
+    if any(x in n for x in ['nedeni','sebebi','sonucu','sonuç','etki','hasar','zarar','yaralı','hayatını kaybetti','tahliye','müdahale','kontrol altına']): score+=3
+    if any(x in n for x in ['üretim','kapasite','yatırım','ihracat','ithalat','tesis','fabrika','osb','teknoloji','savunma','enerji']): score+=2
+    return score
+
+
+def _join_sentences_naturally(sentences):
+    """Kaynak cümlelerini bilgi kaybı olmadan okunabilir paragraf akışına getirir."""
+    if not sentences:
+        return ''
+    out=[]
+    for s in sentences:
+        s=s.strip()
+        if not s:
+            continue
+        if s[-1] not in '.!?':
+            s+='.'
+        out.append(s)
+    return ' '.join(out)
+
+
+def _compose_single_article_note(row, detail):
+    """
+    Tek haberi 'haber özeti' gibi değil, ayrıntılı bilgi notu gibi ele alır:
+    konu/olay -> gelişmeler -> açıklamalar/veriler -> mevcut durum/sonuç.
+    Ara başlık kullanmaz.
+    """
+    title=_clean_note_text(detail.get('title') or row.get('Başlık',''))
+    source=_clean_note_text(detail.get('source') or row.get('Kaynak','Açık Kaynak'))
+    published=_clean_note_text(detail.get('published') or row.get('Tarih',''))
+    fulltext=_clean_note_text(detail.get('text') or row.get('İçerik_Özeti','') or title)
+    sentences=_detail_sentences(fulltext,title)
+
+    # Haber sırasını esas al. İlk cümleler olayın başlangıcını çoğunlukla verir.
+    # Çok uzun haberlerde bilgi yoğun cümleleri de mutlaka koru.
+    if len(sentences)>45:
+        first=sentences[:22]
+        rest=sentences[22:]
+        important=sorted(enumerate(rest), key=lambda z:_sent_score(z[1]), reverse=True)[:18]
+        important=[s for _,s in sorted(important,key=lambda z:z[0])]
+        sentences=first+important
+
+    intro=(
+        f"{published} tarihinde {source} tarafından yayımlanan “{title}” başlıklı haberde, "
+        if published else
+        f"{source} tarafından yayımlanan “{title}” başlıklı haberde, "
+    )
+
+    if not sentences:
+        fallback=_clean_note_text(row.get('İçerik_Özeti','') or title)
+        return intro + (fallback[0].lower()+fallback[1:] if len(fallback)>1 else fallback)
+
+    # İlk 1-2 cümle olayın girişini oluşturur; geri kalanı kronolojik/haber sırasıyla devam eder.
+    first=sentences[:2]
+    remaining=sentences[2:]
+    opening=_join_sentences_naturally(first)
+    if opening:
+        opening=opening[0].lower()+opening[1:]
+    para1=intro+opening
+
+    # Uzun haberlerde okunabilirlik için doğal paragraf bölmeleri.
+    chunks=[]
+    chunk_size=7
+    for i in range(0,len(remaining),chunk_size):
+        part=remaining[i:i+chunk_size]
+        txt=_join_sentences_naturally(part)
+        if txt:
+            chunks.append(txt)
+
+    parts=[para1]+chunks
+
+    # Son cümlede yalnızca kaynakta aktarılan çerçeveye dayan.
+    last_context=sentences[-3:] if len(sentences)>=3 else sentences
+    conclusion=(
+        "Bu çerçevede, haberde aktarılan son durum itibarıyla "
+        + _join_sentences_naturally(last_context)
+    )
+    # Son üç cümleyi gövdede zaten kullandığımız için birebir tekrar çok fazlaysa genel, temkinli kapanış kullan.
+    if len(norm(conclusion))>900:
+        conclusion="Bu çerçevede gelişmenin, haberde aktarılan mevcut durum ve ilgili kurumların sonraki açıklamaları doğrultusunda izlenmesi önem taşımaktadır."
+    parts.append(conclusion)
+
+    return '\n\n'.join(parts)
+
+
 def _compose_prose_note(df):
     """
-    Seçili haberlerden TEK AKIŞ halinde ayrıntılı bilgi notu üretir.
-    Metinde 'Giriş/Gelişme/Sonuç' başlıkları yoktur; ancak kurgu doğal olarak
-    giriş -> kronolojik gelişme -> sonuç sırasını izler.
+    Seçilen gerçek haber sayfalarının tam metninden ayrıntılı bilgi notu oluşturur.
+    'Giriş/Gelişme/Sonuç' başlıkları yazılmaz; anlatı doğal olarak bu sırada ilerler.
     """
     if df is None or df.empty:
-        return ''
+        return '', []
 
     x=df.copy()
     if 'Tarih_dt' in x.columns:
         x['Tarih_dt']=pd.to_datetime(x['Tarih_dt'],utc=True,errors='coerce')
-        # Bilgi notunda olayların anlatımı eskiden yeniye kronolojik ilerlesin.
         x=x.sort_values('Tarih_dt',ascending=True,na_position='last')
 
-    sources=[_clean_note_text(v) for v in x.get('Kaynak',pd.Series(dtype=str)).tolist() if _clean_note_text(v)]
-    cats=[_clean_note_text(v) for v in x.get('Kategori',pd.Series(dtype=str)).tolist() if _clean_note_text(v)]
-    unique_sources=list(dict.fromkeys(sources))
-    unique_cats=list(dict.fromkeys(cats))
-
-    # Doğal giriş paragrafı
-    if len(x)==1:
-        r=x.iloc[0]
-        opening=(
-            f"Bu bilgi notu, {_clean_note_text(r.get('Tarih',''))} tarihinde "
-            f"{_clean_note_text(r.get('Kaynak','Açık Kaynak'))} tarafından yayımlanan "
-            f"“{_clean_note_text(r.get('Başlık',''))}” başlıklı haberde yer alan bilgiler esas alınarak hazırlanmıştır. "
-            f"Söz konusu haber, {_clean_note_text(r.get('Kategori','sanayi ve teknoloji')).lower()} alanındaki gelişmeye ilişkin "
-            f"açık kaynakta aktarılan olay, açıklama, kişi/kurum, zaman, yer, neden, sonuç ve diğer ayrıntıların "
-            f"bir arada değerlendirilmesini amaçlamaktadır."
-        )
-    else:
-        cat_text=', '.join(unique_cats[:6])
-        opening=(
-            f"Bu bilgi notu, seçilen {len(x)} açık kaynak haberinde yer alan bilgilerin kronolojik ve bütüncül biçimde "
-            f"değerlendirilmesi amacıyla hazırlanmıştır. İncelenen içerikler {len(unique_sources)} farklı kaynaktan derlenmiş"
-            + (f" olup {cat_text} başlıklarıyla ilişkilidir." if cat_text else ".")
-            + " Değerlendirmede haberlerde açıkça yer alan olaylar, açıklamalar, kurum ve kişiler, tarih ve yer bilgileri, "
-              "teknik ayrıntılar, sayısal veriler, neden-sonuç ilişkileri ve gelişmenin bildirilen etkileri mümkün olduğunca korunmuştur."
-        )
-
-    # Gelişme paragrafları: her haberin özetindeki cümleleri mümkün olduğunca eksiksiz koru.
-    body_paragraphs=[]
+    enriched=[]
     for _,r in x.iterrows():
-        title=_clean_note_text(r.get('Başlık',''))
-        source=_clean_note_text(r.get('Kaynak','Açık Kaynak'))
-        when=_clean_note_text(r.get('Tarih',''))
-        content=_clean_note_text(r.get('İçerik_Özeti',''))
+        row=r.to_dict()
+        detail=article_detail(row)
+        enriched.append((row,detail))
 
-        sentences=_unique_sentences(_sentence_split_tr(content))
-        if not sentences and content:
-            sentences=[content]
+    if len(enriched)==1:
+        row,detail=enriched[0]
+        note=_compose_single_article_note(row,detail)
+        return note,enriched
 
-        # Başlık özetin birebir ilk cümlesiyse tekrar etme; geri kalan ayrıntıları koru.
-        tk=norm(title)
-        details=[s for s in sentences if norm(s)!=tk]
-        if not details and content and norm(content)!=tk:
-            details=[content]
+    # Çoklu haberde kısa bir doğal giriş, ardından her haber kronolojik sırada ayrıntılı işlenir.
+    source_names=[]
+    for row,detail in enriched:
+        s=_clean_note_text(detail.get('source') or row.get('Kaynak',''))
+        if s and s not in source_names:
+            source_names.append(s)
 
-        lead=(f"{when} tarihinde " if when else "")
-        lead+=f"{source} tarafından yayımlanan “{title}” başlıklı haberde"
-        if details:
-            paragraph=lead + ", " + details[0][0].lower() + details[0][1:] if len(details[0])>1 else lead+", "+details[0]
-            for sent in details[1:]:
-                if paragraph and paragraph[-1] not in '.!?':
-                    paragraph+='.'
-                paragraph+=' '+sent
-        else:
-            paragraph=lead + " söz konusu gelişme kamuoyuna aktarılmıştır"
-
-        if paragraph and paragraph[-1] not in '.!?':
-            paragraph+='.'
-
-        # Haberde mevcut analitik sınıflandırma varsa yalnızca anlamlı durumda sona ekle.
-        risk_status=_clean_note_text(r.get('Risk_Durumu',''))
-        risk_reason=_clean_note_text(r.get('Risk_Gerekçesi',''))
-        risk_score=r.get('Risk_Skoru','')
-        if risk_status and risk_status!='Normal' and risk_reason and 'olumsuz risk sinyali tespit edilmedi' not in norm(risk_reason):
-            paragraph += (
-                f" İçerik açık kaynak risk sınıflandırmasında {risk_status.lower()} olarak değerlendirilmiş, "
-                f"risk puanı {risk_score}/100 olarak hesaplanmış ve değerlendirmede {risk_reason.lower()} göstergeleri öne çıkmıştır."
-            )
-
-        body_paragraphs.append(paragraph)
-
-    neg_count=int((x.get('Duygu',pd.Series(dtype=str))=='Negatif').sum()) if 'Duygu' in x else 0
-    high_count=int((x.get('Risk_Durumu',pd.Series(dtype=str))=='Yüksek Risk').sum()) if 'Risk_Durumu' in x else 0
-
-    # Doğal sonuç paragrafı; ayrı "SONUÇ" etiketi yok.
-    if len(x)==1:
-        r=x.iloc[-1]
-        closing=(
-            f"Mevcut açık kaynak verileri birlikte değerlendirildiğinde, “{_clean_note_text(r.get('Başlık',''))}” başlığı altında "
-            f"aktarılan gelişmenin haber içeriğinde belirtilen unsurlar çerçevesinde takip edilmesi önem taşımaktadır."
-        )
-    else:
-        closing=(
-            f"Seçilen {len(x)} haber birlikte değerlendirildiğinde, incelenen dönemdeki gelişmelerin kronolojik seyri ve "
-            f"haberlerde aktarılan temel unsurlar yukarıdaki çerçeveyi ortaya koymaktadır."
-        )
-        if neg_count or high_count:
-            closing += f" İncelenen içeriklerin {neg_count} adedi negatif, {high_count} adedi yüksek riskli olarak sınıflandırılmıştır."
-
-    closing += (
-        " Gelişmelere ilişkin yeni açıklamaların, resmî duyuruların ve farklı açık kaynaklardan gelecek teyitlerin izlenmesi, "
-        "mevcut durumun güncellenmesi açısından faydalı olacaktır. Bu bilgi notunda haber içeriklerinde bulunmayan bir husus "
-        "olgu olarak eklenmemiştir."
+    opening=(
+        f"Seçilen {len(enriched)} açık kaynak haberi birlikte değerlendirildiğinde, konuya ilişkin gelişmeler "
+        f"{len(source_names)} farklı kaynağın aktardığı bilgiler çerçevesinde kronolojik bir seyir göstermektedir. "
+        f"Aşağıdaki anlatımda haberlerde yer alan olaylar, açıklamalar, kişi ve kurumlar, teknik ve sayısal veriler, "
+        f"neden-sonuç ilişkileri ile bildirilen etkiler mümkün olduğunca ayrıntılı biçimde korunmuştur."
     )
 
-    return '\n\n'.join([opening]+body_paragraphs+[closing])
+    blocks=[opening]
+    for row,detail in enriched:
+        blocks.append(_compose_single_article_note(row,detail))
+
+    blocks.append(
+        "Mevcut açık kaynak bilgileri birlikte değerlendirildiğinde, gelişmenin bundan sonraki seyri bakımından "
+        "ilgili kurum ve kuruluşların yeni açıklamalarının, resmî duyuruların ve farklı açık kaynaklardan gelecek "
+        "teyitlerin izlenmesi önem taşımaktadır. Bu bilgi notunda kaynak haberlerde yer almayan bir husus olgu olarak eklenmemiştir."
+    )
+    return '\n\n'.join(blocks), enriched
 
 def make_analyst_docx(df, title='BİLGİ NOTU'):
     doc=Document()
     sec=doc.sections[0]
-    sec.top_margin=Cm(2)
-    sec.bottom_margin=Cm(2)
-    sec.left_margin=Cm(2.5)
-    sec.right_margin=Cm(2.5)
+    sec.top_margin=Cm(2); sec.bottom_margin=Cm(2)
+    sec.left_margin=Cm(2.5); sec.right_margin=Cm(2.5)
 
     styles=doc.styles
     styles['Normal'].font.name='Times New Roman'
@@ -803,43 +856,44 @@ def make_analyst_docx(df, title='BİLGİ NOTU'):
 
     p=doc.add_paragraph()
     p.alignment=WD_ALIGN_PARAGRAPH.CENTER
-    r=p.add_run(title)
-    r.bold=True
-    r.font.size=Pt(14)
+    r=p.add_run(title); r.bold=True; r.font.size=Pt(14)
 
     p=doc.add_paragraph()
     p.add_run('Tarih/Saat: ').bold=True
     p.add_run(datetime.now().astimezone().strftime('%d.%m.%Y %H:%M:%S'))
 
-    # Tek akış: başlıksız giriş -> kronolojik gelişme -> sonuç
-    note=_compose_prose_note(df)
+    # Bilgi notu oluşturulurken seçili haberlerin gerçek sayfaları derinlemesine alınır.
+    note,enriched=_compose_prose_note(df)
+
+    # Kesintisiz düz yazı: ara başlık kullanılmaz.
     for block in note.split('\n\n'):
-        block=block.strip()
-        if not block:
-            continue
+        if not block.strip(): continue
         bp=doc.add_paragraph()
         bp.alignment=WD_ALIGN_PARAGRAPH.JUSTIFY
         bp.paragraph_format.first_line_indent=Cm(1.25)
         bp.paragraph_format.line_spacing=1.15
-        bp.paragraph_format.space_after=Pt(7)
-        bp.add_run(block)
+        bp.paragraph_format.space_after=Pt(8)
+        bp.add_run(block.strip())
 
-    # Kaynak/link bölümü korunur.
+    # Kaynaklar; bilgi notunun anlatı akışından sonra.
     doc.add_paragraph()
     hp=doc.add_paragraph()
-    rr=hp.add_run('KAYNAKLAR')
-    rr.bold=True
-    for _,row in df.iterrows():
+    rr=hp.add_run('KAYNAKLAR'); rr.bold=True
+
+    for i,(row,detail) in enumerate(enriched,1):
+        title_text=_clean_note_text(detail.get('title') or row.get('Başlık',''))
+        source=_clean_note_text(detail.get('source') or row.get('Kaynak','Açık Kaynak'))
+        real_url=detail.get('canonical') or row.get('Yayıncı_URL') or row.get('URL','')
+
         p=doc.add_paragraph()
         p.paragraph_format.left_indent=Cm(.5)
-        p.add_run(f"{_clean_note_text(row.get('Kaynak','Açık Kaynak'))} — {_clean_note_text(row.get('Başlık',''))}")
-        if row.get('URL'):
+        p.add_run(f"{i}. {source} — {title_text}")
+        if real_url:
             p.add_run(' — ')
-            _word_hyperlink(p,row['URL'],'Haber linki')
+            _word_hyperlink(p,real_url,'Haber linki')
 
     bio=BytesIO()
-    doc.save(bio)
-    bio.seek(0)
+    doc.save(bio); bio.seek(0)
     return bio.getvalue()
 
 # -----------------------------
@@ -1797,9 +1851,11 @@ else:
                     with st.spinner(f'{len(selected)} haber zenginleştiriliyor...'): st.session_state.docx_bytes=make_docx(selected.to_dict('records'))
             if st.session_state.docx_bytes: st.download_button('⬇️ Açık Kaynak Raporu DOCX',st.session_state.docx_bytes,file_name=f'Sanayi_Teknoloji_Acik_Kaynak_{date.today()}.docx',mime='application/vnd.openxmlformats-officedocument.wordprocessingml.document',use_container_width=True)
         with c2:
-            if st.button('📌 DÜZ YAZI BİLGİ NOTU / WORD',use_container_width=True):
+            if st.button('📌 AYRINTILI BİLGİ NOTU / WORD',use_container_width=True):
                 if selected.empty: st.warning('Önce haber seçin.')
-                else: st.session_state.note_bytes=make_analyst_docx(selected,title='SANAYİ & TEKNOLOJİ BİLGİ NOTU')
+                else:
+                    with st.spinner(f'{len(selected)} haberin tam haber metni okunuyor ve ayrıntılı bilgi notu hazırlanıyor...'):
+                        st.session_state.note_bytes=make_analyst_docx(selected,title='SANAYİ & TEKNOLOJİ BİLGİ NOTU')
             if st.session_state.note_bytes: st.download_button('⬇️ Bilgi Notu DOCX',st.session_state.note_bytes,file_name=f'Sanayi_Teknoloji_Bilgi_Notu_{date.today()}.docx',mime='application/vnd.openxmlformats-officedocument.wordprocessingml.document',use_container_width=True)
 
 st.caption('İlk açılışta otomatik tarama yoktur. Her yenileme yeni ağ taraması yapar. Haberler en yeni → en eski sıralanır; olay kümeleri, risk gerekçesi, kaynak güvenilirliği, doğrulama, trend ve takip listesi tarama sonucunda yer alır. DOCX aşamasında seçilen haberlerin gerçek yayıncı sayfası, görseli, linki ve geniş içeriği alınır.')
