@@ -1,4 +1,6 @@
 import streamlit as st
+import feedparser
+import urllib.parse
 import pandas as pd
 import requests
 from io import BytesIO
@@ -112,21 +114,25 @@ def analyze_article(title, description):
     return round(score, 2), sentiment, risk_level, found_manipulative, detected_category
 
 # --- NEWSAPI HABER ÇEKME ---
-def fetch_news(api_key, query, from_date, to_date, max_results):
-    url = "https://newsapi.org/v2/everything"
-    params = {
-        'q': query,
-        'from': from_date,
-        'to': to_date,
-        'pageSize': min(max_results, 100),
-        'sortBy': 'publishedAt',
-        'apiKey': api_key,
-        'language': 'tr'
-    }
-    res = requests.get(url, params=params)
-    if res.status_code == 200:
-        return res.json().get('articles', [])
-    return []
+def fetch_news_rss(query, max_results=30):
+    # Türkçe haberler için Google News RSS URL'si oluşturma
+    encoded_query = urllib.parse.quote(query)
+    rss_url = f"https://news.google.com/rss/search?q={encoded_query}&hl=tr&gl=TR&ceid=TR:tr"
+    
+    feed = feedparser.parse(rss_url)
+    articles = []
+    
+    for entry in feed.entries[:max_results]:
+        # Google News verisini uygulamanızın beklediği veri formatına dönüştürme
+        articles.append({
+            'title': entry.get('title', ''),
+            'description': entry.get('summary', ''),
+            'url': entry.get('link', ''),
+            'publishedAt': entry.get('published', ''),
+            'source': {'name': entry.get('source', {}).get('title', 'Google News')}
+        })
+        
+    return articles
 
 # --- BİLGİ NOTU / RAPOR ÜRETİCİ (.DOCX) ---
 def generate_osint_docx(query, df_all, stats):
