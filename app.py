@@ -5,7 +5,7 @@ import concurrent.futures
 import xml.etree.ElementTree as ET
 import re, html, json
 from datetime import datetime, timedelta, timezone, date
-from urllib.parse import urlparse, urljoin
+from urllib.parse import urlparse
 from email.utils import parsedate_to_datetime
 from io import BytesIO
 from bs4 import BeautifulSoup
@@ -355,189 +355,416 @@ def dedupe(rows):
 
 # -----------------------------
 # DOCX — sadece kullanıcı seçince
+# Açık Kaynak Taraması rapor formatı
 # -----------------------------
 @st.cache_data(ttl=1800, show_spinner=False)
 def article_detail(url):
-    """Seçilen haber için daha dayanıklı sayfa zenginleştirme.
-    Tarama aşamasına dokunmaz; yalnızca DOCX üretiminde çalışır.
-    """
-    empty={'text':'','image':'','image_candidates':[],'resolved_url':url or '','canonical':''}
-    if not url: return empty
+    """Seçilen haber için gerçek sayfadan başlık, canonical URL, tarih, geniş metin ve görsel adaylarını çıkarır."""
+    result = {
+        'text': '', 'image': '', 'images': [], 'canonical': url,
+        'title': '', 'published': '', 'source': ''
+    }
     try:
-        r=requests.get(url,headers=HEADERS,timeout=10,allow_redirects=True)
-        if r.status_code >= 400: return empty
-        final_url=r.url or url
-        soup=BeautifulSoup(r.text,'html.parser')
+        r = requests.get(url, headers=HEADERS, timeout=10, allow_redirects=True)
+        if r.status_code != 200:
+            return result
 
-        # Gerçek haber URL'sini mümkün olduğunca yakala.
-        canonical=''
-        m=soup.find('link',rel=lambda v: v and 'canonical' in v)
-        if m and m.get('href'): canonical=urljoin(final_url,m.get('href'))
+        result['canonical'] = r.url or url
+        soup = BeautifulSoup(r.text, 'html.parser')
 
-        # JSON-LD içinden articleBody ve image al.
-        jsonld=[]
-        for sc in soup.find_all('script',attrs={'type':'application/ld+json'}):
-            try:
-                data=json.loads(sc.string or sc.get_text())
-                if isinstance(data,list): jsonld.extend(data)
-                elif isinstance(data,dict) and isinstance(data.get('@graph'),list): jsonld.extend(data['@graph'])
-                elif isinstance(data,dict): jsonld.append(data)
-            except Exception:
-                pass
+        # Canonical / başlık / tarih
+        can = soup.find('link', rel=lambda x: x and 'canonical' in x.lower())
+        if can and can.get('href'):
+            result['canonical'] = requests.compat.urljoin(r.url, can.get('href'))
 
-        images=[]
-        def add_img(v):
-            if isinstance(v,str):
-                u=urljoin(final_url,v.strip())
-                if u and u not in images: images.append(u)
-            elif isinstance(v,dict):
-                add_img(v.get('url') or v.get('contentUrl'))
-            elif isinstance(v,list):
-                for x in v: add_img(x)
+        og_title = soup.find('meta', attrs={'property':'og:title'})
+        if og_title and og_title.get('content'):
+            result['title'] = og_title['content'].strip()
+        elif soup.title:
+            result['title'] = soup.title.get_text(' ', strip=True)
 
-        for prop in ['og:image','og:image:url','twitter:image','twitter:image:src']:
-            for attr in ['property','name']:
-                m=soup.find('meta',attrs={attr:prop})
-                if m and m.get('content'): add_img(m.get('content'))
-        for x in jsonld:
-            if isinstance(x,dict):
-                add_img(x.get('image'))
-                add_img(x.get('thumbnailUrl'))
-
-        # Sayfadaki ilk gerçek içerik görsellerini de yedek olarak dene.
-        for tag in soup.find_all('img'):
-            src=tag.get('src') or tag.get('data-src') or tag.get('data-lazy-src') or tag.get('data-original')
-            if src: add_img(src)
-            srcset=tag.get('srcset') or tag.get('data-srcset')
-            if srcset:
-                for part in srcset.split(','):
-                    add_img(part.strip().split(' ')[0])
-            if len(images)>=12: break
-
-        # Haber gövdesini önce JSON-LD'den al, sonra article/main ve yaygın içerik alanlarından dene.
-        bodies=[]
-        for x in jsonld:
-            if isinstance(x,dict) and x.get('articleBody'):
-                bodies.append(str(x['articleBody']))
-        for selector in [
-            '[itemprop="articleBody"]','article','main',
-            '.article-body','.article-content','.news-content','.news-detail',
-            '.post-content','.entry-content','.story-body','.content-body'
+        for prop in [
+            ('meta', {'property':'article:published_time'}),
+            ('meta', {'property':'article:modified_time'}),
+            ('meta', {'name':'date'}),
+            ('meta', {'name':'pubdate'}),
+            ('meta', {'name':'publish-date'})
         ]:
-            for node in soup.select(selector):
-                txt=node.get_text(' ',strip=True)
-                if len(txt)>250: bodies.append(txt)
+            tag = soup.find(*prop)
+            if tag and tag.get('content'):
+                result['published'] = tag['content'].strip()
+                break
 
-        # Gürültülü alanları kaldırıp benzersiz cümle/paragrafları birleştir.
-        for tag in soup(['script','style','nav','footer','header','aside','form','iframe','noscript']):
-            tag.decompose()
+        # JSON-LD: NewsArticle / Article içinden gövde ve görsel
+        jsonld_bodies = []
+        jsonld_images = []
+        for tag in soup.find_all('script', attrs={'type': re.compile(r'application/ld\+json', re.I)}):
+            raw = tag.string or tag.get_text()
+            if not raw:
+                continue
+            try:
+                data = json.loads(raw)
+            except Exception:
+                continue
+
+            def walk(obj):
+                if isinstance(obj, dict):
+                    typ = str(obj.get('@type','')).lower()
+                    if 'article' in typ or 'news' in typ:
+                        if obj.get('articleBody'):
+                            jsonld_bodies.append(str(obj['articleBody']))
+                        if obj.get('headline') and not result['title']:
+                            result['title'] = str(obj['headline'])
+                        if obj.get('datePublished') and not result['published']:
+                            result['published'] = str(obj['datePublished'])
+                        im = obj.get('image') or obj.get('thumbnailUrl')
+                        if isinstance(im, str): jsonld_images.append(im)
+                        elif isinstance(im, list): jsonld_images.extend([str(x) for x in im if x])
+                        elif isinstance(im, dict) and im.get('url'): jsonld_images.append(str(im['url']))
+                    for v in obj.values():
+                        walk(v)
+                elif isinstance(obj, list):
+                    for x in obj:
+                        walk(x)
+            walk(data)
+
+        # Görsel adayları: OG/Twitter + JSON-LD + sayfadaki lazy/img/srcset
+        image_candidates = []
+        for attrs in [
+            {'property':'og:image'}, {'property':'og:image:url'},
+            {'name':'twitter:image'}, {'name':'twitter:image:src'}
+        ]:
+            tag = soup.find('meta', attrs=attrs)
+            if tag and tag.get('content'):
+                image_candidates.append(requests.compat.urljoin(r.url, tag['content'].strip()))
+
+        image_candidates.extend([
+            requests.compat.urljoin(r.url, x) for x in jsonld_images if x
+        ])
+
+        for img in soup.find_all('img'):
+            for attr in ['src','data-src','data-lazy-src','data-original','data-image']:
+                val = img.get(attr)
+                if val:
+                    image_candidates.append(requests.compat.urljoin(r.url, val))
+            srcset = img.get('srcset') or img.get('data-srcset')
+            if srcset:
+                # En yüksek çözünürlüklü adayı sona yakın seç
+                vals = [x.strip().split(' ')[0] for x in srcset.split(',') if x.strip()]
+                image_candidates.extend([requests.compat.urljoin(r.url, x) for x in vals[-2:]])
+
+        # Tekilleştir ve bariz logo/icon yollarını ele
+        seen_img = set()
+        clean_imgs = []
+        for im in image_candidates:
+            im = im.strip()
+            if not im or im in seen_img:
+                continue
+            low = im.lower()
+            if any(x in low for x in ['logo','favicon','icon','avatar','sprite']):
+                continue
+            seen_img.add(im)
+            clean_imgs.append(im)
+        result['images'] = clean_imgs[:20]
+        result['image'] = clean_imgs[0] if clean_imgs else ''
+
+        # Haber gövdesi: JSON-LD öncelikli, sonra article/main ve içerik sınıfları
+        bodies = [x for x in jsonld_bodies if len(x.strip()) > 150]
+
+        selectors = [
+            'article',
+            '[itemprop="articleBody"]',
+            '[class*="article-body"]',
+            '[class*="article-content"]',
+            '[class*="news-content"]',
+            '[class*="news-detail"]',
+            '[class*="story-body"]',
+            '[class*="post-content"]',
+            '[class*="entry-content"]',
+            'main'
+        ]
+
+        for selector in selectors:
+            nodes = soup.select(selector)
+            for node in nodes[:3]:
+                parts = [
+                    p.get_text(' ', strip=True)
+                    for p in node.find_all(['p','h2','h3','li'])
+                    if len(p.get_text(' ', strip=True)) >= 45
+                ]
+                if parts:
+                    candidate = ' '.join(parts)
+                    if len(candidate) > 250:
+                        bodies.append(candidate)
+
+        # Son çare: sayfadaki anlamlı paragraflar
         if not bodies:
-            ps=[p.get_text(' ',strip=True) for p in soup.find_all('p') if len(p.get_text(' ',strip=True))>=45]
-            bodies=[' '.join(ps)]
+            clone = BeautifulSoup(r.text, 'html.parser')
+            for tag in clone(['script','style','nav','footer','header','aside','form','iframe','noscript','svg']):
+                tag.decompose()
+            parts = [
+                p.get_text(' ', strip=True)
+                for p in clone.find_all('p')
+                if len(p.get_text(' ', strip=True)) >= 45
+            ]
+            bodies.append(' '.join(parts))
 
-        clean=[]; seen=set()
-        for raw in bodies:
-            for part in re.split(r'\n+|(?<=[.!?])\s+(?=[A-ZÇĞİÖŞÜ])',raw):
-                part=re.sub(r'\s+',' ',part).strip()
-                if len(part)>=45:
-                    k=norm(part)
-                    if k not in seen:
-                        seen.add(k); clean.append(part)
-        text=' '.join(clean)
+        # Temizle, tekrarları at
+        seen = set()
+        clean = []
+        for text in bodies:
+            text = re.sub(r'\s+', ' ', html.unescape(text)).strip()
+            if len(text) < 120:
+                continue
+            key = norm(text[:500])
+            if key in seen:
+                continue
+            seen.add(key)
+            clean.append(text)
 
-        # Çok uzun/bozuk body yerine okunabilir bir üst sınır.
-        text=text[:30000]
-        return {'text':text,'image':images[0] if images else '','image_candidates':images,
-                'resolved_url':canonical or final_url,'canonical':canonical}
+        clean.sort(key=len, reverse=True)
+        result['text'] = ' '.join(clean[:3])[:20000]
+        return result
+
     except Exception:
-        return empty
+        return result
 
 
-def broad_summary(title,body):
-    body=(body or '').strip()
-    if not body: return title
-    s=[x.strip() for x in re.split(r'(?<=[.!?])\s+',body) if len(x.strip())>35]
-    priority=[x for x in s if any(k in norm(x) for k in NEGATIVE_TERMS+HIGH_RISK_TERMS) or re.search(r'\d',x)]
-    normal=[x for x in s if x not in priority]
-    # 10-12k karaktere kadar geniş özet; DOCX'te içerik kaybolmasın.
-    return ' '.join((priority+normal))[:12000]
+def broad_summary(title, body):
+    """Kaynak metninden geniş, rapor diline uygun bir özet oluşturur."""
+    body = re.sub(r'\s+', ' ', (body or '')).strip()
+    if not body:
+        return title
+
+    # Haber metnini anlamlı cümlelere ayır; çok kısa/teknik olmayan parçaları at.
+    sentences = [
+        x.strip() for x in re.split(r'(?<=[.!?])\s+', body)
+        if len(x.strip()) >= 45
+    ]
+    if not sentences:
+        return body[:10000]
+
+    # Kritik/negatif cümleleri kaybetmemek için öne al, geri kalanı kronolojik sırada koru.
+    priority = [
+        s for s in sentences
+        if any(k in norm(s) for k in NEGATIVE_TERMS + HIGH_RISK_TERMS)
+    ]
+    normal = [s for s in sentences if s not in priority]
+
+    ordered = []
+    seen = set()
+    for s in priority + normal:
+        k = norm(s)
+        if k in seen:
+            continue
+        seen.add(k)
+        ordered.append(s)
+
+    text = ' '.join(ordered)
+    return text[:12000]
 
 
 def download_image(url):
-    if not url: return None
+    if not url:
+        return None
     try:
-        r=requests.get(url,headers=HEADERS,timeout=8,allow_redirects=True)
-        if r.status_code!=200 or len(r.content)<1200: return None
-        img=Image.open(BytesIO(r.content))
-        if img.width<180 or img.height<120: return None
-        if img.mode not in ('RGB','L'): img=img.convert('RGB')
-        # Aşırı büyük görseller DOCX'i şişirmesin.
-        if max(img.size)>1800:
-            ratio=1800/max(img.size)
-            img=img.resize((max(1,int(img.width*ratio)),max(1,int(img.height*ratio))))
-        b=BytesIO(); img.save(b,'JPEG',quality=88,optimize=True); b.seek(0); return b
+        r = requests.get(
+            url, headers={**HEADERS, 'Accept':'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8'},
+            timeout=10
+        )
+        if r.status_code != 200 or len(r.content) < 1200:
+            return None
+        img = Image.open(BytesIO(r.content))
+        if img.mode not in ('RGB','L'):
+            img = img.convert('RGB')
+        # Rapor görselleri için makul çözünürlük / dosya boyutu
+        img.thumbnail((1600, 1200), Image.LANCZOS)
+        b = BytesIO()
+        img.save(b, 'JPEG', quality=88)
+        b.seek(0)
+        return b
     except Exception:
         return None
 
 
-def add_link(p,url,label=None):
-    label=label or url
+def add_link(paragraph, url, label='Haberi Aç'):
+    """Word içinde tıklanabilir hyperlink."""
     try:
-        rid=p.part.relate_to(url,'http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink',is_external=True)
-        p._p.append(parse_xml(f'<w:hyperlink xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" r:id="{rid}"><w:r><w:rPr><w:rStyle w:val="Hyperlink"/></w:rPr><w:t>{html.escape(label)}</w:t></w:r></w:hyperlink>'))
+        rid = paragraph.part.relate_to(
+            url,
+            'http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink',
+            is_external=True
+        )
+        xml = (
+            f'<w:hyperlink xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
+            f'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" r:id="{rid}">'
+            f'<w:r><w:rPr><w:rStyle w:val="Hyperlink"/></w:rPr><w:t>{html.escape(label)}</w:t></w:r>'
+            f'</w:hyperlink>'
+        )
+        paragraph._p.append(parse_xml(xml))
     except Exception:
-        p.add_run(label)
+        paragraph.add_run(url)
+
+
+def _set_cell_shading(cell, fill):
+    try:
+        tcPr = cell._tc.get_or_add_tcPr()
+        shd = parse_xml(f'<w:shd xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" w:fill="{fill}"/>')
+        tcPr.append(shd)
+    except Exception:
+        pass
 
 
 def make_docx(rows):
-    doc=Document()
-    h=doc.add_heading('SANAYİ & TEKNOLOJİ — SEÇİLEN HABERLER BİLGİ NOTU',0)
-    h.alignment=WD_ALIGN_PARAGRAPH.CENTER
-    doc.add_paragraph(f'Rapor zamanı: {datetime.now().astimezone().strftime("%d.%m.%Y %H:%M:%S")} | Haber sayısı: {len(rows)}')
+    """
+    Kullanıcının yüklediği 'AÇIK KAYNAK TARAMA ÇALIŞMASI' raporunun
+    düzenine yakın profesyonel bilgi notu:
+    - başlık / görev alanı / tarih
+    - Bulgular
+    - her haber için numaralı madde
+    - kaynak + başlık + tarih/saat
+    - geniş içerik özeti
+    - tıklanabilir haber linki
+    - haber görseli ve görsel açıklaması
+    """
+    doc = Document()
 
-    for i,r in enumerate(rows,1):
-        doc.add_heading(f'{i}. {r["Başlık"]}',2)
-        doc.add_paragraph(f'{r["Tarih"]} | {r["Kaynak"]} | {r["Kategori"]} | {r["Duygu"]} | {r["Risk_Durumu"]}')
+    # Sayfa ayarları
+    section = doc.sections[0]
+    section.top_margin = Inches(0.7)
+    section.bottom_margin = Inches(0.7)
+    section.left_margin = Inches(0.85)
+    section.right_margin = Inches(0.85)
 
-        detail=article_detail(r.get('URL',''))
-        body=detail.get('text') or r.get('İçerik_Özeti','') or r.get('Başlık','')
-        resolved=detail.get('resolved_url') or r.get('URL','')
+    # Temel yazı tipi
+    styles = doc.styles
+    styles['Normal'].font.name = 'Arial'
+    styles['Normal'].font.size = Pt(10.5)
 
-        # Görsel: ilk aday başarısızsa diğer adayları sırayla dene.
-        img_obj=None; used_image_url=''
-        candidates=detail.get('image_candidates') or ([detail.get('image')] if detail.get('image') else [])
-        for candidate in candidates:
-            img_obj=download_image(candidate)
-            if img_obj:
-                used_image_url=candidate
+    # Başlık
+    title = doc.add_paragraph()
+    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    run = title.add_run('AÇIK KAYNAK TARAMA ÇALIŞMASI')
+    run.bold = True
+    run.font.size = Pt(18)
+
+    # Bilgi tablosu
+    info = doc.add_table(rows=3, cols=2)
+    info.style = 'Table Grid'
+    metadata = [
+        ('Tarama Yapılan Görev Alanı', 'Sanayi ve Teknoloji'),
+        ('Tarih', datetime.now().astimezone().strftime('%d.%m.%Y')),
+        ('Rapor Saati', datetime.now().astimezone().strftime('%H:%M:%S')),
+    ]
+    for i, (k, v) in enumerate(metadata):
+        info.cell(i, 0).text = k
+        info.cell(i, 1).text = v
+        _set_cell_shading(info.cell(i, 0), 'E7E6E6')
+        for rr in info.cell(i, 0).paragraphs[0].runs:
+            rr.bold = True
+
+    doc.add_paragraph()
+
+    h = doc.add_paragraph()
+    rr = h.add_run('Bulgular:')
+    rr.bold = True
+    rr.font.size = Pt(12)
+
+    intro = doc.add_paragraph(
+        'Sanayi ve Teknoloji alanlarında yapılan açık kaynak taraması neticesinde, '
+        f'seçilen {len(rows)} haber/İçeriğe ilişkin bulgular aşağıda sunulmuştur.'
+    )
+    intro.paragraph_format.space_after = Pt(10)
+
+    for i, row in enumerate(rows, 1):
+        detail = article_detail(row.get('URL',''))
+        real_url = detail.get('canonical') or row.get('URL','')
+        title_text = detail.get('title') or row.get('Başlık') or 'Başlıksız Haber'
+        body = detail.get('text') or row.get('İçerik_Özeti') or title_text
+        summary = broad_summary(title_text, body)
+
+        # Haber başlığı
+        p = doc.add_paragraph()
+        p.paragraph_format.space_before = Pt(8)
+        p.paragraph_format.space_after = Pt(4)
+        r = p.add_run(f'{i}. “{title_text}”')
+        r.bold = True
+        r.font.size = Pt(11.5)
+
+        # Kaynak / tarih / sınıflandırma
+        meta = doc.add_paragraph()
+        meta.add_run('Kaynak: ').bold = True
+        meta.add_run(str(row.get('Kaynak','Açık Kaynak')))
+        meta.add_run(' | Tarih/Saat: ').bold = True
+        meta.add_run(str(row.get('Tarih','')))
+        meta.add_run(' | Kategori: ').bold = True
+        meta.add_run(str(row.get('Kategori','')))
+        meta.add_run(' | Durum: ').bold = True
+        meta.add_run(f"{row.get('Duygu','')} / {row.get('Risk_Durumu','')}")
+
+        # Rapor örneğindeki anlatım biçimine yakın geniş özet
+        content = doc.add_paragraph()
+        content.add_run('Söz konusu haber içeriğinde, ').bold = True
+        content.add_run(summary)
+
+        # Link
+        linkp = doc.add_paragraph()
+        linkp.add_run('Haber Linki: ').bold = True
+        add_link(linkp, real_url, 'Haberi Aç')
+        raw = doc.add_paragraph()
+        raw.add_run('Kaynak URL: ').bold = True
+        raw.add_run(real_url)
+
+        # Görsel
+        image_stream = None
+        selected_image_url = ''
+        for image_url in detail.get('images', []):
+            image_stream = download_image(image_url)
+            if image_stream:
+                selected_image_url = image_url
                 break
 
-        doc.add_paragraph('HABER GÖRSELİ').runs[0].bold=True
-        if img_obj:
+        cap = doc.add_paragraph()
+        cap.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        cap_run = cap.add_run(f'Görsel {i}: “{row.get("Kaynak","Kaynak")}” Sitesinde Yer Alan İçerik')
+        cap_run.bold = True
+
+        if image_stream:
             try:
-                pimg=doc.add_paragraph(); pimg.alignment=WD_ALIGN_PARAGRAPH.CENTER
-                pimg.add_run().add_picture(img_obj,width=Inches(5.9))
-                p=doc.add_paragraph(); p.alignment=WD_ALIGN_PARAGRAPH.CENTER
-                add_link(p,used_image_url,'Görseli aç')
+                ip = doc.add_paragraph()
+                ip.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                ip.add_run().add_picture(image_stream, width=Inches(5.9))
+
+                gp = doc.add_paragraph()
+                gp.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                gp.add_run('Görsel kaynağı: ').bold = True
+                add_link(gp, selected_image_url, 'Görseli Aç')
             except Exception:
-                doc.add_paragraph('Görsel Word içine gömülemedi; görsel bağlantısı aşağıdadır.')
-                p=doc.add_paragraph(); add_link(p,used_image_url or (candidates[0] if candidates else ''),'Görsel bağlantısı') if (used_image_url or candidates) else None
+                fp = doc.add_paragraph()
+                fp.add_run('Görsel bağlantısı: ').bold = True
+                add_link(fp, selected_image_url, 'Görseli Aç')
         else:
-            doc.add_paragraph('Bu haber sayfasından doğrudan indirilebilir görsel alınamadı.')
-            if candidates:
-                p=doc.add_paragraph(); add_link(p,candidates[0],'Görsel bağlantısını aç')
+            fp = doc.add_paragraph()
+            fp.add_run('Görsel: ').bold = True
+            fp.add_run('Haber sayfasından Word içerisine gömülebilir bir görsel alınamadı. ')
+            if detail.get('image'):
+                add_link(fp, detail.get('image'), 'Görsel bağlantısını aç')
+            else:
+                fp.add_run('Kaynak sayfada erişilebilir görsel bağlantısı tespit edilemedi.')
 
-        doc.add_paragraph('GENİŞ HABER ÖZETİ').runs[0].bold=True
-        doc.add_paragraph(broad_summary(r['Başlık'],body))
+        # Haberler arasında belirgin ayraç
+        sep = doc.add_paragraph()
+        sep.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        sep.add_run('─' * 75)
 
-        p=doc.add_paragraph(); p.add_run('HABER LİNKİ: ').bold=True
-        add_link(p,resolved,'Haberi aç')
-        p=doc.add_paragraph(); p.add_run('Kaynak URL: ').bold=True; p.add_run(resolved)
-        if resolved != r.get('URL',''):
-            p=doc.add_paragraph(); p.add_run('Tarama URL: ').bold=True; p.add_run(r.get('URL',''))
-        doc.add_paragraph('—'*80)
+    # Son not
+    end = doc.add_paragraph()
+    end.add_run('Arz olunur.').bold = True
 
-    b=BytesIO(); doc.save(b); b.seek(0); return b.getvalue()
+    b = BytesIO()
+    doc.save(b)
+    b.seek(0)
+    return b.getvalue()
 
 # -----------------------------
 # UI
