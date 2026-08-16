@@ -438,6 +438,36 @@ def source_reliability(domain_name, source_name=''):
     return '🟡 B — Açık kaynak'
 
 
+
+def dedupe(rows):
+    """URL ve başlık anahtarına göre hızlı tekilleştirme; kronolojik sıralamayı korur."""
+    out=[]
+    urls=set()
+    titles=set()
+    for r in rows:
+        u=str(r.get('URL','') or '')
+        k=title_key(str(r.get('Başlık','') or ''))
+        if u and u in urls:
+            continue
+        if k and k in titles:
+            continue
+        if u:
+            urls.add(u)
+        if k:
+            titles.add(k)
+        out.append(r)
+
+    out.sort(
+        key=lambda x:(
+            x.get('Tarih_dt') is not None,
+            _to_utc_datetime(x.get('Tarih_dt')) or datetime.min.replace(tzinfo=timezone.utc),
+            source_rank(x.get('Domain',''))
+        ),
+        reverse=True
+    )
+    return out
+
+
 def _title_tokens(text):
     """Başlıktan olay eşleştirmesi için anlamlı token kümesi üretir."""
     txt=norm(text)
