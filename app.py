@@ -4,6 +4,8 @@ import requests
 import concurrent.futures
 import xml.etree.ElementTree as ET
 import re, html, json
+import sqlite3, hashlib
+from pathlib import Path
 from datetime import datetime, timedelta, timezone, date
 from urllib.parse import urlparse
 from email.utils import parsedate_to_datetime
@@ -897,6 +899,371 @@ def make_analyst_docx(df, title='BİLGİ NOTU'):
     return bio.getvalue()
 
 
+
+# -----------------------------
+# V33 — BİLGİ NOTU ADAYLARI + DÜNDEN BERİ NE DEĞİŞTİ?
+# V32 çekirdek tarama motoruna dokunmaz.
+# -----------------------------
+_HISTORY_DB = Path(__file__).resolve().with_name("sanayi_teknoloji_osint_history.db")
+
+def _history_connect():
+    conn=sqlite3.connect(str(_HISTORY_DB),timeout=8)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    return conn
+
+def _init_history_db():
+    try:
+        with _history_connect() as conn:
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS scans(
+                    scan_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    scanned_at TEXT NOT NULL,
+                    period_hours INTEGER,
+                    total_news INTEGER,
+                    total_events INTEGER
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS event_snapshots(
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    scan_id INTEGER NOT NULL,
+                    event_id TEXT,
+                    title TEXT,
+                    source TEXT,
+                    url TEXT,
+                    category TEXT,
+                    summary TEXT,
+                    risk_score INTEGER,
+                    risk_status TEXT,
+                    sentiment TEXT,
+                    verification TEXT,
+                    source_count INTEGER,
+                    event_first_seen TEXT,
+                    event_last_seen TEXT,
+                    tokens_json TEXT,
+                    FOREIGN KEY(scan_id) REFERENCES scans(scan_id)
+                )
+            """)
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_event_snapshots_scan ON event_snapshots(scan_id)")
+            conn.commit()
+        return True
+    except Exception:
+        return False
+
+def _history_tokens(text):
+    try:
+        toks=_title_tokens(text)
+        return sorted(toks)
+    except Exception:
+        txt=norm(text)
+        return sorted({x for x in re.split(r'\W+',txt) if len(x)>=3})
+
+def _save_scan_history(rows, scanned_at, period_hours):
+    """Her taramanın olay özetini yerel SQLite dosyasına kaydeder."""
+    if not rows or not _init_history_db():
+        return None
+    try:
+        dfh=pd.DataFrame(rows)
+        events=int(dfh['Olay_ID'].nunique()) if 'Olay_ID' in dfh.columns else len(dfh)
+        with _history_connect() as conn:
+            cur=conn.execute(
+                "INSERT INTO scans(scanned_at,period_hours,total_news,total_events) VALUES(?,?,?,?)",
+                (scanned_at.isoformat(),int(period_hours),len(dfh),events)
+            )
+            scan_id=int(cur.lastrowid)
+
+            if 'Olay_ID' in dfh.columns:
+                groups=dfh.groupby('Olay_ID',dropna=False)
+            else:
+                groups=[(f'ROW-{i}',dfh.iloc[[i]]) for i in range(len(dfh))]
+
+            rows_to_insert=[]
+            for oid,g in groups:
+                g=g.copy()
+                if 'Tarih_dt' in g.columns:
+                    g['Tarih_dt']=pd.to_datetime(g['Tarih_dt'],utc=True,errors='coerce')
+                    g=g.sort_values('Tarih_dt',ascending=False,na_position='last')
+                r=g.iloc[0]
+                title=str(r.get('Başlık','') or '')
+                summary=' '.join(
+                    str(x) for x in g.get('İçerik_Özeti',pd.Series(dtype=str)).tolist()
+                    if str(x).strip()
+                )[:8000]
+                domains=set(str(x) for x in g.get('Domain',pd.Series(dtype=str)).tolist() if str(x).strip())
+                source_count=max(
+                    len(domains),
+                    int(r.get('Olay_Kaynak_Sayisi',0) or 0)
+                )
+                rows_to_insert.append((
+                    scan_id,str(oid),title,str(r.get('Kaynak','') or ''),
+                    str(r.get('URL','') or ''),str(r.get('Kategori','') or ''),
+                    summary,int(g.get('Risk_Skoru',pd.Series([0])).max() or 0),
+                    str(r.get('Risk_Durumu','') or ''),str(r.get('Duygu','') or ''),
+                    str(r.get('Doğrulama','') or ''),source_count,
+                    str(r.get('Olay_İlk_Görülme','') or ''),
+                    str(r.get('Olay_Son_Görülme','') or ''),
+                    json.dumps(_history_tokens(title),ensure_ascii=False)
+                ))
+
+            conn.executemany("""
+                INSERT INTO event_snapshots(
+                    scan_id,event_id,title,source,url,category,summary,risk_score,risk_status,
+                    sentiment,verification,source_count,event_first_seen,event_last_seen,tokens_json
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,rows_to_insert)
+            conn.commit()
+        return scan_id
+    except Exception:
+        return None
+
+def _previous_scan_id(current_scan_id=None):
+    """Öncelik: bugünden önceki en son tarama; yoksa mevcut taramadan önceki en son tarama."""
+    if not _init_history_db():
+        return None
+    try:
+        today=datetime.now().astimezone().date().isoformat()
+        with _history_connect() as conn:
+            if current_scan_id:
+                row=conn.execute(
+                    "SELECT scan_id FROM scans WHERE scan_id < ? AND substr(scanned_at,1,10) < ? ORDER BY scanned_at DESC LIMIT 1",
+                    (int(current_scan_id),today)
+                ).fetchone()
+                if not row:
+                    row=conn.execute(
+                        "SELECT scan_id FROM scans WHERE scan_id < ? ORDER BY scanned_at DESC LIMIT 1",
+                        (int(current_scan_id),)
+                    ).fetchone()
+            else:
+                row=conn.execute(
+                    "SELECT scan_id FROM scans WHERE substr(scanned_at,1,10) < ? ORDER BY scanned_at DESC LIMIT 1",
+                    (today,)
+                ).fetchone()
+            return int(row[0]) if row else None
+    except Exception:
+        return None
+
+def _load_scan_events(scan_id):
+    if not scan_id:
+        return pd.DataFrame()
+    try:
+        with _history_connect() as conn:
+            return pd.read_sql_query(
+                """SELECT e.*,s.scanned_at,s.period_hours
+                   FROM event_snapshots e JOIN scans s ON e.scan_id=s.scan_id
+                   WHERE e.scan_id=?""",
+                conn,params=(int(scan_id),)
+            )
+    except Exception:
+        return pd.DataFrame()
+
+def _token_jaccard_lists(a,b):
+    sa=set(a or []); sb=set(b or [])
+    if not sa or not sb:
+        return 0.0
+    return len(sa&sb)/len(sa|sb)
+
+def _verification_rank(text):
+    t=norm(text)
+    if 'resmi' in t or 'resmî' in t or 'birincil' in t: return 4
+    if 'coklu kaynak' in t or 'çoklu kaynak' in t: return 3
+    if 'tek medya' in t: return 2
+    if 'sosyal medya' in t: return 1
+    return 1
+
+def _risk_rank(status):
+    t=norm(status)
+    if 'yuksek risk' in t or 'yüksek risk' in t: return 3
+    if 'negatif' in t: return 2
+    return 1
+
+def _current_event_frame(df):
+    if df is None or df.empty:
+        return pd.DataFrame()
+    items=[]
+    group_col='Olay_ID' if 'Olay_ID' in df.columns else None
+    groups=df.groupby(group_col,dropna=False) if group_col else [(f'ROW-{i}',df.iloc[[i]]) for i in range(len(df))]
+    for oid,g in groups:
+        g=g.copy()
+        if 'Tarih_dt' in g.columns:
+            g['Tarih_dt']=pd.to_datetime(g['Tarih_dt'],utc=True,errors='coerce')
+            g=g.sort_values('Tarih_dt',ascending=False,na_position='last')
+        r=g.iloc[0]
+        summary=' '.join(str(x) for x in g.get('İçerik_Özeti',pd.Series(dtype=str)).tolist() if str(x).strip())[:8000]
+        items.append({
+            'event_id':str(oid),
+            'title':str(r.get('Başlık','') or ''),
+            'source':str(r.get('Kaynak','') or ''),
+            'url':str(r.get('URL','') or ''),
+            'category':str(r.get('Kategori','') or ''),
+            'summary':summary,
+            'risk_score':int(g.get('Risk_Skoru',pd.Series([0])).max() or 0),
+            'risk_status':str(r.get('Risk_Durumu','') or ''),
+            'sentiment':str(r.get('Duygu','') or ''),
+            'verification':str(r.get('Doğrulama','') or ''),
+            'source_count':max(
+                int(r.get('Olay_Kaynak_Sayisi',0) or 0),
+                len(set(str(x) for x in g.get('Domain',pd.Series(dtype=str)).tolist() if str(x).strip()))
+            ),
+            'event_first_seen':str(r.get('Olay_İlk_Görülme','') or ''),
+            'event_last_seen':str(r.get('Olay_Son_Görülme','') or ''),
+            'tokens':_history_tokens(str(r.get('Başlık','') or ''))
+        })
+    return pd.DataFrame(items)
+
+def _compare_since_previous(df,current_scan_id=None):
+    """
+    Olay bazında:
+    🆕 yeni olay
+    🔄 yeni bilgi/güncelleme
+    ⚠️ risk arttı
+    ✅ teyit güçlendi
+    """
+    current=_current_event_frame(df)
+    prev_id=_previous_scan_id(current_scan_id)
+    previous=_load_scan_events(prev_id)
+    if current.empty:
+        return pd.DataFrame(),None,None
+    if previous.empty:
+        return pd.DataFrame(),prev_id,None
+
+    prev_records=[]
+    for _,p in previous.iterrows():
+        try: toks=json.loads(p.get('tokens_json') or '[]')
+        except Exception: toks=_history_tokens(p.get('title',''))
+        rec=p.to_dict(); rec['tokens']=toks; prev_records.append(rec)
+
+    changes=[]
+    for _,c in current.iterrows():
+        best=None; best_sim=0.0
+        for p in prev_records:
+            sim=_token_jaccard_lists(c['tokens'],p['tokens'])
+            # Kaynak/URL aynıysa eşleşmeyi kuvvetlendir.
+            if c.get('url') and c.get('url')==p.get('url'):
+                sim=max(sim,0.95)
+            if sim>best_sim:
+                best_sim=sim; best=p
+
+        if best is None or best_sim < 0.42:
+            changes.append({
+                'Değişim':'🆕 YENİ OLAY',
+                'Başlık':c['title'],'Kaynak':c['source'],'Kategori':c['category'],
+                'Risk':c['risk_score'],'Önceki Risk':'—','Kaynak Sayısı':c['source_count'],
+                'Açıklama':'Önceki karşılaştırma taramasında benzer olay tespit edilmedi.',
+                'URL':c['url'],'_priority':100+c['risk_score']
+            })
+            continue
+
+        prev_risk=int(best.get('risk_score') or 0)
+        risk_up=(c['risk_score']>=prev_risk+15) or (_risk_rank(c['risk_status'])>_risk_rank(best.get('risk_status','')))
+        verify_up=_verification_rank(c['verification'])>_verification_rank(best.get('verification',''))
+        sources_up=int(c['source_count'] or 0)>int(best.get('source_count') or 0)
+
+        prev_tokens=set(_history_tokens((best.get('title') or '')+' '+(best.get('summary') or '')))
+        cur_tokens=set(_history_tokens(c['title']+' '+c['summary']))
+        new_tokens=cur_tokens-prev_tokens
+        materially_updated=len(new_tokens)>=6 or sources_up
+
+        if risk_up:
+            kind='⚠️ RİSK ARTTI'
+            expl=f"Risk {prev_risk}/100 seviyesinden {c['risk_score']}/100 seviyesine yükseldi."
+            priority=95+c['risk_score']
+        elif verify_up:
+            kind='✅ TEYİT GÜÇLENDİ'
+            expl=f"Doğrulama seviyesi “{best.get('verification','')}” düzeyinden “{c['verification']}” düzeyine yükseldi."
+            priority=90+c['risk_score']
+        elif materially_updated:
+            kind='🔄 YENİ BİLGİ'
+            bits=[]
+            if sources_up:
+                bits.append(f"kaynak sayısı {int(best.get('source_count') or 0)} → {c['source_count']}")
+            if len(new_tokens)>=6:
+                sample=', '.join(sorted(list(new_tokens))[:8])
+                bits.append(f"yeni içerik unsurları: {sample}")
+            expl='; '.join(bits) if bits else 'Olayla ilgili yeni ayrıntılar tespit edildi.'
+            priority=80+c['risk_score']
+        else:
+            continue
+
+        changes.append({
+            'Değişim':kind,'Başlık':c['title'],'Kaynak':c['source'],'Kategori':c['category'],
+            'Risk':c['risk_score'],'Önceki Risk':prev_risk,'Kaynak Sayısı':c['source_count'],
+            'Açıklama':expl,'URL':c['url'],'_priority':priority
+        })
+
+    out=pd.DataFrame(changes)
+    if not out.empty:
+        out=out.sort_values(['_priority','Risk'],ascending=[False,False]).drop(columns=['_priority'])
+    prev_time=str(previous.iloc[0].get('scanned_at','')) if not previous.empty else None
+    return out,prev_id,prev_time
+
+def _note_candidate_reason(r,change_kind=''):
+    reasons=[]
+    risk=int(r.get('risk_score',0) or 0)
+    if risk>=70: reasons.append('yüksek risk')
+    elif risk>=45: reasons.append('dikkat gerektiren risk')
+    if str(r.get('sentiment',''))=='Negatif': reasons.append('negatif etki')
+    if int(r.get('source_count',0) or 0)>=2: reasons.append('çoklu kaynak')
+    vr=norm(r.get('verification',''))
+    if 'resmi' in vr or 'resmî' in vr or 'birincil' in vr: reasons.append('birincil/resmî teyit')
+    elif 'coklu kaynak' in vr or 'çoklu kaynak' in vr: reasons.append('teyit güçlendi')
+    cat=norm(r.get('category',''))
+    if any(k in cat for k in ['savunma','yarı iletken','dijital','enerji','sanayi']): reasons.append('stratejik sektör')
+    if is_osb_fire(r.get('title',''),r.get('summary','')): reasons.append('OSB yangını/kritik üretim olayı')
+    if change_kind:
+        reasons.append(change_kind.replace('🆕','').replace('🔄','').replace('⚠️','').replace('✅','').strip().lower())
+    return ', '.join(dict.fromkeys(reasons)) or 'güncel ve sektörel önem'
+
+def _information_note_candidates(df,current_scan_id=None,limit=10):
+    events=_current_event_frame(df)
+    if events.empty:
+        return pd.DataFrame()
+
+    changes,_,_=_compare_since_previous(df,current_scan_id)
+    change_map={}
+    if not changes.empty:
+        for _,c in changes.iterrows():
+            change_map[c['Başlık']]=c['Değişim']
+
+    rows=[]
+    for _,r in events.iterrows():
+        score=0
+        risk=int(r['risk_score'] or 0)
+        score += min(45,int(risk*0.45))
+        if r['risk_status']=='Yüksek Risk': score+=18
+        elif r['sentiment']=='Negatif': score+=10
+        score += min(int(r['source_count'] or 0)*4,16)
+
+        vr=_verification_rank(r['verification'])
+        score += {4:12,3:9,2:4,1:0}.get(vr,0)
+
+        title_summary=norm(r['title']+' '+r['summary'])
+        if is_osb_fire(r['title'],r['summary']): score+=18
+        if any(x in title_summary for x in ['savunma','aselsan','tusaş','tusas','roketsan','baykar','havelsan','füze','iha','siha']): score+=10
+        if any(x in title_summary for x in ['yatırım','yeni tesis','kapasite art','ihracat','kritik teknoloji','yarı iletken','çip','nükleer']): score+=9
+        if any(x in title_summary for x in ['üretim durdu','fabrika kapandı','yangın','patlama','siber saldırı','ambargo','yaptırım']): score+=12
+
+        change_kind=change_map.get(r['title'],'')
+        if change_kind:
+            score += 14 if 'YENİ OLAY' in change_kind else 12
+
+        score=min(100,score)
+        rows.append({
+            'Aday Puanı':score,
+            'Başlık':r['title'],
+            'Kaynak':r['source'],
+            'Kategori':r['category'],
+            'Risk':risk,
+            'Kaynak Sayısı':r['source_count'],
+            'Doğrulama':r['verification'],
+            'Değişim':change_kind or '—',
+            'Neden Bilgi Notu?':_note_candidate_reason(r,change_kind),
+            'URL':r['url']
+        })
+
+    out=pd.DataFrame(rows).sort_values(['Aday Puanı','Risk'],ascending=[False,False]).head(limit)
+    return out.reset_index(drop=True)
+
 # -----------------------------
 # GÜNLÜK DURUM ÖZETİ — V32 EK MODÜL
 # V31 çekirdek tarama / risk / alarm / bilgi notu fonksiyonlarına dokunmaz.
@@ -1670,6 +2037,10 @@ if 'last_scan_alerts' not in st.session_state: st.session_state.last_scan_alerts
 if 'docx_bytes' not in st.session_state: st.session_state.docx_bytes=None
 if 'note_bytes' not in st.session_state: st.session_state.note_bytes=None
 
+if 'current_scan_id' not in st.session_state: st.session_state.current_scan_id=None
+if 'history_status' not in st.session_state: st.session_state.history_status=_init_history_db()
+
+
 if run:
     cutoff=(datetime.now(timezone.utc)-timedelta(hours=hours)).astimezone(timezone.utc)
     when=period_window(hours)
@@ -1836,6 +2207,15 @@ if run:
     st.session_state.stats=stat
     st.session_state.last_scan_alerts=live_alerts
 
+    # V33 geçmiş karşılaştırma katmanı: tarama bittikten SONRA olay özetini kaydeder.
+    # Tarama motoruna veya sıralamaya müdahale etmez.
+    st.session_state.current_scan_id=_save_scan_history(
+        all_rows,
+        st.session_state.scan_time,
+        hours
+    )
+
+
 rows=st.session_state.rows
 if rows is None:
     st.info('👋 Hazır. Tarama başlamaz. Zaman aralığını seçip **TARAMAYI BAŞLAT / YENİLE** düğmesine basın.')
@@ -1853,6 +2233,64 @@ else:
     else:
         total=len(df); negc=int((df.Duygu=='Negatif').sum()); riskc=int((df.Risk_Durumu=='Yüksek Risk').sum()); trc=int(df.Kaynak_Grubu.astype(str).str.startswith('🇹🇷').sum()); grc=int(df.Kaynak_Grubu.astype(str).str.startswith('🇬🇷').sum()); events=df['Olay_ID'].nunique()
         a,b,c,d,e,f=st.columns(6); a.metric('Toplam',total); b.metric('Olay',events); c.metric('Negatif',negc); d.metric('Yüksek Risk',riskc); e.metric('🇹🇷 Türk',trc); f.metric('🇬🇷 Yunan',grc)
+
+
+        # ---------------------------------------------------------
+        # V33 — BİLGİ NOTU ADAYLARI
+        # ---------------------------------------------------------
+        st.subheader('🎯 Bilgi Notu Adayları')
+        st.caption('Mevcut taramadaki olayları risk, teyit, kaynak sayısı, stratejik önem ve yenilik açısından puanlar.')
+        candidate_count=st.slider('Gösterilecek aday sayısı',5,15,10,1,key='candidate_count')
+        candidates=_information_note_candidates(
+            df,
+            st.session_state.get('current_scan_id'),
+            candidate_count
+        )
+        if candidates.empty:
+            st.info('Bu taramada bilgi notu adayı oluşturulamadı.')
+        else:
+            st.dataframe(
+                candidates,
+                column_config={
+                    'Aday Puanı':st.column_config.ProgressColumn('Aday Puanı',min_value=0,max_value=100,format='%d'),
+                    'URL':st.column_config.LinkColumn('Haber Linki')
+                },
+                hide_index=True,use_container_width=True,height=min(470,65+36*len(candidates))
+            )
+
+        # ---------------------------------------------------------
+        # V33 — DÜNDEN BERİ NE DEĞİŞTİ?
+        # ---------------------------------------------------------
+        st.subheader('🆕 Dünden Beri Ne Değişti?')
+        changes,previous_scan_id,previous_scan_time=_compare_since_previous(
+            df,
+            st.session_state.get('current_scan_id')
+        )
+        if previous_scan_id is None:
+            st.info(
+                'Henüz karşılaştırılabilecek eski tarama bulunmuyor. '
+                'Bu tarama yerel geçmişe kaydedildi; sonraki taramalarda yeni olaylar ve değişiklikler otomatik gösterilecek.'
+            )
+        else:
+            if previous_scan_time:
+                st.caption(f'Karşılaştırılan önceki tarama: {previous_scan_time}')
+            if changes.empty:
+                st.success('Önceki taramaya göre anlamlı yeni olay, risk artışı, teyit artışı veya içerik güncellemesi tespit edilmedi.')
+            else:
+                new_n=int(changes['Değişim'].astype(str).str.contains('YENİ OLAY').sum())
+                upd_n=int(changes['Değişim'].astype(str).str.contains('YENİ BİLGİ').sum())
+                risk_n=int(changes['Değişim'].astype(str).str.contains('RİSK ARTTI').sum())
+                ver_n=int(changes['Değişim'].astype(str).str.contains('TEYİT').sum())
+                q1,q2,q3,q4=st.columns(4)
+                q1.metric('Yeni Olay',new_n)
+                q2.metric('Yeni Bilgi',upd_n)
+                q3.metric('Risk Artışı',risk_n)
+                q4.metric('Teyit Güçlendi',ver_n)
+                st.dataframe(
+                    changes.head(25),
+                    column_config={'URL':st.column_config.LinkColumn('Haber Linki')},
+                    hide_index=True,use_container_width=True,height=min(560,70+35*min(len(changes),25))
+                )
 
         # Son taramada anlık yakalanan bildirimlerin kalıcı özeti
         recent_alerts=st.session_state.get('last_scan_alerts',[])
