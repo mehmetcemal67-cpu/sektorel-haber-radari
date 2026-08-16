@@ -400,6 +400,7 @@ def make_source_query(term, domains=None, when="1d"):
 # -------------------------
 # DDGS / GOOGLE NEWS RSS / GDELT
 # -------------------------
+@st.cache_data(ttl=90, show_spinner=False)
 def ddgs_news(term, region="tr-tr", max_results=20):
     try:
         from ddgs import DDGS
@@ -431,6 +432,7 @@ def resolve_google_news_url(url, source_url=""):
     return url
 
 
+@st.cache_data(ttl=90, show_spinner=False)
 def google_news_rss(query, max_results=100):
     """Google News RSS üzerinden özellikle Türk yayıncıları toplar."""
     url = "https://news.google.com/rss/search"
@@ -463,6 +465,7 @@ def google_news_rss(query, max_results=100):
         return []
 
 
+@st.cache_data(ttl=90, show_spinner=False)
 def ddgs_text(term, region="tr-tr", max_results=20):
     """Genel web / sosyal platform indeks sonuçları için DDGS text araması."""
     try:
@@ -479,6 +482,7 @@ def ddgs_text(term, region="tr-tr", max_results=20):
         return []
 
 
+@st.cache_data(ttl=120, show_spinner=False)
 def gdelt_news(query, max_records=50, timespan="1d"):
     url = "https://api.gdeltproject.org/api/v2/doc/doc"
     params = {
@@ -498,21 +502,22 @@ def gdelt_news(query, max_records=50, timespan="1d"):
         return []
 
 
-def fetch_targeted_turkish_sources(queries, when="1d", max_per_query=40):
-    """Türk basını/teknoloji/savunma medyasını açıkça önceliklendirir."""
-    jobs = []
-    # Ana akım ve ekonomi
-    for q in queries[:18]:
-        jobs.append(make_source_query(q, TR_MAIN_DOMAINS, when))
-    # Teknoloji ve savunma
-    for q in queries[:24]:
-        jobs.append(make_source_query(q, TR_TECH_DEFENSE_DOMAINS, when))
-    # Resmi kaynaklar
-    for q in queries[:10]:
-        jobs.append(make_source_query(q, TR_OFFICIAL_DOMAINS, when))
+def fetch_targeted_turkish_sources(queries, when="1d", max_per_query=80):
+    """
+    HIZLI KATMAN: onlarca ayrı Google News isteği yerine 4-5 toplu sorgu.
+    Böylece Türk kaynak önceliği korunurken network round-trip sayısı ciddi azalır.
+    """
+    jobs = [
+        make_source_query(" OR ".join(f"({q})" for q in queries[:12]), TR_MAIN_DOMAINS, when),
+        make_source_query(" OR ".join(f"({q})" for q in queries[:16]), TR_TECH_DEFENSE_DOMAINS, when),
+        make_source_query(" OR ".join(f"({q})" for q in queries[:10]), TR_OFFICIAL_DOMAINS, when),
+    ]
+    # Negatif odaklı tek toplu Türkçe sorgu: kaçırma olasılığını korur.
+    negative_terms = '(kriz OR iflas OR konkordato OR soruşturma OR yaptırım OR "üretim durdu" OR "fabrika kapandı" OR "siber saldırı" OR iptal OR gecikme)'
+    jobs.append(make_source_query(negative_terms, TR_MAIN_DOMAINS + TR_TECH_DEFENSE_DOMAINS, when))
 
     rows = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as ex:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
         futures = [ex.submit(google_news_rss, q, max_per_query) for q in jobs]
         for f in concurrent.futures.as_completed(futures):
             try:
@@ -549,21 +554,29 @@ def fetch_greek_defense_sources(when="1d", max_per_query=60):
 
 
 def fetch_social_leads(queries, when="1d", max_results=30):
-    """Sosyal medya için indekslenmiş açık kaynak sonuçlarını OSINT öncüleri olarak toplar."""
-    rows = []
+    """İndekslenmiş sosyal sonuçları az sayıda paralel sorguyla toplar."""
     social_domains = " OR ".join(f"site:{d}" for d in SOCIAL_SEARCH_DOMAINS)
-    for q in queries[:12]:
-        search_q = f"({q}) ({social_domains})"
-        try:
-            rows.extend(ddgs_text(search_q, region="tr-tr", max_results=max_results))
-        except Exception:
-            pass
+    qs = [
+        f"({queries[0] if queries else 'sanayi OR teknoloji'}) ({social_domains})",
+        f"(ASELSAN OR TUSAŞ OR ROKETSAN OR BAYKAR OR TOGG OR TÜBİTAK) ({social_domains})",
+        f"(kriz OR iflas OR soruşturma OR siber saldırı OR üretim durdu OR yaptırım) (sanayi OR teknoloji OR savunma) ({social_domains})",
+    ]
+    rows = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as ex:
+        futures = [ex.submit(ddgs_text, q, "tr-tr", max_results) for q in qs]
+        for f in concurrent.futures.as_completed(futures):
+            try:
+                rows.extend(f.result())
+            except Exception:
+                pass
     return rows
+
 
 # -------------------------
 # HABER METNİ / GÖRSEL
 # -------------------------
-def extract_article(url, timeout=8):
+@st.cache_data(ttl=3600, show_spinner=False)
+def extract_article(url, timeout=5):
     result = {"text": "", "image_url": ""}
     if not url:
         return result
@@ -603,7 +616,7 @@ def extract_article(url, timeout=8):
     except Exception:
         return result
 
-def extract_many(urls, workers=16):
+def extract_many(urls, workers=10):
     urls = list(dict.fromkeys([u for u in urls if u]))
     out = {}
     if not urls:
@@ -657,23 +670,14 @@ def summarize_text(title, body, max_chars=1800):
 # -------------------------
 # HABER TOPLAMA
 # -------------------------
+@st.cache_data(ttl=90, show_spinner=False)
 def fetch_news(user_query, time_hours=24, max_results=150,
                broad=True, negative_boost=True, include_greek=True,
-               include_global=False, include_social=True,
-               workers=12):
-    """
-    Kaynak sırası:
-      1. Türk ana akım/ekonomi
-      2. Türk teknoloji/savunma
-      3. Türk resmi/kurumsal
-      4. Yunan medyası (yalnızca Türk savunma bağlamı)
-      5. Sosyal medya indeks sonuçları
-      6. Genel yabancı basın (yalnızca kullanıcı açarsa)
-    """
-    queries = build_queries(user_query, broad, negative_boost)
+               include_global=False, include_social=True):
+    """Hızlı iki aşamalı haber toplama. İlk ekranda yalnızca başlık/snippet."""
+    queries = build_queries(user_query, broad, negative_boost, cap=45)
     cutoff = datetime.now(timezone.utc) - timedelta(hours=time_hours)
 
-    # Google News "when" parametresi 1d/7d/30d gibi dönemlerde çalışır.
     if time_hours <= 3:
         when = "3h"
     elif time_hours <= 24:
@@ -684,25 +688,33 @@ def fetch_news(user_query, time_hours=24, max_results=150,
         when = "30d"
 
     records = []
+    # 1) Türk kaynakları: 4 toplu RSS sorgusu
+    records.extend(fetch_targeted_turkish_sources(queries, when=when, max_per_query=80))
 
-    # 1) Türk kaynakları: ANA AKIŞ
-    records.extend(fetch_targeted_turkish_sources(queries, when=when, max_per_query=35))
+    # 2) DDGS: yalnızca tamamlayıcı 12 sorgu
+    ddgs_queries = list(dict.fromkeys(queries[:8]))
+    if negative_boost:
+        ddgs_queries += [
+            'sanayi teknoloji (kriz OR iflas OR konkordato OR soruşturma)',
+            'savunma sanayii (iptal OR gecikme OR yaptırım OR soruşturma)',
+            'fabrika üretim (durduruldu OR kapandı OR grev OR işten çıkarma)',
+            'teknoloji (siber saldırı OR veri sızıntısı OR güvenlik açığı)',
+        ]
+    ddgs_queries = list(dict.fromkeys(ddgs_queries))[:12]
 
-    # 2) DDGS Türkçe arama: site listesinde olmayan yerel yayıncıları da yakalar.
-    ddgs_jobs = [(q, "tr-tr") for q in queries[:35]]
-    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
-        futures = [ex.submit(ddgs_news, q, region=region, max_results=20) for q, region in ddgs_jobs]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
+        futures = [ex.submit(ddgs_news, q, "tr-tr", 15) for q in ddgs_queries]
         for f in concurrent.futures.as_completed(futures):
             try:
                 records.extend(f.result())
             except Exception:
                 pass
 
-    # 3) Sosyal medya: sadece indekslenmiş açık sonuçlar; veri tabanı yerine OSINT lead.
+    # 3) Sosyal lead: sadece 3 paralel sorgu
     if include_social:
-        records.extend(fetch_social_leads(queries, when=when, max_results=20))
+        records.extend(fetch_social_leads(queries, when=when, max_results=15))
 
-    # 4) Yunanistan: yalnızca Türk savunma sanayii bağlantılı sonuçlar.
+    # 4) Yunanistan: 4 paralel hedefli sorgu
     if include_greek:
         greek = fetch_greek_defense_sources(when=when, max_per_query=50)
         records.extend([r for r in greek if is_greek_turkish_defense({
@@ -711,19 +723,15 @@ def fetch_news(user_query, time_hours=24, max_results=150,
             "snippet": r.get("snippet", ""),
         })])
 
-    # 5) Genel yabancı basın: varsayılan KAPALI. Kullanıcı isterse açar.
+    # 5) Genel yabancı basın yalnızca kullanıcı açarsa
     if include_global:
         gdelt_queries = [
-            '(industry OR manufacturing OR technology OR semiconductor OR artificial intelligence) (Turkey OR Türkiye)',
-            '(defense OR aerospace OR automotive OR battery OR energy) (Turkey OR Türkiye)',
-            '(cybersecurity OR chip OR factory OR supply chain OR sanctions) (Turkey OR Türkiye)',
+            '(industry OR manufacturing OR technology) (Turkey OR Türkiye)',
+            '(defense OR aerospace OR automotive OR semiconductor) (Turkey OR Türkiye)',
         ]
         if negative_boost:
-            gdelt_queries.append(
-                '(Turkey OR Türkiye) (factory OR manufacturing OR defense OR technology) '
-                '(crisis OR shutdown OR sanction OR lawsuit OR cyberattack OR cancellation)'
-            )
-        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as ex:
+            gdelt_queries.append('(Turkey OR Türkiye) (factory OR defense OR technology) (crisis OR shutdown OR sanction OR cyberattack OR cancellation)')
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as ex:
             futures = [ex.submit(gdelt_news, q, 60, when) for q in gdelt_queries]
             for f in concurrent.futures.as_completed(futures):
                 try:
@@ -732,24 +740,19 @@ def fetch_news(user_query, time_hours=24, max_results=150,
                     pass
 
     normalized = []
-    seen_urls = set()
-    seen_titles = set()
-
+    seen_urls, seen_titles = set(), set()
     for r in records:
         url = r.get("url") or r.get("url_mobile") or ""
         title = r.get("title") or ""
         if not url or not title:
             continue
-
         dt = parse_dt(r.get("date") or r.get("seendate") or r.get("publishedAt"))
         if dt and dt < cutoff:
             continue
-
         nt = normalize_title(title)
         title_key = " ".join(nt.split()[:10])
         if url in seen_urls or title_key in seen_titles:
             continue
-
         source_url = r.get("source_url") or ""
         effective_domain = domain_of(url)
         if "news.google.com" in effective_domain and source_url:
@@ -765,35 +768,28 @@ def fetch_news(user_query, time_hours=24, max_results=150,
             "image_url": r.get("image") or r.get("socialimage") or "",
         }
         item["Kaynak_Grubu"] = source_group(source_url or url)
-
-        # Yunan kaynağı için ikinci güvenlik filtresi.
         if item["Kaynak_Grubu"].startswith("🇬🇷") and not is_greek_turkish_defense(item):
             continue
-
         normalized.append(item)
         seen_urls.add(url)
         seen_titles.add(title_key)
 
-    # Google News redirectlerini yalnızca nihai adaylar için çöz; böylece
-    # yüzlerce haber için gereksiz HTTP isteği yapılmaz.
+    # Redirect çözümünü sadece ilk adaylara uygula.
     for item in normalized[:max_results * 2]:
         if "news.google.com" in domain_of(item["url"]):
             resolved = resolve_google_news_url(item["url"], item.get("domain", ""))
             if resolved:
                 item["url"] = resolved
                 item["domain"] = domain_of(resolved) or item["domain"]
-                item["Kaynak_Grubu"] = source_group(resolved) if source_group(resolved) != "🌍 Diğer Yabancı" else item["Kaynak_Grubu"]
+                if source_group(resolved) != "🌍 Diğer Yabancı":
+                    item["Kaynak_Grubu"] = source_group(resolved)
 
-    # Türk kaynakları önce, ama haber zamanını bozmadan aynı zaman dilinde öncelik.
-    # Birincil sıralama kronoloji; ikincil kaynak önceliği.
     normalized.sort(
         key=lambda x: (
             x["published_dt"] or datetime.min.replace(tzinfo=timezone.utc),
             source_priority(x["url"]),
-        ),
-        reverse=True,
+        ), reverse=True
     )
-
     return normalized[:max_results]
 
 # -------------------------
@@ -940,6 +936,7 @@ st.caption(
     "Anlık haber akışı · negatif/riskli ayrıştırma · kronolojik sıralama · "
     "tam metin zenginleştirme · DOCX bilgi notu · açık kaynak çalışma ekranı"
 )
+st.caption("⚡ Hızlı tarama mimarisi: toplu Türk kaynak sorguları + cache + seçili haberlerde derin metin. İlk ekranı yavaşlatmamak için DOCX görselleri rapor hazırlanırken indirilir.")
 
 with st.sidebar:
     st.header("⚙️ Tarama Ayarları")
@@ -1012,6 +1009,10 @@ with st.sidebar:
     refresh_min = st.selectbox("Yenileme aralığı", [2, 5, 10, 15, 30], index=1)
 
     run = st.button("🔍 TARAMAYI BAŞLAT / YENİLE", type="primary", use_container_width=True)
+    if st.button("🧹 Önbelleği Temizle", use_container_width=True):
+        st.cache_data.clear()
+        st.session_state.df = None
+        st.rerun()
 
 # Otomatik yenileme: harici paket zorunluluğu olmadan Streamlit fragment varsa kullan.
 if auto_refresh:
@@ -1039,12 +1040,20 @@ if should_run:
         )
 
     if raw:
+        # HIZLI İLK EKRAN: önce başlık/snippet ile tabloyu göster.
+        # Tam metin yalnızca negatif/riskli ve ilk 35 öncelikli haber için çekilir.
+        enriched = {}
         if enrich:
-            urls = [x["url"] for x in raw]
-            with st.spinner(f"{len(urls)} haber sayfası zenginleştiriliyor..."):
-                enriched = extract_many(urls)
-        else:
-            enriched = {}
+            priority_raw = []
+            for x in raw:
+                probe = normalize_text((x.get("title", "") or "") + " " + (x.get("snippet", "") or ""))
+                if any(k in probe for k in HIGH_RISK_KEYWORDS + NEGATIVE_KEYWORDS):
+                    priority_raw.append(x)
+            priority_raw += [x for x in raw if x not in priority_raw]
+            urls = [x["url"] for x in priority_raw[:35] if x.get("url")]
+            if urls:
+                with st.spinner(f"Öncelikli {len(urls)} haber zenginleştiriliyor..."):
+                    enriched = extract_many(urls)
 
         rows = []
         for item in raw:
@@ -1238,33 +1247,47 @@ else:
     selected_df = df[df["Seç"] == True]
     st.write(f"**{len(selected_df)} haber** bilgi notuna seçildi.")
 
-    full_doc = make_docx(
-        df,
-        st.session_state.last_query,
-        title="SANAYİ VE TEKNOLOJİ AÇIK KAYNAK TARAMA RAPORU"
-    )
-    st.download_button(
-        "📄 TAM TARAMA RAPORUNU İNDİR (.DOCX)",
-        data=full_doc,
-        file_name=f"Sanayi_Teknoloji_OSINT_{date.today()}.docx",
-        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        type="primary",
-        use_container_width=True,
-    )
+    if "full_docx" not in st.session_state:
+        st.session_state.full_docx = None
+    if "briefing_docx" not in st.session_state:
+        st.session_state.briefing_docx = None
 
-    if not selected_df.empty:
-        briefing_doc = make_docx(
-            selected_df,
-            st.session_state.last_query,
-            title="GÜNLÜK BİLGİ NOTU — SANAYİ & TEKNOLOJİ"
-        )
-        st.download_button(
-            "📝 SEÇİLİ HABERLERDEN BİLGİ NOTU İNDİR (.DOCX)",
-            data=briefing_doc,
-            file_name=f"Gunluk_Bilgi_Notu_{date.today()}.docx",
-            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-            use_container_width=True,
-        )
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("📄 TAM RAPORU HAZIRLA", use_container_width=True):
+            with st.spinner("DOCX hazırlanıyor; görseller yalnızca bu aşamada indiriliyor..."):
+                st.session_state.full_docx = make_docx(
+                    df, st.session_state.last_query,
+                    title="SANAYİ VE TEKNOLOJİ AÇIK KAYNAK TARAMA RAPORU"
+                )
+        if st.session_state.full_docx:
+            st.download_button(
+                "⬇️ TAM TARAMA RAPORUNU İNDİR (.DOCX)",
+                data=st.session_state.full_docx,
+                file_name=f"Sanayi_Teknoloji_OSINT_{date.today()}.docx",
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                type="primary",
+                use_container_width=True,
+            )
+
+    with c2:
+        if not selected_df.empty:
+            if st.button("📝 BİLGİ NOTUNU HAZIRLA", use_container_width=True):
+                with st.spinner("Seçili haberlerden DOCX bilgi notu hazırlanıyor..."):
+                    st.session_state.briefing_docx = make_docx(
+                        selected_df, st.session_state.last_query,
+                        title="GÜNLÜK BİLGİ NOTU — SANAYİ & TEKNOLOJİ"
+                    )
+            if st.session_state.briefing_docx:
+                st.download_button(
+                    "⬇️ SEÇİLİ HABERLERDEN BİLGİ NOTU İNDİR (.DOCX)",
+                    data=st.session_state.briefing_docx,
+                    file_name=f"Gunluk_Bilgi_Notu_{date.today()}.docx",
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    use_container_width=True,
+                )
+        else:
+            st.info("Bilgi notu için haber seçin.")
 
     # CSV de pratik bir OSINT çalışma çıktısıdır.
     csv = df.drop(columns=["Tarih_dt"], errors="ignore").to_csv(index=False).encode("utf-8-sig")
