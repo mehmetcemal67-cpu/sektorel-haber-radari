@@ -5,5 +5,3 @@ beautifulsoup4
 python-docx
 feedparser
 duckduckgo_search
-trafilatura
-googlenewsdecoder

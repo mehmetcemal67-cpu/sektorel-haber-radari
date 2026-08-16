@@ -11,7 +11,6 @@ import urllib.parse
 from email.utils import parsedate_to_datetime
 from duckduckgo_search import DDGS
 from bs4 import BeautifulSoup
-from googlenewsdecoder import gnd
 
 from docx import Document
 from docx.shared import Pt, RGBColor, Inches
@@ -79,31 +78,24 @@ STRATEGIC_CATEGORIES = {
     ]
 }
 
-# --- GOOGLE LINK ÇÖZÜCÜ VE SAYFA KAZIYICI ---
-def unwrap_and_scrape(url):
-    """Google News linkini gerçek siteye çözümler, görsel ve tam paragrafları kazır."""
-    final_url = url
-    if "news.google.com" in url:
-        try:
-            decoded = gnd(url)
-            if decoded and decoded.get("status") and decoded.get("decoded_url"):
-                final_url = decoded["decoded_url"]
-        except Exception:
-            final_url = url
-
+# --- YERLİ SAYFA İZLEME VE GÖRSEL YAKALAYICI (KÜTÜPHANENİZİK) ---
+def scrape_article_data(target_url):
+    """Sadece standart requests & bs4 kullanarak görsel ve gerçek metinleri ayıklar."""
     img_url = ""
     paragraphs = []
+    final_url = target_url
     
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
     }
     
     try:
-        resp = requests.get(final_url, headers=headers, timeout=4, allow_redirects=True)
+        resp = requests.get(target_url, headers=headers, timeout=4, allow_redirects=True)
         if resp.status_code == 200:
+            final_url = resp.url
             soup = BeautifulSoup(resp.text, 'html.parser')
             
-            # Görsel tespiti (og:image, twitter:image)
+            # 1. Görsel Avcısı
             for meta_prop in ['og:image', 'twitter:image', 'og:image:secure_url']:
                 tag = soup.find('meta', property=meta_prop) or soup.find('meta', attrs={'name': meta_prop})
                 if tag and tag.get('content'):
@@ -112,7 +104,18 @@ def unwrap_and_scrape(url):
                         img_url = candidate
                         break
                         
-            # Paragraf tespiti
+            # Görsel bulunamadıysa içerikten ilk resmi kap
+            if not img_url:
+                for img in soup.find_all('img'):
+                    src = img.get('src') or img.get('data-src') or ''
+                    if src.startswith('//'):
+                        src = 'https:' + src
+                    if src.startswith('http') and any(ext in src.lower() for ext in ['.jpg', '.jpeg', '.png', '.webp']):
+                        if not any(bad in src.lower() for bad in ['logo', 'icon', 'avatar', 'banner', 'pixel', 'advertisement']):
+                            img_url = src
+                            break
+
+            # 2. Paragraf Avcısı
             for p in soup.find_all('p'):
                 txt = p.get_text().strip()
                 if len(txt) > 35 and not any(w in txt.lower() for w in ['çerez', 'cookie', 'abone', 'tıklayın', 'copyright', 'gizlilik']):
@@ -157,10 +160,7 @@ def analyze_article(title, text):
 
 # --- AKICI DÜZYAZI VE DERİN ÖZET ÜRETİCİ ---
 def build_prose_analysis(title, scraped_text, category, sentiment, risk_level, manip_words):
-    """
-    Maddeli/şablon yapıları tamamen kaldırır. 
-    Haberin akışını ve stratejik önemini anlatan akıcı bir DÜZYAZI PARAGRAFI oluşturur.
-    """
+    """Şablon ifadeleri yok edip akıcı bir DÜZYAZI PARAGRAFI oluşturur."""
     clean_text = scraped_text.strip() if scraped_text else ""
     sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', clean_text) if len(s.strip()) > 25]
     
@@ -169,20 +169,19 @@ def build_prose_analysis(title, scraped_text, category, sentiment, risk_level, m
     elif sentences:
         story = sentences[0]
     else:
-        story = f"{title} konusuyla ilgili gelişmeler açık kaynaklar üzerinden takip edilmektedir."
+        story = f"{title} hususunda basına yansıyan detaylar açık kaynak akışı üzerinden takip edilmektedir."
 
-    # Akıcı düzyazı şeklinde stratejik değerlendirme eklemesi
-    prose_eval = f" İlgili gelişme {category.lower()} alanı açısından kritik önem taşımaktadır."
+    prose_eval = f" Yapılan sektörel değerlendirmeye göre gelişme {category.lower()} ekosistemini doğrudan ilgilendirmektedir."
     
     if sentiment == "Pozitif":
-        prose_eval += " Haber içeriğinde öne çıkan detaylar, yerli üretim kapasitesi, sektörel büyüme ve teknolojik yetkinliklerin güçlenmesi yönünde olumlu bir tablo çizmektedir."
+        prose_eval += " İçerikte sunulan veriler; yerli üretim yetkinliklerinin gelişimi, sektörel büyüme ve kurumsal altyapının güçlenmesi yönünde olumlu mesajlar vermektedir."
     elif sentiment == "Negatif":
-        prose_eval += " Haber içeriği incelendiğinde; sektörel daralma, maliyet yükü veya operasyonel risklerin öne çıktığı görülmektedir."
+        prose_eval += " Detaylar incelendiğinde; pazardaki daralma, maliyet artışları veya operasyonel risklerin ön plana çıktığı görülmektedir."
     else:
-        prose_eval += " Makale genel itibarıyla teknik bilgilendirme ve kurumsal süreç aktarımı niteliğindedir."
+        prose_eval += " Haber içeriği genel itibarıyla teknik bilgilendirme ve kurumsal süreç aktarımı niteliğindedir."
 
     if risk_level == "Yüksek Risk":
-        prose_eval += f" Ayrıca metin içerisinde kamuoyunu yönlendirme veya algı oluşturma riski barındıran söylemler ({', '.join(manip_words)}) tespit edilmiş olup, konunun kurumsal takibi önerilmektedir."
+        prose_eval += f" Ek olarak metin içerisinde algı oluşturma veya kamuoyunu yönlendirme riski barındıran ifadelere ({', '.join(manip_words)}) rastlanmış olup takibi önerilmektedir."
 
     return f"{story}{prose_eval}"
 
@@ -190,46 +189,43 @@ def build_prose_analysis(title, scraped_text, category, sentiment, risk_level, m
 def fetch_robust_news(query_text, time_range="1d", max_results=25):
     articles = []
     seen_urls = set()
-    today = date.today()
 
     raw_keywords = [k.strip().replace('"', '') for k in query_text.split('OR')]
-    clean_q = " OR ".join(raw_keywords[:5])
-    search_query = f"{clean_q} when:{time_range}"
-    encoded_query = urllib.parse.quote(search_query)
-    rss_url = f"https://news.google.com/rss/search?q={encoded_query}&hl=tr&gl=TR&ceid=TR:tr"
-    
+    sub_queries = [" ".join(raw_keywords[:4]), " ".join(raw_keywords[4:8])]
+    time_ddg = {"1d": "d", "7d": "w", "14d": "w"}.get(time_range, "d")
+
+    # DuckDuckGo News Taraması (Görsel ve Direkt Link İçin En Güvenilir Kaynak)
     try:
-        feed = feedparser.parse(rss_url)
-        for entry in feed.entries:
-            if len(articles) >= max_results:
-                break
-            raw_link = entry.get('link', '')
-            if not raw_link or raw_link in seen_urls:
-                continue
-            
-            # Google linkini çöz ve siteyi kazı
-            real_url, fetched_img, full_text = unwrap_and_scrape(raw_link)
-            
-            if real_url in seen_urls:
-                continue
-            seen_urls.add(real_url)
-            seen_urls.add(raw_link)
+        with DDGS() as ddgs:
+            for sq in sub_queries:
+                if len(articles) >= max_results:
+                    break
+                if not sq.strip():
+                    continue
+                results = ddgs.news(keywords=sq, region="tr-tr", timelimit=time_ddg, max_results=15)
+                for r in results:
+                    url = r.get('url', '')
+                    if url and url not in seen_urls:
+                        seen_urls.add(url)
+                        
+                        final_url, scraped_img, scraped_text = scrape_article_data(url)
+                        final_img = scraped_img if scraped_img else r.get('image', '')
+                        
+                        raw_date = r.get('date', '')
+                        try:
+                            dt = datetime.fromisoformat(raw_date.replace('Z', '+00:00'))
+                            formatted_date = dt.strftime('%d %b %Y %H:%M')
+                        except Exception:
+                            formatted_date = datetime.now().strftime('%d %b %Y %H:%M')
 
-            pub_date_str = entry.get('published', '')
-            try:
-                pub_dt = parsedate_to_datetime(pub_date_str)
-                formatted_date = pub_dt.strftime('%d %b %Y %H:%M')
-            except Exception:
-                formatted_date = datetime.now().strftime('%d %b %Y %H:%M')
-
-            articles.append({
-                'title': entry.get('title', ''),
-                'full_text': full_text,
-                'url': real_url,
-                'image_url': fetched_img,
-                'publishedAt': formatted_date,
-                'source': {'name': entry.get('source', {}).get('title', 'Açık Basın')}
-            })
+                        articles.append({
+                            'title': r.get('title', ''),
+                            'full_text': scraped_text if len(scraped_text) > 50 else r.get('body', ''),
+                            'url': final_url,
+                            'image_url': final_img,
+                            'publishedAt': formatted_date,
+                            'source': {'name': r.get('source', 'Açık Basın')}
+                        })
     except Exception:
         pass
 
@@ -251,10 +247,10 @@ def add_safe_hyperlink(paragraph, url, text):
         hyperlink = parse_xml(xml_str)
         paragraph._p.append(hyperlink)
     except Exception:
-        paragraph.add_run(f"{text} (Link: {url})")
+        paragraph.add_run(f"{text} ({url})")
 
 def download_image_stream(img_url):
-    """Resmi indirip Word dosyasına eklenmeye hazır hale getirir."""
+    """Resmi indirip Word dosyasına eklenebilir hale getirir."""
     if not img_url or "gstatic.com" in img_url:
         return None
     try:
@@ -409,7 +405,7 @@ def generate_osint_docx(query, df_all, stats):
 
 # --- ARAYÜZ (STREAMLIT) ---
 st.title("🛡️ Sanayi, Teknoloji & Güvenlik Açık Kaynak Radarı")
-st.caption("Google Link Çözümleme, Orijinal Görsel Yakalama ve Düzyazı Analiz Platformu")
+st.caption("Doğrudan Haber Metni Kazıma, Orijinal Görsel Yakalama ve Düzyazı Analiz Platformu")
 
 with st.sidebar:
     st.header("⚙️ Tarama Parametreleri")
@@ -442,7 +438,7 @@ with st.sidebar:
     btn_run = st.button("🔍 Açık Kaynak Taramasını Başlat", type="primary", use_container_width=True)
 
 if btn_run:
-    with st.spinner("Google yönlendirme linkleri çözülüyor, orijinal siteden görseller indiriliyor ve düzyazı analizler hazırlanıyor..."):
+    with st.spinner("Haber kaynakları taranıyor, resimler çekiliyor ve akıcı düzyazı özetler oluşturuluyor..."):
         articles = fetch_robust_news(query, time_range=time_filter, max_results=max_news)
         
         if articles:
