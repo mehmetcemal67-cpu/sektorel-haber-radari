@@ -946,6 +946,29 @@ def _init_history_db():
                 )
             """)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_event_snapshots_scan ON event_snapshots(scan_id)")
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS shift_marks(
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    marked_at TEXT NOT NULL,
+                    scan_id INTEGER,
+                    label TEXT
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS important_basket(
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    added_at TEXT NOT NULL,
+                    news_time TEXT,
+                    title TEXT NOT NULL,
+                    source TEXT,
+                    url TEXT,
+                    category TEXT,
+                    risk_score INTEGER,
+                    risk_status TEXT,
+                    summary TEXT,
+                    UNIQUE(url,title)
+                )
+            """)
             conn.commit()
         return True
     except Exception:
@@ -1263,6 +1286,217 @@ def _information_note_candidates(df,current_scan_id=None,limit=10):
 
     out=pd.DataFrame(rows).sort_values(['Aday Puanı','Risk'],ascending=[False,False]).head(limit)
     return out.reset_index(drop=True)
+
+
+# -----------------------------
+# V34 — VARDİYA BAŞLANGIÇ ÖZETİ + ÖNEMLİ GELİŞMELER SEPETİ
+# V33 çekirdeğine dokunmaz.
+# -----------------------------
+def _mark_shift_handover(scan_id=None, label='Devir noktası'):
+    if not _init_history_db():
+        return False
+    try:
+        now=datetime.now().astimezone().isoformat()
+        with _history_connect() as conn:
+            conn.execute(
+                "INSERT INTO shift_marks(marked_at,scan_id,label) VALUES(?,?,?)",
+                (now,int(scan_id) if scan_id else None,label)
+            )
+            conn.commit()
+        return True
+    except Exception:
+        return False
+
+def _latest_shift_mark():
+    if not _init_history_db():
+        return None
+    try:
+        with _history_connect() as conn:
+            row=conn.execute(
+                "SELECT marked_at,scan_id,label FROM shift_marks ORDER BY marked_at DESC LIMIT 1"
+            ).fetchone()
+        return {'marked_at':row[0],'scan_id':row[1],'label':row[2]} if row else None
+    except Exception:
+        return None
+
+def _shift_baseline(current_scan_id=None):
+    """
+    Öncelik manuel devir noktasıdır.
+    Hiç devir noktası yoksa V33'ün önceki taramasını baseline olarak kullanır.
+    """
+    mark=_latest_shift_mark()
+    if mark:
+        try:
+            return pd.to_datetime(mark['marked_at'],utc=True),f"Devir noktası: {mark['marked_at']}",mark.get('scan_id')
+        except Exception:
+            pass
+
+    prev_id=_previous_scan_id(current_scan_id)
+    prev=_load_scan_events(prev_id)
+    if not prev.empty:
+        try:
+            ts=pd.to_datetime(str(prev.iloc[0].get('scanned_at','')),utc=True)
+            return ts,f"Önceki tarama: {prev.iloc[0].get('scanned_at','')}",prev_id
+        except Exception:
+            pass
+    return None,"Henüz devir noktası yok",None
+
+def _shift_start_summary(df,current_scan_id=None):
+    """
+    Son devir noktasından bu yana:
+    - yeni haber
+    - yeni önemli olay
+    - yüksek riskli gelişme
+    - risk artışı
+    - teyit güçlenmesi
+    - OSB olayı
+    - sabah ilk bakılması gereken 5 gelişme
+    """
+    if df is None or df.empty:
+        return {},pd.DataFrame(),""
+
+    baseline,baseline_label,baseline_scan_id=_shift_baseline(current_scan_id)
+    x=df.copy()
+    x['Tarih_dt']=pd.to_datetime(x.get('Tarih_dt'),utc=True,errors='coerce')
+
+    if baseline is not None:
+        since=x[(x['Tarih_dt'].isna()) | (x['Tarih_dt']>=baseline)].copy()
+    else:
+        since=x.copy()
+
+    changes,_,_=_compare_since_previous(df,current_scan_id)
+    if not changes.empty:
+        new_events=int(changes['Değişim'].astype(str).str.contains('YENİ OLAY').sum())
+        risk_up=int(changes['Değişim'].astype(str).str.contains('RİSK ARTTI').sum())
+        verify_up=int(changes['Değişim'].astype(str).str.contains('TEYİT').sum())
+    else:
+        new_events=0; risk_up=0; verify_up=0
+
+    high=int((since.get('Risk_Durumu',pd.Series(dtype=str))=='Yüksek Risk').sum()) if not since.empty else 0
+    osb=0
+    for _,r in since.iterrows():
+        if is_osb_fire(r.get('Başlık',''),r.get('İçerik_Özeti','')):
+            osb+=1
+
+    top=_daily_top_events(since,5) if not since.empty else pd.DataFrame()
+
+    stats={
+        'new_news':len(since),
+        'new_important_events':new_events,
+        'high_risk':high,
+        'risk_up':risk_up,
+        'verify_up':verify_up,
+        'osb':osb,
+        'baseline_label':baseline_label
+    }
+    return stats,top,baseline_label
+
+def _add_rows_to_important_basket(rows):
+    if rows is None or len(rows)==0 or not _init_history_db():
+        return 0
+    added=0
+    try:
+        with _history_connect() as conn:
+            for row in rows:
+                title=str(row.get('Başlık','') or '').strip()
+                url=str(row.get('URL','') or '').strip()
+                if not title:
+                    continue
+                cur=conn.execute("""
+                    INSERT OR IGNORE INTO important_basket(
+                        added_at,news_time,title,source,url,category,risk_score,risk_status,summary
+                    ) VALUES(?,?,?,?,?,?,?,?,?)
+                """,(
+                    datetime.now().astimezone().isoformat(),
+                    str(row.get('Tarih','') or ''),
+                    title,
+                    str(row.get('Kaynak','') or ''),
+                    url,
+                    str(row.get('Kategori','') or ''),
+                    int(row.get('Risk_Skoru',0) or 0),
+                    str(row.get('Risk_Durumu','') or ''),
+                    str(row.get('İçerik_Özeti','') or '')[:8000]
+                ))
+                if cur.rowcount:
+                    added+=1
+            conn.commit()
+        return added
+    except Exception:
+        return 0
+
+def _load_important_basket():
+    if not _init_history_db():
+        return pd.DataFrame()
+    try:
+        with _history_connect() as conn:
+            return pd.read_sql_query(
+                "SELECT * FROM important_basket ORDER BY added_at ASC,id ASC",
+                conn
+            )
+    except Exception:
+        return pd.DataFrame()
+
+def _remove_basket_ids(ids):
+    ids=[int(x) for x in ids if str(x).isdigit()]
+    if not ids:
+        return 0
+    try:
+        with _history_connect() as conn:
+            q="DELETE FROM important_basket WHERE id IN (" + ",".join("?" for _ in ids) + ")"
+            cur=conn.execute(q,ids)
+            conn.commit()
+            return cur.rowcount
+    except Exception:
+        return 0
+
+def _clear_important_basket():
+    try:
+        with _history_connect() as conn:
+            cur=conn.execute("DELETE FROM important_basket")
+            conn.commit()
+            return cur.rowcount
+    except Exception:
+        return 0
+
+def make_important_basket_docx(basket_df):
+    doc=Document()
+    sec=doc.sections[0]
+    sec.top_margin=Cm(2); sec.bottom_margin=Cm(2)
+    sec.left_margin=Cm(2.5); sec.right_margin=Cm(2.5)
+    doc.styles['Normal'].font.name='Times New Roman'
+    doc.styles['Normal'].font.size=Pt(11)
+
+    p=doc.add_paragraph()
+    p.alignment=WD_ALIGN_PARAGRAPH.CENTER
+    r=p.add_run('24 SAATLİK ÖNEMLİ GELİŞMELER')
+    r.bold=True; r.font.size=Pt(14)
+
+    p=doc.add_paragraph()
+    p.alignment=WD_ALIGN_PARAGRAPH.CENTER
+    p.add_run(datetime.now().astimezone().strftime('%d.%m.%Y %H:%M'))
+
+    if basket_df is None or basket_df.empty:
+        doc.add_paragraph('Sepette kayıtlı önemli gelişme bulunmamaktadır.')
+    else:
+        for i,(_,r) in enumerate(basket_df.iterrows(),1):
+            p=doc.add_paragraph()
+            p.alignment=WD_ALIGN_PARAGRAPH.JUSTIFY
+            p.paragraph_format.first_line_indent=Cm(.75)
+            run=p.add_run(f"{i}. {r.get('news_time','')} tarihinde {r.get('source','Açık Kaynak')} tarafından yayımlanan “{r.get('title','')}” başlıklı gelişme")
+            run.bold=False
+            summary=_clean_note_text(r.get('summary',''))
+            if summary:
+                p.add_run(f"; {summary}")
+            if r.get('risk_score') is not None:
+                p.add_run(f" Risk puanı {int(r.get('risk_score') or 0)}/100 olarak hesaplanmıştır.")
+            if r.get('url'):
+                p.add_run(' (')
+                _word_hyperlink(p,r.get('url'),'Haber linki')
+                p.add_run(')')
+
+    bio=BytesIO()
+    doc.save(bio); bio.seek(0)
+    return bio.getvalue()
 
 # -----------------------------
 # GÜNLÜK DURUM ÖZETİ — V32 EK MODÜL
@@ -2039,6 +2273,7 @@ if 'note_bytes' not in st.session_state: st.session_state.note_bytes=None
 
 if 'current_scan_id' not in st.session_state: st.session_state.current_scan_id=None
 if 'history_status' not in st.session_state: st.session_state.history_status=_init_history_db()
+if 'basket_docx_bytes' not in st.session_state: st.session_state.basket_docx_bytes=None
 
 
 if run:
@@ -2234,6 +2469,98 @@ else:
         total=len(df); negc=int((df.Duygu=='Negatif').sum()); riskc=int((df.Risk_Durumu=='Yüksek Risk').sum()); trc=int(df.Kaynak_Grubu.astype(str).str.startswith('🇹🇷').sum()); grc=int(df.Kaynak_Grubu.astype(str).str.startswith('🇬🇷').sum()); events=df['Olay_ID'].nunique()
         a,b,c,d,e,f=st.columns(6); a.metric('Toplam',total); b.metric('Olay',events); c.metric('Negatif',negc); d.metric('Yüksek Risk',riskc); e.metric('🇹🇷 Türk',trc); f.metric('🇬🇷 Yunan',grc)
 
+
+
+        # ---------------------------------------------------------
+        # V34 — VARDİYA BAŞLANGIÇ ÖZETİ
+        # ---------------------------------------------------------
+        st.subheader('🌅 Vardiya Başlangıç Özeti')
+        shift_stats,shift_top,shift_baseline_label=_shift_start_summary(
+            df,
+            st.session_state.get('current_scan_id')
+        )
+        if shift_stats:
+            st.caption(shift_stats.get('baseline_label',''))
+            s1,s2,s3,s4,s5,s6=st.columns(6)
+            s1.metric('Son devirden beri yeni haber',shift_stats['new_news'])
+            s2.metric('Yeni önemli olay',shift_stats['new_important_events'])
+            s3.metric('Yüksek riskli gelişme',shift_stats['high_risk'])
+            s4.metric('Risk artışı',shift_stats['risk_up'])
+            s5.metric('Teyit güçlenmesi',shift_stats['verify_up'])
+            s6.metric('OSB olayı',shift_stats['osb'])
+
+            st.markdown('**Sabah ilk bakılması gereken 5 gelişme**')
+            if shift_top.empty:
+                st.info('Öne çıkan gelişme bulunamadı.')
+            else:
+                st.dataframe(
+                    shift_top[['Tarih','Kaynak','Kategori','Başlık','Risk_Skoru','Risk_Durumu','Doğrulama','URL']],
+                    column_config={'URL':st.column_config.LinkColumn('Haber Linki')},
+                    hide_index=True,use_container_width=True,
+                    height=min(330,70+45*len(shift_top))
+                )
+
+        c_shift1,c_shift2=st.columns([2,1])
+        with c_shift1:
+            st.caption('Devir noktası, bir sonraki vardiya başlangıç özetinin başlangıç zamanını belirler.')
+        with c_shift2:
+            if st.button('📍 ŞİMDİYİ DEVİR NOKTASI OLARAK KAYDET',use_container_width=True):
+                if _mark_shift_handover(st.session_state.get('current_scan_id'),'Manuel devir noktası'):
+                    st.success('Devir noktası kaydedildi.')
+                else:
+                    st.error('Devir noktası kaydedilemedi.')
+
+        # ---------------------------------------------------------
+        # V34 — ÖNEMLİ GELİŞMELER SEPETİ
+        # ---------------------------------------------------------
+        st.subheader('📌 24 Saatlik Önemli Gelişmeler Sepeti')
+        st.caption('Gün boyunca önemli gördüğünüz haberleri burada biriktirin; vardiya sonunda Word olarak alın.')
+
+        selected_now=df[df.get('Seç',False)==True] if 'Seç' in df.columns else pd.DataFrame()
+        if st.button('➕ SEÇİLİ HABERLERİ ÖNEMLİ GELİŞMELER SEPETİNE EKLE',use_container_width=True):
+            if selected_now.empty:
+                st.warning('Önce kronolojik görünümden haber seçin ve seçimleri kaydedin.')
+            else:
+                added=_add_rows_to_important_basket(selected_now.to_dict('records'))
+                st.success(f'{added} yeni gelişme sepete eklendi.')
+
+        basket=_load_important_basket()
+        if basket.empty:
+            st.info('Önemli gelişmeler sepeti şu anda boş.')
+        else:
+            basket_view=basket[['id','news_time','source','category','title','risk_score','risk_status','url']].copy()
+            basket_view.insert(0,'Sil',False)
+            with st.form('important_basket_form',clear_on_submit=False):
+                edited_basket=st.data_editor(
+                    basket_view,
+                    column_config={
+                        'Sil':st.column_config.CheckboxColumn('Sil'),
+                        'url':st.column_config.LinkColumn('Haber Linki'),
+                        'risk_score':st.column_config.NumberColumn('Risk',format='%d/100')
+                    },
+                    disabled=[c for c in basket_view.columns if c!='Sil'],
+                    hide_index=True,use_container_width=True,height=min(430,80+36*len(basket_view))
+                )
+                remove_btn=st.form_submit_button('🗑️ İŞARETLENENLERİ SEPETTEN ÇIKAR',use_container_width=True)
+            if remove_btn:
+                ids=edited_basket.loc[edited_basket['Sil']==True,'id'].tolist()
+                removed=_remove_basket_ids(ids)
+                st.success(f'{removed} kayıt sepetten çıkarıldı.')
+
+            b1,b2=st.columns(2)
+            with b1:
+                st.session_state.basket_docx_bytes=make_important_basket_docx(basket)
+                st.download_button(
+                    '⬇️ 24 SAATLİK ÖNEMLİ GELİŞMELER / WORD',
+                    st.session_state.basket_docx_bytes,
+                    file_name=f'24_Saatlik_Onemli_Gelismeler_{date.today()}.docx',
+                    mime='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                    use_container_width=True
+                )
+            with b2:
+                if st.button('🧹 SEPETİ TAMAMEN TEMİZLE',use_container_width=True):
+                    removed=_clear_important_basket()
+                    st.success(f'{removed} kayıt silindi.')
 
         # ---------------------------------------------------------
         # V33 — BİLGİ NOTU ADAYLARI
