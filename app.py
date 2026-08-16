@@ -896,6 +896,165 @@ def make_analyst_docx(df, title='BİLGİ NOTU'):
     doc.save(bio); bio.seek(0)
     return bio.getvalue()
 
+
+# -----------------------------
+# GÜNLÜK DURUM ÖZETİ — V32 EK MODÜL
+# V31 çekirdek tarama / risk / alarm / bilgi notu fonksiyonlarına dokunmaz.
+# -----------------------------
+def _daily_summary_stats(df):
+    x=df.copy()
+    if x.empty:
+        return {}
+
+    neg=int((x['Duygu']=='Negatif').sum()) if 'Duygu' in x else 0
+    high=int((x['Risk_Durumu']=='Yüksek Risk').sum()) if 'Risk_Durumu' in x else 0
+
+    osb=0
+    if 'Başlık' in x:
+        for _,r in x.iterrows():
+            if is_osb_fire(r.get('Başlık',''),r.get('İçerik_Özeti','')):
+                osb+=1
+
+    def count_terms(terms):
+        c=0
+        for _,r in x.iterrows():
+            text=norm(f"{r.get('Başlık','')} {r.get('İçerik_Özeti','')} {r.get('Kategori','')}")
+            if any(t in text for t in terms):
+                c+=1
+        return c
+
+    investment=count_terms(['yatırım','yatirim','fabrika aç','tesis aç','kapasite art','yeni tesis','teşvik','tesvik'])
+    defence=count_terms(['savunma','aselsan','tusaş','tusas','roketsan','baykar','havelsan','saha expo','iha','siha','füze','fuze'])
+    cyber=count_terms(['siber','veri sızınt','veri sizint','fidye yazılım','fidye yazilim','hack','siber saldır','siber saldir'])
+
+    return {
+        'total':len(x),
+        'negative':neg,
+        'high_risk':high,
+        'osb_fire':osb,
+        'investment':investment,
+        'defence':defence,
+        'cyber':cyber
+    }
+
+
+def _daily_top_events(df, n=5):
+    """Risk + negatiflik + kaynak teyidi + güncellik ile günün önemli olaylarını seçer."""
+    if df.empty:
+        return df.copy()
+
+    x=df.copy()
+    x['Tarih_dt']=pd.to_datetime(x.get('Tarih_dt'),utc=True,errors='coerce')
+
+    def importance(r):
+        score=int(r.get('Risk_Skoru',0) or 0)
+        if r.get('Duygu')=='Negatif': score+=15
+        if r.get('Risk_Durumu')=='Yüksek Risk': score+=25
+        if is_osb_fire(r.get('Başlık',''),r.get('İçerik_Özeti','')): score+=35
+        try:
+            score+=min(int(r.get('Olay_Kaynak_Sayisi',0) or 0)*4,20)
+        except Exception:
+            pass
+        if 'resmî' in norm(r.get('Doğrulama','')) or 'çoklu kaynak' in norm(r.get('Doğrulama','')):
+            score+=12
+        return score
+
+    x['_Önem']=x.apply(importance,axis=1)
+
+    # Aynı olayın beş kez listeye girmesini engelle.
+    if 'Olay_ID' in x.columns:
+        x=x.sort_values(['_Önem','Tarih_dt'],ascending=[False,False],na_position='last')
+        x=x.drop_duplicates(subset=['Olay_ID'],keep='first')
+    else:
+        x=x.sort_values(['_Önem','Tarih_dt'],ascending=[False,False],na_position='last')
+
+    return x.head(n).drop(columns=['_Önem'],errors='ignore')
+
+
+def _daily_summary_text(df):
+    stats=_daily_summary_stats(df)
+    top=_daily_top_events(df,5)
+    if not stats:
+        return '',top,stats
+
+    intro=(
+        f"Sanayi ve teknoloji alanında gerçekleştirilen güncel açık kaynak taramasında toplam {stats['total']} haber tespit edilmiştir. "
+        f"Bunların {stats['negative']} adedi negatif içerik, {stats['high_risk']} adedi yüksek riskli gelişme olarak sınıflandırılmıştır. "
+        f"Tarama kapsamında {stats['osb_fire']} organize sanayi bölgesi yangını, {stats['investment']} yatırım/kapasite gelişmesi, "
+        f"{stats['defence']} savunma sanayii bağlantılı içerik ve {stats['cyber']} siber güvenlik bağlantılı içerik tespit edilmiştir."
+    )
+
+    paras=[intro]
+    if not top.empty:
+        paras.append(
+            "Günün açık kaynak görünümünde risk seviyesi, negatif etki, kaynak teyidi ve olayın güncelliği birlikte dikkate alındığında "
+            "öne çıkan gelişmeler aşağıdaki şekilde değerlendirilmektedir."
+        )
+        for i,(_,r) in enumerate(top.iterrows(),1):
+            title=_clean_note_text(r.get('Başlık',''))
+            source=_clean_note_text(r.get('Kaynak','Açık Kaynak'))
+            when=_clean_note_text(r.get('Tarih',''))
+            content=_clean_note_text(r.get('İçerik_Özeti',''))
+            sentences=_detail_sentences(content,title)
+            detail=_join_sentences_naturally(sentences[:5]) if sentences else content
+            p=f"{i}. sırada {when} tarihinde {source} tarafından yayımlanan “{title}” başlıklı gelişme öne çıkmaktadır."
+            if detail:
+                p+=" "+detail
+            risk=int(r.get('Risk_Skoru',0) or 0)
+            if risk:
+                p+=f" Gelişmenin sistem risk puanı {risk}/100 olarak hesaplanmıştır."
+            paras.append(p)
+
+    paras.append(
+        "Genel görünüm itibarıyla, yüksek riskli ve negatif gelişmeler ile kritik üretim altyapısını etkileyebilecek olayların "
+        "takibinin sürdürülmesi; özellikle yeni resmî açıklamalar, olayların üretim ve tedarik zincirine etkileri ile farklı "
+        "açık kaynaklardan gelecek teyitlerin izlenmesi önem taşımaktadır."
+    )
+    return '\n\n'.join(paras),top,stats
+
+
+def make_daily_summary_docx(df):
+    text,top,stats=_daily_summary_text(df)
+
+    doc=Document()
+    sec=doc.sections[0]
+    sec.top_margin=Cm(2); sec.bottom_margin=Cm(2)
+    sec.left_margin=Cm(2.5); sec.right_margin=Cm(2.5)
+    doc.styles['Normal'].font.name='Times New Roman'
+    doc.styles['Normal'].font.size=Pt(11)
+
+    p=doc.add_paragraph()
+    p.alignment=WD_ALIGN_PARAGRAPH.CENTER
+    r=p.add_run('GÜNLÜK SANAYİ VE TEKNOLOJİ DURUM ÖZETİ')
+    r.bold=True; r.font.size=Pt(14)
+
+    p=doc.add_paragraph()
+    p.alignment=WD_ALIGN_PARAGRAPH.CENTER
+    p.add_run(datetime.now().astimezone().strftime('%d.%m.%Y %H:%M'))
+
+    for block in text.split('\n\n'):
+        bp=doc.add_paragraph()
+        bp.alignment=WD_ALIGN_PARAGRAPH.JUSTIFY
+        bp.paragraph_format.first_line_indent=Cm(1.25)
+        bp.paragraph_format.line_spacing=1.15
+        bp.paragraph_format.space_after=Pt(8)
+        bp.add_run(block)
+
+    if not top.empty:
+        hp=doc.add_paragraph()
+        rr=hp.add_run('ÖNE ÇIKAN GELİŞMELERİN KAYNAKLARI')
+        rr.bold=True
+        for i,(_,row) in enumerate(top.iterrows(),1):
+            p=doc.add_paragraph()
+            p.add_run(f"{i}. {_clean_note_text(row.get('Kaynak','Açık Kaynak'))} — {_clean_note_text(row.get('Başlık',''))}")
+            if row.get('URL'):
+                p.add_run(' — ')
+                _word_hyperlink(p,row['URL'],'Haber linki')
+
+    bio=BytesIO()
+    doc.save(bio); bio.seek(0)
+    return bio.getvalue()
+
 # -----------------------------
 # DOCX — AKT / Açık Kaynak Taraması formatı
 # Tarama motoru korunur. Yalnızca seçilen haberlerin rapora aktarılması değiştirilmiştir.
@@ -1834,6 +1993,41 @@ else:
                     column_config={'URL':st.column_config.LinkColumn('Haber Linki')},
                     hide_index=True,use_container_width=True,height=550
                 )
+
+        st.markdown('---')
+        st.subheader('📊 Günlük Sanayi ve Teknoloji Durum Özeti')
+        st.caption('Mevcut tarama sonuçlarının tamamından otomatik günlük görünüm ve günün öne çıkan 5 gelişmesini oluşturur.')
+
+        daily_stats=_daily_summary_stats(df)
+        if daily_stats:
+            c1,c2,c3,c4,c5,c6=st.columns(6)
+            c1.metric('Toplam Haber',daily_stats['total'])
+            c2.metric('Negatif',daily_stats['negative'])
+            c3.metric('Yüksek Risk',daily_stats['high_risk'])
+            c4.metric('OSB Yangını',daily_stats['osb_fire'])
+            c5.metric('Savunma',daily_stats['defence'])
+            c6.metric('Siber',daily_stats['cyber'])
+
+        if st.button('📊 BUGÜNÜN DURUM ÖZETİNİ OLUŞTUR',use_container_width=True):
+            with st.spinner('Günlük durum özeti hazırlanıyor...'):
+                daily_text,daily_top,daily_stats=_daily_summary_text(df)
+                st.session_state.daily_summary_text=daily_text
+                st.session_state.daily_summary_bytes=make_daily_summary_docx(df)
+
+        if st.session_state.get('daily_summary_text'):
+            st.text_area(
+                'Günlük Durum Özeti',
+                st.session_state.daily_summary_text,
+                height=360,
+                key='daily_summary_preview'
+            )
+            st.download_button(
+                '⬇️ GÜNLÜK DURUM ÖZETİNİ WORD OLARAK İNDİR',
+                data=st.session_state.daily_summary_bytes,
+                file_name=f'gunluk_sanayi_teknoloji_durum_ozeti_{datetime.now().strftime("%Y%m%d_%H%M")}.docx',
+                mime='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                use_container_width=True
+            )
 
         st.markdown('---'); st.subheader('📝 Seçilen haberlerden çıktı üret')
         # Form gönderildiyse session_state güncellenmiştir; aksi halde mevcut kayıtlı seçimleri kullan.
