@@ -7,11 +7,14 @@ import datetime
 from datetime import date, datetime, timedelta
 from email.utils import parsedate_to_datetime
 from io import BytesIO
+import re
+from bs4 import BeautifulSoup
+
 from docx import Document
 from docx.shared import Pt, RGBColor, Inches
 from docx.enum.text import WD_ALIGN_PARAGRAPH
-from docx.oxml import OxmlElement
-from docx.oxml.ns import qn
+from docx.oxml import OxmlElement, parse_xml
+from docx.oxml.ns import qn, nsdecls
 
 # --- ARAYÜZ AYARLARI ---
 st.set_page_config(
@@ -27,19 +30,13 @@ def load_lexicon():
         df = pd.read_csv("tr_sentiment_lexicon.csv")
         return dict(zip(df['kelime'].str.lower(), df['skor']))
     except Exception:
-        # Yedek temel sözlük
         return {
-            # Olumlu / Stratejik Kazanımlar
             "yerlileşme": 0.8, "milli": 0.6, "rekor ihracat": 0.8, "seri üretim": 0.8,
             "patent": 0.7, "tse onaylı": 0.6, "model fabrika": 0.6, "yeşil dönüşüm": 0.6,
             "teslimat": 0.7, "başarılı entegrasyon": 0.8, "yatırım teşviki": 0.6,
-            
-            # Sanayi ve Teknolojiye Özel Ağır Risk / Manipülasyon
             "fiyasko": -0.9, "skandal": -0.9, "fason": -0.8, "montaj": -0.7, "illüzyon": -0.8,
             "israf": -0.8, "üretim durdu": -0.9, "şalter indirildi": -0.9, "ambargo": -0.8,
             "testi geçemedi": -0.8, "gizli ambargo": -0.8, "batık proje": -0.9, "atıl": -0.7,
-            
-            # Makro / İstatistiksel Riskler
             "daralma": -0.6, "sert düşüş": -0.7, "kapasite kaybı": -0.6, "gecikme": -0.5,
             "iptal": -0.8, "askıya alındı": -0.8, "karbon engeli": -0.6, "çip krizi": -0.7
         }
@@ -63,9 +60,10 @@ MANIPULATION_KEYWORDS = [
     "kriz", "zarar", "iflas", "konkordato", "borç batağı", "maliyet artışı",
     "bütçe açığı", "daralma", "sert düşüş", "kaynak tükendi", "pazar kaybı",
 
-    # 4. Jeopolitik, Ambargo ve Tedarik Engel Riskleri
+    # 4. Jeopolitik, Ambargo ve Bölgesel Gerilim Riskleri
     "ambargo", "gizli ambargo", "yaptırım", "çip krizi", "tedarik engeli",
-    "karbon engeli", "lisans reddi", "kırmızı çizgi", "blokaj"
+    "karbon engeli", "lisans reddi", "kırmızı çizgi", "blokaj", "provokasyon",
+    "tehdit", "gerilim", "panik", "meydan okuma"
 ]
 
 STRATEGIC_CATEGORIES = {
@@ -77,6 +75,10 @@ STRATEGIC_CATEGORIES = {
         "togg", "elektrikli otomobil", "byd", "odmd", "şarj istasyonu", 
         "şarj soketi", "batarya teknolojileri"
     ],
+    "Bölgesel Güvenlik & Jeopolitik": [
+        "yunanistan", "yunan basını", "atina", "kathimerini", "ta nea", "protothema",
+        "ege", "doğu akdeniz", "rafale", "f-16", "fir hattı", "silahsızlandırılma"
+    ],
     "Stratejik Hamleler & Dönüşüm": [
         "hamle programı", "dijital dönüşüm", "yeşil dönüşüm", "sınırda karbon", 
         "milli teknoloji hamlesi", "yüksek teknoloji", "model fabrika"
@@ -84,10 +86,6 @@ STRATEGIC_CATEGORIES = {
     "Sanayi & Kurumsal Ekosistem": [
         "sanayi ve teknoloji bakanlığı", "mehmet fatih kacır", "tübitak", "kosgeb", 
         "tüba", "organize sanayi bölgesi", "osb", "osbük", "endüstri bölgeleri", "yatırım teşvik"
-    ],
-    "Ekonomik Göstergeler & İstatistikler": [
-        "imalat sanayii", "pmi endeksi", "reel kesim güven endeksi", "verimlilik", 
-        "kapasite kullanım", "sanayi ciro", "sanayi üretim endeksi"
     ],
     "Uzay, İleri Teknoloji & Kalite": [
         "alper gezeravcı", "tua", "türkiye uzay ajansı", "tse", "türkpatent", 
@@ -98,9 +96,8 @@ STRATEGIC_CATEGORIES = {
 # --- METİN ANALİZ MOTORU ---
 def analyze_article(title, description):
     full_text = f"{title} {description}".lower()
-    words = full_text.replace(".", " ").replace(",", " ").replace("?", " ").replace("!", " ").split()
+    words = re.sub(r'[^\w\s]', ' ', full_text).split()
     
-    # 1. Duygu Skoru Hesaplama
     total_score = 0.0
     matched_words = []
     for w in words:
@@ -117,11 +114,9 @@ def analyze_article(title, description):
     else:
         sentiment = "Nötr"
         
-    # 2. Manipülatif Dil / Risk Tespiti
     found_manipulative = [kw for kw in MANIPULATION_KEYWORDS if kw in full_text]
     risk_level = "Yüksek Risk" if len(found_manipulative) > 0 or score < -0.3 else "Normal"
     
-    # 3. Kategori Tespiti
     detected_category = "Genel Sanayi/Teknoloji"
     for cat, keywords in STRATEGIC_CATEGORIES.items():
         if any(kw in full_text for kw in keywords):
@@ -130,28 +125,47 @@ def analyze_article(title, description):
             
     return round(score, 2), sentiment, risk_level, found_manipulative, detected_category
 
-# --- CANLI CANLI GOOGLE NEWS RSS HABER ÇEKME ---
+# --- CANLI GOOGLE NEWS RSS HABER ÇEKME ---
 def fetch_news_rss(query, time_range="1d", max_results=50):
-    # 'when:1d' ekleyerek Google'ı SADECE son 24 saatin canlı haberlerini getirmeye zorluyoruz
-    search_query = f"{query} when:{time_range}"
+    clean_query = query.replace('"', '').replace("'", '')
+    search_query = f"{clean_query} when:{time_range}"
     encoded_query = urllib.parse.quote(search_query)
     rss_url = f"https://news.google.com/rss/search?q={encoded_query}&hl=tr&gl=TR&ceid=TR:tr"
     
     feed = feedparser.parse(rss_url)
     articles = []
+    today = date.today()
     
+    days_limit = {"1d": 1, "7d": 7, "14d": 14}.get(time_range, 1)
+
     for entry in feed.entries:
         pub_date_str = entry.get('published', '')
         try:
             pub_dt = parsedate_to_datetime(pub_date_str)
+            if (today - pub_dt.date()).days > days_limit:
+                continue
             formatted_date = pub_dt.strftime('%d %b %Y %H:%M')
         except:
             formatted_date = datetime.now().strftime('%d %b %Y %H:%M')
             
+        summary_html = entry.get('summary', '')
+        image_url = ""
+        clean_desc = ""
+        
+        if summary_html:
+            soup = BeautifulSoup(summary_html, 'html.parser')
+            img_tag = soup.find('img')
+            if img_tag and img_tag.get('src'):
+                image_url = img_tag['src']
+                if image_url.startswith("//"):
+                    image_url = "https:" + image_url
+            clean_desc = soup.get_text()
+
         articles.append({
             'title': entry.get('title', ''),
-            'description': entry.get('summary', ''),
+            'description': clean_desc,
             'url': entry.get('link', ''),
+            'image_url': image_url,
             'publishedAt': formatted_date,
             'source': {'name': entry.get('source', {}).get('title', 'Google News')}
         })
@@ -161,11 +175,28 @@ def fetch_news_rss(query, time_range="1d", max_results=50):
             
     return articles
 
+# --- WORD İÇİN LİNK VE GÖRSEL YARDIMCI FONKSİYONLARI ---
+def add_hyperlink(paragraph, url, text):
+    part = paragraph.part
+    r_id = part.relate_to(url, "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink", is_external=True)
+    hyperlink = parse_xml(f'<w:hyperlink xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" r:id="{r_id}"/>')
+    new_run = parse_xml(f'<w:r xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:rPr><w:rStyle w:val="Hyperlink"/><w:color w:val="0000FF"/><w:u w:val="single"/></w:rPr><w:t>{text}</w:t></w:r>')
+    hyperlink.append(new_run)
+    paragraph._p.append(hyperlink)
+
+def download_image_to_bytes(img_url):
+    try:
+        resp = requests.get(img_url, timeout=4)
+        if resp.status_code == 200:
+            return BytesIO(resp.content)
+    except:
+        pass
+    return None
+
 # --- BİLGİ NOTU / RAPOR ÜRETİCİ (.DOCX) ---
 def generate_osint_docx(query, df_all, stats):
     doc = Document()
     
-    # Başlık
     h = doc.add_heading("T.C. AÇIK KAYNAK MEDYA TARAMA VE İSTİHBARAT RAPORU", level=0)
     h.alignment = WD_ALIGN_PARAGRAPH.CENTER
     
@@ -179,32 +210,50 @@ def generate_osint_docx(query, df_all, stats):
     doc.add_heading("1. Yönetici Özeti ve Risk Değerlendirmesi", level=1)
     p_sum = doc.add_paragraph()
     p_sum.add_run(
-        f"Son 24 saatlik açık kaynak taramasında toplanan toplam {stats['total']} adet haber ve içerik "
+        f"Seçilen zaman diliminde açık kaynak taramasında toplanan toplam {stats['total']} adet haber ve içerik "
         f"sistem tarafından incelenmiştir. Yapılan analiz sonucunda haberlerin "
         f"%{stats['neg_ratio']:.1f}'inin ({stats['neg']} adet) olumsuz/negatif tonda olduğu, "
         f"{stats['risk_count']} adet haberde ise kamuoyunu yönlendirmeye veya algı oluşturmaya dönük "
         f"manipülatif/sansasyonel söylem kalıplarının kullanıldığı tespit edilmiştir."
     )
     
-    # 2. ÖNE ÇIKAN RİSKLİ VE NEGATİF HABERLER
+    # 2. KRİTİK HABERLER
     doc.add_heading("2. Kritik / Manipülatif Söylem Barındıran Haberler", level=1)
     risk_df = df_all[df_all['Risk_Durumu'] == 'Yüksek Risk']
     
     if not risk_df.empty:
-        table = doc.add_table(rows=1, cols=4)
+        table = doc.add_table(rows=1, cols=5)
         table.style = 'Table Grid'
         hdr = table.rows[0].cells
-        hdr[0].text = 'Tarih / Kaynak'
-        hdr[1].text = 'Kategori'
-        hdr[2].text = 'Haber Başlığı'
-        hdr[3].text = 'Tespit Edilen Söylem/Kelimeler'
+        hdr[0].text = 'Görsel'
+        hdr[1].text = 'Tarih / Kaynak'
+        hdr[2].text = 'Kategori'
+        hdr[3].text = 'Haber Başlığı (Bağlantı)'
+        hdr[4].text = 'Tespit Edilen Söylem'
         
         for _, r in risk_df.iterrows():
             row_cells = table.add_row().cells
-            row_cells[0].text = f"{r['Tarih']}\n{r['Kaynak']}"
-            row_cells[1].text = r['Kategori']
-            row_cells[2].text = r['Başlık']
-            row_cells[3].text = ", ".join(r['Manipülasyon_Kelimeleri']) if r['Manipülasyon_Kelimeleri'] else "Yüksek Negatif Ton"
+            
+            if r['Görsel_URL']:
+                img_data = download_image_to_bytes(r['Görsel_URL'])
+                if img_data:
+                    try:
+                        p_img = row_cells[0].paragraphs[0]
+                        p_img.add_run().add_picture(img_data, width=Inches(1.0))
+                    except:
+                        row_cells[0].text = "Görsel Yok"
+                else:
+                    row_cells[0].text = "Görsel Yok"
+            else:
+                row_cells[0].text = "Görsel Yok"
+
+            row_cells[1].text = f"{r['Tarih']}\n{r['Kaynak']}"
+            row_cells[2].text = r['Kategori']
+            
+            p_link = row_cells[3].paragraphs[0]
+            add_hyperlink(p_link, r['URL'], r['Başlık'])
+            
+            row_cells[4].text = ", ".join(r['Manipülasyon_Kelimeleri']) if r['Manipülasyon_Kelimeleri'] else "Yüksek Negatif Ton"
     else:
         doc.add_paragraph("Kritik düzeyde manipülatif söylem barındıran haber tespit edilmemiştir.")
         
@@ -216,7 +265,7 @@ def generate_osint_docx(query, df_all, stats):
     hdr2[0].text = 'Tarih'
     hdr2[1].text = 'Kaynak'
     hdr2[2].text = 'Kategori'
-    hdr2[3].text = 'Başlık'
+    hdr2[3].text = 'Başlık (Link)'
     hdr2[4].text = 'Duygu / Skor'
     
     for _, r in df_all.iterrows():
@@ -224,7 +273,10 @@ def generate_osint_docx(query, df_all, stats):
         rc[0].text = r['Tarih']
         rc[1].text = r['Kaynak']
         rc[2].text = r['Kategori']
-        rc[3].text = r['Başlık']
+        
+        p_link2 = rc[3].paragraphs[0]
+        add_hyperlink(p_link2, r['URL'], r['Başlık'])
+        
         rc[4].text = f"{r['Duygu']} ({r['Skor']})"
         
     buf = BytesIO()
@@ -233,37 +285,42 @@ def generate_osint_docx(query, df_all, stats):
     return buf
 
 # --- ARAYÜZ (STREAMLIT) ---
-st.title("🛡️ Sanayi & Teknoloji Açık Kaynak Tarama Radarı")
-st.caption("Dezenformasyon, Manipülatif Söylem ve Anlık Negatif Haber Tespiti Platformu")
+st.title("🛡️ Sanayi, Teknoloji & Güvenlik Açık Kaynak Tarama Radarı")
+st.caption("Dezenformasyon, Manipülatif Söylem, Yunanistan Basını ve Anlık Negatif Haber Tespiti Platformu")
 
 with st.sidebar:
     st.header("⚙️ Tarama Parametreleri")
     
-    # Genişletilmiş Sanayi, Teknoloji ve Stratejik Alanlar Radarı
     default_query = (
         'sanayi OR teknoloji OR TOGG OR KAAN OR ASELSAN OR BAYKAR OR TUSAŞ OR ROKETSAN OR HAVELSAN OR '
-        'TÜBİTAK OR KOSGEB OR "Çelik Kubbe" OR SİHA OR İHA OR "Milli Teknoloji" OR çip OR "Yapay Zeka" OR '
-        '"Siber Güvenlik" OR "Uzay Ajansı" OR TUA OR "Organize Sanayi" OR OSB OR "Yatırım Teşvik" OR '
-        '"İmalat Sanayii" OR "Yavru Vatan" OR "Komşu" OR Yunan OR "Yerli Üretim" OR "Kalkınma Ajansı" OR "Dijital Dönüşüm" OR "Yeşil Dönüşüm"'
+        'TÜBİTAK OR KOSGEB OR Çelik Kubbe OR SİHA OR İHA OR Milli Teknoloji OR çip OR Yapay Zeka OR '
+        'Siber Güvenlik OR Uzay Ajansı OR TUA OR Organize Sanayi OR OSB OR Yatırım Teşvik OR '
+        'İmalat Sanayii OR Yerli Üretim OR Kalkınma Ajansı OR Dijital Dönüşüm OR Yeşil Dönüşüm OR '
+        'Yunanistan OR Yunan basını OR Atina OR Kathimerini OR Ta Nea OR Protothema OR '
+        'Ege OR Doğu Akdeniz OR F-16 OR Rafale OR FIR hattı OR silahsızlandırılma'
     )
 
     query = st.text_area(
         "Arama Sorgusu (Ana Terimler):",
         value=default_query,
-        height=120,
-        help="Geniş arama sayesinde bugün yayınlanan tüm haberler çekilir ve içindeki riskliler sistemce süzülür."
+        height=150,
+        help="Sorgudaki tırnak işaretleri otomatik temizlenerek Google zaman filtresinin bozulması engellenir."
     )
     
     time_filter = st.selectbox(
         "Zaman Dilimi (Canlı Akış):",
-        options=["1d", "7d", "1m"],
-        format_func=lambda x: {"1d": "Son 24 Saat (Canlı/Bugün)", "7d": "Son 1 Hafta", "1m": "Son 1 Ay"}[x]
+        options=["1d", "7d", "14d"],
+        format_func=lambda x: {
+            "1d": "Son 24 Saat (Canlı / Bugün)", 
+            "7d": "Son 1 Hafta", 
+            "14d": "Son 2 Hafta"
+        }[x]
     )
 
     max_news = st.slider("Maksimum Haber Sayısı:", 10, 100, 40)
     only_negative = st.checkbox("Sadece Negatif/Riskli Haberleri Ekrana Getir", value=False)
     
-    btn_run = st.button("🔍 Anlık Taramayı Başlat", type="primary", use_container_width=True)
+    btn_run = st.button("🔍 Açık Kaynak Taramasını Başlat", type="primary", use_container_width=True)
 
 if btn_run:
     with st.spinner("Anlık haber kaynakları taranıyor, canlı veriler çekiliyor..."):
@@ -286,7 +343,8 @@ if btn_run:
                     "Skor": score,
                     "Risk_Durumu": risk,
                     "Manipülasyon_Kelimeleri": manip_words,
-                    "URL": a.get('url', '')
+                    "URL": a.get('url', ''),
+                    "Görsel_URL": a.get('image_url', '')
                 })
             
             df = pd.DataFrame(parsed_data)
@@ -294,13 +352,11 @@ if btn_run:
             if only_negative:
                 df = df[(df['Duygu'] == 'Negatif') | (df['Risk_Durumu'] == 'Yüksek Risk')]
             
-            # İstatistikler
             tot = len(df)
             neg_cnt = sum(df['Duygu'] == 'Negatif')
             risk_cnt = sum(df['Risk_Durumu'] == 'Yüksek Risk')
             neg_ratio = (neg_cnt / tot * 100) if tot > 0 else 0
             
-            # METRİK KARTLARI
             k1, k2, k3, k4 = st.columns(4)
             k1.metric("İncelenen Haber", tot)
             k2.metric("Negatif Haberler", neg_cnt)
@@ -310,7 +366,6 @@ if btn_run:
             st.markdown("---")
             st.subheader("🚨 Kritik / Riskli Söylem Barındıran Canlı Haberler")
             
-            # Riskli Haberleri Öne Çıkarma
             risk_df_display = df[df['Risk_Durumu'] == 'Yüksek Risk']
             if not risk_df_display.empty:
                 st.warning(f"Toplam {len(risk_df_display)} haberde manipülatif dil/yüksek negatiflik tespit edildi!")
@@ -319,7 +374,7 @@ if btn_run:
                     use_container_width=True
                 )
             else:
-                st.success("Son 24 saatte kritik düzeyde manipülatif dil barındıran haber bulunamadı.")
+                st.success("Seçilen zaman aralığında kritik düzeyde manipülatif dil barındıran haber bulunamadı.")
             
             st.subheader("📋 Canlı Haber Akışı ve Analiz Tablosu")
             st.dataframe(
@@ -327,16 +382,15 @@ if btn_run:
                 use_container_width=True
             )
             
-            # DOCX İNDİRME
             stats_dict = {'total': tot, 'neg': neg_cnt, 'risk_count': risk_cnt, 'neg_ratio': neg_ratio}
             docx_b = generate_osint_docx(query, df, stats_dict)
             
             st.download_button(
                 label="📄 ANLIK AÇIK KAYNAK TARAMA RAPORUNU İNDİR (.DOCX)",
                 data=docx_b,
-                file_name=f"Anlik_Tarama_Raporu_{date.today()}.docx",
+                file_name=f"Acik_Kaynak_Raporu_{date.today()}.docx",
                 mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                 type="primary"
             )
         else:
-            st.info("Son 24 saat içinde kriterlere uygun canlı haber düşmedi.")
+            st.info("Seçilen zaman diliminde kriterlere uygun haber bulunamadı.")
