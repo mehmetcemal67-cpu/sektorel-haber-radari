@@ -494,6 +494,41 @@ def resolve_google_news_url(url, source_url=""):
     return url
 
 
+SOURCE_ALIASES = {
+    "aa": "aa.com.tr", "anadolu ajansı": "aa.com.tr", "anadolu agency": "aa.com.tr",
+    "trt haber": "trthaber.com", "trt": "trthaber.com", "ntv": "ntv.com.tr",
+    "cnn türk": "cnnturk.com", "cnn turk": "cnnturk.com", "habertürk": "haberturk.com",
+    "hürriyet": "hurriyet.com.tr", "milliyet": "milliyet.com.tr", "sabah": "sabah.com.tr",
+    "sözcü": "sozcu.com.tr", "cumhuriyet": "cumhuriyet.com.tr", "karar": "karar.com",
+    "yeni şafak": "yenisafak.com", "türkiye gazetesi": "turkiyegazetesi.com.tr",
+    "t24": "t24.com.tr", "haberler": "haberler.com", "dünya": "dunya.com", "ekonomim": "ekonomim.com",
+    "bloomberg ht": "bloomberght.com", "webrazzi": "webrazzi.com", "shiftdelete": "shiftdelete.net",
+    "donanımhaber": "donanimhaber.com", "technopat": "technopat.net", "savunma sanayi st": "savunmasanayist.com",
+    "savunma sanayi": "savunmasanayist.com", "defence türk": "defenceturk.net", "defence turk": "defenceturk.net",
+    "defencehere": "defencehere.com", "c4defence": "c4defence.com", "m5": "m5dergi.com",
+    "sanayi ve teknoloji bakanlığı": "sanayi.gov.tr", "tübitak": "tubitak.gov.tr", "kosgeb": "kosgeb.gov.tr",
+    "türk patent": "turkpatent.gov.tr", "türkpatent": "turkpatent.gov.tr", "türkiye uzay ajansı": "tua.gov.tr",
+    "aselsan": "aselsan.com", "tusaş": "tusas.com", "tusas": "tusas.com", "roketsan": "roketsan.com.tr",
+    "havelsan": "havelsan.com.tr", "baykar": "baykartech.com", "togg": "togg.com.tr", "tei": "tei.com.tr",
+}
+
+def infer_source_domain(source_name, source_url="", article_url=""):
+    d = domain_of(source_url)
+    if d and d not in {"news.google.com", "google.com"}:
+        return d
+    name = normalize_text(source_name)
+    for alias, domain in SOURCE_ALIASES.items():
+        if alias in name:
+            return domain
+    # Bilinen alan adlarının yayıncı adlarıyla eşleşmesi (özellikle Yunan kaynakları).
+    known_domains = list(dict.fromkeys(TR_MAIN_DOMAINS + TR_TECH_DEFENSE_DOMAINS + TR_OFFICIAL_DOMAINS + GR_DOMAINS))
+    compact_name = re.sub(r"[^a-z0-9ğüşöçıİĞÜŞÖÇ]", "", name)
+    for domain in known_domains:
+        stem = domain.split(".")[0].lower()
+        if stem and stem in compact_name:
+            return domain
+    return domain_of(article_url)
+
 def google_news_rss(query, max_results=100):
     """Google News RSS üzerinden özellikle Türk yayıncıları toplar."""
     url = "https://news.google.com/rss/search"
@@ -511,14 +546,17 @@ def google_news_rss(query, max_results=100):
             source_el = item.find("source")
             source = source_el.text if source_el is not None else "Google News"
             source_url = source_el.get("url", "") if source_el is not None else ""
+            body_text = BeautifulSoup(desc, "html.parser").get_text(" ", strip=True)
+            inferred = infer_source_domain(source, source_url, link)
             rows.append({
                 "title": html.unescape(title),
                 "url": link,
                 "date": pub,
                 "source": source,
-                "source_url": source_url,
-                "body": BeautifulSoup(desc, "html.parser").get_text(" ", strip=True),
-                "snippet": BeautifulSoup(desc, "html.parser").get_text(" ", strip=True),
+                "source_url": source_url or inferred,
+                "inferred_domain": inferred,
+                "body": body_text,
+                "snippet": body_text,
                 "image": "",
             })
         return rows
@@ -1013,31 +1051,30 @@ def _fetch_rss_jobs(jobs):
     return rows
 
 
-def fetch_targeted_turkish_sources_v7(user_query, when):
-    # Birkaç geniş konu sepeti: her biri tüm Türk yayıncı havuzunu hedefler.
-    all_tr=list(dict.fromkeys(TR_MAIN_DOMAINS+TR_TECH_DEFENSE_DOMAINS+TR_OFFICIAL_DOMAINS))
-    site_clause="("+" OR ".join(f"site:{d}" for d in all_tr)+")"
-    qparts=split_query(user_query)
-    user_clause=" OR ".join(f'"{x}"' for x in qparts[:25] if len(x)>2)
-    baskets=[
-        '(sanayi OR imalat OR üretim OR fabrika OR OSB OR "organize sanayi" OR makine OR otomasyon)',
-        '(teknoloji OR "yapay zeka" OR "yapay zekâ" OR yazılım OR "siber güvenlik" OR çip OR "yarı iletken" OR elektronik OR robotik OR "Ar-Ge" OR patent)',
-        '("savunma sanayii" OR "savunma sanayi" OR ASELSAN OR TUSAŞ OR ROKETSAN OR HAVELSAN OR Baykar OR Bayraktar OR İHA OR SİHA OR KAAN OR Kızılelma OR füze OR roket)',
-        '(otomotiv OR TOGG OR batarya OR "elektrikli araç" OR enerji OR hidrojen OR "güneş enerjisi" OR "rüzgar enerjisi" OR havacılık OR uzay OR uydu OR gemi OR tersane)',
-        '("tedarik zinciri" OR yerlileştirme OR millileştirme OR yatırım teşvik OR teknopark OR TÜBİTAK OR KOSGEB OR "Sanayi ve Teknoloji Bakanlığı")',
+def fetch_targeted_turkish_sources_v8(user_query, when):
+    """Hızlı Türk haber taraması. Dev site: OR sorgusu yerine az sayıda geniş
+    Türkçe Google News sorgusu kullanır; sonuçlar daha sonra kaynak alanından
+    Türk medya önceliğiyle ayrıştırılır. Bu, önceki 0-sonuç problemini önler."""
+    terms = split_query(user_query)
+    user_clause = " OR ".join(f'"{x}"' for x in terms[:18] if len(x) > 2)
+    baskets = [
+        'Türkiye (sanayi OR imalat OR üretim OR fabrika OR OSB OR "organize sanayi" OR makine OR otomasyon OR robotik)',
+        'Türkiye (teknoloji OR "yapay zeka" OR yazılım OR "siber güvenlik" OR çip OR "yarı iletken" OR elektronik OR "Ar-Ge" OR patent)',
+        'Türkiye ("savunma sanayii" OR ASELSAN OR TUSAŞ OR ROKETSAN OR HAVELSAN OR Baykar OR Bayraktar OR İHA OR SİHA OR KAAN OR füze OR roket)',
+        'Türkiye (otomotiv OR TOGG OR batarya OR "elektrikli araç" OR enerji OR hidrojen OR havacılık OR uzay OR uydu OR tersane)',
     ]
     if user_clause:
-        baskets.append(f'({user_clause})')
-    jobs=[f'{b} {site_clause} when:{when}' for b in baskets]
-    return _fetch_rss_jobs(jobs)
+        baskets.append(f'Türkiye ({user_clause})')
+    return _fetch_rss_jobs([f'{q} when:{when}' for q in baskets])
 
 
-def fetch_negative_turkish_sources_v7(when):
-    all_tr=list(dict.fromkeys(TR_MAIN_DOMAINS+TR_TECH_DEFENSE_DOMAINS+TR_OFFICIAL_DOMAINS))
-    site_clause="("+" OR ".join(f"site:{d}" for d in all_tr)+")"
-    negative='("iflas" OR "konkordato" OR "üretim durdu" OR "üretim durduruldu" OR "fabrika kapandı" OR "işten çıkarma" OR "işçi çıkarma" OR grev OR lokavt OR soruşturma OR dava OR ceza OR "geri çağırma" OR "siber saldırı" OR "veri sızıntısı" OR "fidye yazılımı" OR ambargo OR yaptırım OR "ihracat yasağı" OR "sözleşme feshi" OR "ihale iptal" OR "askıya alındı" OR ertelendi OR gecikme OR "tedarik krizi" OR "çip krizi" OR daralma OR "kapasite kaybı" OR "güvenlik açığı" OR zafiyet OR usulsüzlük OR yolsuzluk)'
-    topic='(sanayi OR üretim OR fabrika OR teknoloji OR savunma OR havacılık OR otomotiv OR enerji OR çip OR yazılım OR siber OR şirket OR tesis OR proje)'
-    return _fetch_rss_jobs([f'{negative} {topic} {site_clause} when:{when}'])
+def fetch_negative_turkish_sources_v8(when):
+    q = ('Türkiye (iflas OR konkordato OR "üretim durdu" OR "fabrika kapandı" OR '
+         '"işten çıkarma" OR grev OR soruşturma OR dava OR ceza OR "geri çağırma" OR '
+         '"siber saldırı" OR "veri sızıntısı" OR yaptırım OR ambargo OR "ihale iptal" OR '
+         'ertelendi OR gecikme OR "tedarik krizi" OR daralma OR zafiyet OR usulsüzlük OR yolsuzluk) '
+         '(sanayi OR teknoloji OR üretim OR fabrika OR savunma OR şirket OR tesis OR proje)')
+    return _fetch_rss_jobs([f'{q} when:{when}'])
 
 
 def fetch_greek_v7(when):
@@ -1080,68 +1117,76 @@ def fetch_global_v7(when):
     return rows
 
 
-def fetch_news_v7(user_query, time_hours=24, broad=True, negative_boost=True,
-                  include_greek=True, include_global=False, include_social=True):
+def _normalize_record_v8(r, cutoff, include_global=False):
+    url=(r.get("url") or r.get("url_mobile") or r.get("link") or "").strip()
+    title=html.unescape((r.get("title") or "").strip())
+    if not url or not title:
+        return None, "gecersiz"
+    dt=parse_dt(r.get("date") or r.get("seendate") or r.get("publishedAt"))
+    if dt and dt < cutoff:
+        return None, "zaman"
+    snippet=html.unescape((r.get("body") or r.get("snippet") or r.get("description") or "").strip())
+    source_name=str(r.get("source") or "Açık Kaynak")
+    candidate_domain=(r.get("inferred_domain") or domain_of(r.get("source_url") or "") or domain_of(url)).lower()
+    is_gr=any(x in candidate_domain for x in GR_DOMAINS)
+    is_social=any(x in candidate_domain for x in SOCIAL_SEARCH_DOMAINS)
+    is_tr=is_turkish_priority_source(candidate_domain)
+    if is_gr and not is_greek_turkish_defense({"domain":candidate_domain,"title":title,"snippet":snippet}):
+        return None, "yunan"
+    if not is_gr and not is_social and not is_tr and not include_global:
+        return None, "kaynak"
+    if not is_gr and not is_relevant_industry_tech(title,snippet,split_query(st.session_state.get("last_query", ""))):
+        return None, "konu"
+    nt=normalize_title(title); title_key=" ".join(nt.split()[:14])
+    return {
+        "title":title,"url":url,"published_dt":dt,"published":fmt_dt(dt),
+        "source":source_name,"domain":candidate_domain,"snippet":snippet,
+        "image_url":r.get("image") or r.get("socialimage") or "",
+        "Kaynak_Grubu":source_group(candidate_domain),"_title_key":title_key,
+    }, "ok"
+
+
+def normalize_batch_v8(records, cutoff, include_global=False):
+    out=[]; seen_urls=set(); seen_titles=set(); counts={"zaman":0,"konu":0,"kaynak":0,"yunan":0,"gecersiz":0}
+    for r in records or []:
+        item, reason=_normalize_record_v8(r,cutoff,include_global)
+        if item is None:
+            counts[reason]=counts.get(reason,0)+1; continue
+        if item["url"] in seen_urls or item["_title_key"] in seen_titles: continue
+        seen_urls.add(item["url"]); seen_titles.add(item["_title_key"]); item.pop("_title_key",None); out.append(item)
+    out.sort(key=lambda x: x["published_dt"] or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+    return out, counts
+
+
+def fetch_news_batches_v8(user_query, time_hours=24, broad=True, negative_boost=True,
+                          include_greek=True, include_global=False, include_social=True):
     cutoff=datetime.now(timezone.utc)-timedelta(hours=time_hours)
     when=_period_to_when(time_hours)
-    stats={"Ham sonuç":"başlıyor", "Türk RSS":0, "Negatif RSS":0, "Yunan":0, "Sosyal":0, "Global":0,
-           "Zaman filtresi":0, "Konu filtresi":0, "Kaynak filtresi":0, "Sonuç":0}
+    # İlk bakış için önce en hızlı ve en değerli katman: Türk medya/RSS.
+    # Sonraki katmanlar ayrı batch gelir; böylece kullanıcı sonuçları beklemeden görür.
+    batches=[]
+    batches.append(("🇹🇷 Türk medya / teknoloji / savunma", lambda: fetch_targeted_turkish_sources_v8(user_query,when)))
+    if negative_boost:
+        batches.append(("⚠️ Türk negatif haber taraması", lambda: fetch_negative_turkish_sources_v8(when)))
+    if include_greek:
+        batches.append(("🇬🇷 Yunan medyası / Türk savunma", lambda: fetch_greek_v7(when)))
+    if include_social:
+        batches.append(("📱 Türk açık sosyal / indeks", lambda: fetch_social_v7(when)))
+    if include_global:
+        batches.append(("🌍 Global basın", lambda: fetch_global_v7(when)))
+    return batches, cutoff
 
-    # Türk ana akış + negatif akış + özel Yunan/global/sosyal paralel.
-    jobs=[]
-    jobs.append(("tr", lambda: fetch_targeted_turkish_sources_v7(user_query, when)))
-    if negative_boost: jobs.append(("neg", lambda: fetch_negative_turkish_sources_v7(when)))
-    if include_greek: jobs.append(("gr", lambda: fetch_greek_v7(when)))
-    if include_social: jobs.append(("social", lambda: fetch_social_v7(when)))
-    if include_global: jobs.append(("global", lambda: fetch_global_v7(when)))
 
-    records=[]
-    with concurrent.futures.ThreadPoolExecutor(max_workers=min(5,len(jobs))) as ex:
-        fs={ex.submit(fn): name for name,fn in jobs}
-        for f in concurrent.futures.as_completed(fs):
-            name=fs[f]
-            try:
-                data=f.result() or []
-                stats[{'tr':'Türk RSS','neg':'Negatif RSS','gr':'Yunan','social':'Sosyal','global':'Global'}[name]]+=len(data)
-                records.extend(data)
-            except Exception: pass
-    stats["Ham sonuç"]=len(records)
-
-    normalized=[]; seen_urls=set(); seen_titles=set()
-    for r in records:
-        url=(r.get("url") or r.get("url_mobile") or r.get("link") or "").strip()
-        title=html.unescape((r.get("title") or "").strip())
-        if not url or not title: continue
-        dt=parse_dt(r.get("date") or r.get("seendate") or r.get("publishedAt"))
-        if dt and dt < cutoff:
-            stats["Zaman filtresi"]+=1; continue
-        snippet=html.unescape((r.get("body") or r.get("snippet") or r.get("description") or "").strip())
-        candidate_domain=domain_of(r.get("source_url") or "") or domain_of(url)
-        # Sosyal/Global sonuçları kaynak filtresinden geçirmek yerine kendi sınıflarında tut.
-        is_gr=any(x in candidate_domain for x in GR_DOMAINS)
-        if is_gr:
-            if not is_greek_turkish_defense({"domain":candidate_domain,"title":title,"snippet":snippet}):
-                stats["Konu filtresi"]+=1; continue
-        elif not (is_turkish_priority_source(candidate_domain) or include_global):
-            stats["Kaynak filtresi"]+=1; continue
-
-        if not is_gr and not is_relevant_industry_tech(title,snippet,split_query(user_query)):
-            # Global ve sosyal için de aynı konu filtresi; konu dışı gündemi engeller.
-            stats["Konu filtresi"]+=1; continue
-
-        nt=normalize_title(title); title_key=" ".join(nt.split()[:14])
-        if url in seen_urls or title_key in seen_titles: continue
-        group=source_group(candidate_domain)
-        item={"title":title,"url":url,"published_dt":dt,"published":fmt_dt(dt),
-              "source":str(r.get("source") or candidate_domain or "Açık Kaynak"),
-              "domain":candidate_domain,"snippet":snippet,
-              "image_url":r.get("image") or r.get("socialimage") or "",
-              "Kaynak_Grubu":group}
-        normalized.append(item); seen_urls.add(url); seen_titles.add(title_key)
-
-    normalized.sort(key=lambda x:(x["published_dt"] is not None, x["published_dt"] or datetime.min.replace(tzinfo=timezone.utc)), reverse=True)
-    stats["Sonuç"]=len(normalized)
-    return normalized, stats
+def merge_batch_rows_v8(all_rows, new_rows):
+    by_url={r["url"]:r for r in all_rows}
+    by_title={" ".join(normalize_title(r["title"]).split()[:14]):r["url"] for r in all_rows}
+    for r in new_rows:
+        key=" ".join(normalize_title(r["title"]).split()[:14])
+        if r["url"] not in by_url and key not in by_title:
+            by_url[r["url"]]=r; by_title[key]=r["url"]
+    rows=list(by_url.values())
+    rows.sort(key=lambda x:x["published_dt"] or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+    return rows
 
 # -------------------------
 # STREAMLIT
@@ -1159,19 +1204,15 @@ with st.sidebar:
         'TÜBİTAK OR KOSGEB OR teknopark OR yerlileştirme OR tedarik zinciri'
     )
     query=st.text_area("Geniş sanayi / teknoloji sorgusu:",value=default_query,height=180)
-    broad=st.checkbox("🔎 Geniş Sanayi & Teknoloji evrenini otomatik genişlet",value=True)
     negative_boost=st.checkbox("⚠️ Negatif haber taramasını güçlendir",value=True)
     include_greek=st.checkbox("🇬🇷 Yunan medyası — yalnızca Türk savunma sanayii",value=True)
     include_social=st.checkbox("📱 Türk açık sosyal kaynak / indeks sonuçları",value=True)
     include_global=st.checkbox("🌍 Global basın (opsiyonel)",value=False)
-    enrich=st.checkbox("📖 Tarama sonrası seçilen/öncelikli haberlerde tam metin + görsel zenginleştir",value=False)
     period_label=st.selectbox("🕒 Haber dönemi",[
         "⚡ Anlık — son 3 saat","📅 Son 24 saat","📆 Son 48 saat","📆 Son 1 hafta","🗓️ Son 1 ay"
     ],index=1)
     hours={"⚡ Anlık — son 3 saat":3,"📅 Son 24 saat":24,"📆 Son 48 saat":48,"📆 Son 1 hafta":168,"🗓️ Son 1 ay":720}[period_label]
     run=st.button("🔍 TARAMAYI BAŞLAT / YENİLE",type="primary",use_container_width=True)
-    if st.button("🧹 Önbelleği Temizle",use_container_width=True):
-        st.cache_data.clear(); st.session_state.df=None; st.rerun()
 
 if "df" not in st.session_state: st.session_state.df=None
 if "last_query" not in st.session_state: st.session_state.last_query=""
@@ -1180,42 +1221,51 @@ if "scan_stats" not in st.session_state: st.session_state.scan_stats={}
 
 # İlk açılışta ASLA otomatik tarama yok.
 if run:
-    scan_nonce=datetime.now(timezone.utc).isoformat()
-    with st.status("🔎 Tarama başlatıldı — önce hızlı başlık/saat/kaynak akışı getiriliyor...",expanded=True) as status:
-        st.write("🇹🇷 Türk medya + teknoloji/savunma + resmi kaynaklar taranıyor...")
-        raw,stats=fetch_news_v7(query,hours,broad,negative_boost,include_greek,include_global,include_social)
-        st.session_state.scan_stats=stats
-        st.write(f"Toplanan ham sonuç: {stats.get('Ham sonuç',0)} → gösterilecek: {len(raw)}")
-        # Hızlı ilk bakış: tam metin yok. İstenirse yalnızca negatif/riskli ve ilk haberler zenginleştirilebilir.
-        enriched={}
-        if enrich and raw:
-            priority=[]
-            for x in raw:
-                probe=normalize_text(x.get('title','')+' '+x.get('snippet',''))
-                if any(k in probe for k in NEGATIVE_EVENT_TERMS+HIGH_RISK_KEYWORDS): priority.append(x)
-            priority += [x for x in raw if x not in priority]
-            urls=[x['url'] for x in priority[:40] if x.get('url')]
-            if urls:
-                st.write(f"📖 {len(urls)} öncelikli haberin tam metni/görseli alınıyor...")
-                enriched=extract_many(urls,workers=12)
-        rows=[]
-        for item in raw:
-            extra=enriched.get(item['url'],{})
-            body=extra.get('text') or item.get('snippet','')
-            a=analyze_article(item['title'],body)
-            rows.append({
-                'Tarih_dt':item['published_dt'],'Tarih':item['published'],'Kaynak':item['source'],
-                'Kaynak_Grubu':item['Kaynak_Grubu'],'Domain':item['domain'],'Kategori':a['category'],
-                'Başlık':item['title'],'İçerik_Özeti':summarize_text(item['title'],body,2200),
-                'Özet':summarize_text(item['title'],body,2200),'Duygu':a['sentiment'],'Skor':a['score'],
-                'Risk_Durumu':a['risk'],'Negatif_Sinyaller':a['negative_hits'],'Risk_Sinyalleri':a['risk_hits'],
-                'Pozitif_Sinyaller':a['positive_hits'],'URL':item['url'],'Görsel_URL':item['image_url'] or extra.get('image_url',''),
-                'Tam_Metin_Uzunluğu':len(body or ''),'Seç':a['risk'] in ('Yüksek Risk','İzleme') or a['sentiment']=='Negatif'
-            })
-        df=pd.DataFrame(rows)
-        if not df.empty: df=df.sort_values('Tarih_dt',ascending=False,na_position='last').reset_index(drop=True)
-        st.session_state.df=df; st.session_state.last_query=query; st.session_state.last_scan_time=datetime.now().astimezone()
-        status.update(label=f"✅ Tarama tamamlandı — {len(df)} haber",state="complete")
+    st.session_state.last_query=query
+    st.session_state.scan_stats={"Ham sonuç":0,"Zaman filtresi":0,"Konu filtresi":0,"Kaynak filtresi":0,"Yunan":0,"Sonuç":0}
+    st.session_state.scan_id=datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S%f")
+    st.session_state.df=pd.DataFrame()
+    batches, cutoff = fetch_news_batches_v8(query,hours,True,negative_boost,include_greek,include_global,include_social)
+    live=st.empty()
+    all_rows=[]
+    cumulative_stats={"Ham sonuç":0,"Zaman filtresi":0,"Konu filtresi":0,"Kaynak filtresi":0,"Yunan":0,"Sonuç":0}
+    for label, fn in batches:
+        with st.spinner(f"{label} taranıyor..."):
+            try:
+                raw=fn() or []
+            except Exception:
+                raw=[]
+        cumulative_stats["Ham sonuç"] += len(raw)
+        # Google RSS sonuçları bazen source_url taşımadığı için infer_source_domain ile
+        # güvenilir kaynak eşlemesi yapılır; ilk katmanda yalnızca Türk kaynakları kabul edilir.
+        filtered, counts=normalize_batch_v8(raw,cutoff,include_global=include_global)
+        for k in ("zaman","konu","kaynak","yunan"):
+            cumulative_stats[{"zaman":"Zaman filtresi","konu":"Konu filtresi","kaynak":"Kaynak filtresi","yunan":"Yunan"}[k]] += counts.get(k,0)
+        all_rows=merge_batch_rows_v8(all_rows,filtered)
+        cumulative_stats["Sonuç"]=len(all_rows)
+        # Kullanıcı sonuçları tarama sürerken kronolojik olarak görür.
+        if all_rows:
+            preview=pd.DataFrame(all_rows)
+            preview["Tarih"]=[fmt_dt(x) for x in preview["published_dt"]]
+            live.dataframe(
+                preview[["Tarih","Kaynak_Grubu","source","title","snippet","url"]].rename(columns={"source":"Kaynak","title":"Başlık","snippet":"İçerik / Özet","url":"Haber Linki"}),
+                column_config={"Haber Linki": st.column_config.LinkColumn("Haber Linki")},
+                hide_index=True,use_container_width=True,height=430
+            )
+        st.session_state.scan_stats=cumulative_stats
+    rows=all_rows
+    for r in rows:
+        a=analyze_article(r["title"],r.get("snippet", ""))
+        r["Tarih"]=r["published"]; r["Kaynak"]=r["source"]; r["Kategori"]=a["category"]
+        r["Başlık"]=r["title"]; r["İçerik_Özeti"]=summarize_text(r["title"],r.get("snippet", ""),2200); r["Özet"]=r["İçerik_Özeti"]
+        r["Duygu"]=a["sentiment"]; r["Skor"]=a["score"]; r["Risk_Durumu"]=a["risk"]
+        r["Negatif_Sinyaller"]=a["negative_hits"]; r["Risk_Sinyalleri"]=a["risk_hits"]; r["Pozitif_Sinyaller"]=a["positive_hits"]
+        r["URL"]=r["url"]; r["Görsel_URL"]=r.get("image_url", ""); r["Seç"]=False
+    df_new=pd.DataFrame(rows)
+    if not df_new.empty:
+        df_new=df_new.sort_values("published_dt",ascending=False,na_position="last").reset_index(drop=True)
+    st.session_state.df=df_new; st.session_state.last_query=query; st.session_state.last_scan_time=datetime.now().astimezone(); st.session_state.scan_stats=cumulative_stats
+    st.rerun()
 
 df=st.session_state.df
 if df is None:
@@ -1234,7 +1284,7 @@ else:
         tab_all,tab_tr,tab_neg,tab_risk,tab_gr,tab_osint=st.tabs([f'📰 Kronolojik Akış ({total})',f'🇹🇷 Türk Medyası ({tr_count})',f'⚠️ Negatif ({neg})',f'🚨 Yüksek Risk ({high})',f'🇬🇷 Yunan / Türk Savunma ({gr_count})','🔎 Açık Kaynak Çalışma Masası'])
         display_cols=['Seç','Tarih','Kaynak_Grubu','Kaynak','Kategori','Başlık','İçerik_Özeti','Duygu','Skor','Risk_Durumu','URL']
         with tab_all:
-            edited=st.data_editor(df[display_cols],column_config={'Seç':st.column_config.CheckboxColumn('Bilgi Notuna Ekle'),'URL':st.column_config.LinkColumn('Haber Linki'),'İçerik_Özeti':st.column_config.TextColumn('İçerik / Özet',width='large')},disabled=[c for c in display_cols if c!='Seç'],hide_index=True,use_container_width=True,height=650,key='news_editor_v7')
+            edited=st.data_editor(df[display_cols],column_config={'Seç':st.column_config.CheckboxColumn('Bilgi Notuna Ekle'),'URL':st.column_config.LinkColumn('Haber Linki'),'İçerik_Özeti':st.column_config.TextColumn('İçerik / Özet',width='large')},disabled=[c for c in display_cols if c!='Seç'],hide_index=True,use_container_width=True,height=650,key=f'news_editor_v8_{st.session_state.get("scan_id","0")}')
             df.loc[edited.index,'Seç']=edited['Seç']; st.session_state.df=df
         with tab_tr:
             t=df[df.Kaynak_Grubu.astype(str).str.startswith('🇹🇷')]
@@ -1271,4 +1321,4 @@ else:
         csv=df.drop(columns=['Tarih_dt'],errors='ignore').to_csv(index=False).encode('utf-8-sig')
         st.download_button('📊 HAM OSINT VERİSİNİ İNDİR (.CSV)',csv,file_name=f'Sanayi_Teknoloji_OSINT_{date.today()}.csv',mime='text/csv',use_container_width=True)
 
-st.caption('Not: İlk açılışta otomatik tarama yoktur. Her TARAMAYI BAŞLAT / YENİLE tıklaması yeni bir haber taraması yapar. Türk kaynakları önceliklidir; Yunan kaynakları yalnızca Türk savunma sanayii bağlantılı sonuçlarda tutulur; global basın isteğe bağlıdır. Haberler yayın saatine göre en yeniden eskiye sıralanır. Negatif/risk sınıflandırması otomatik ön elemedir ve kritik bulgular teyit edilmelidir.')
+st.caption('İlk açılışta tarama yapılmaz. Her TARAMAYI BAŞLAT / YENİLE tıklaması yeni ağ taraması yapar. Sonuçlar tarama sırasında kronolojik olarak görünür; Türk medya ve açık kaynaklar önceliklidir, Yunan medyası yalnızca Türk savunma sanayii bağlamında tutulur, global basın isteğe bağlıdır. DOCX yalnızca sizin seçtiğiniz haberler için hazırlanır ve tam metin/görsel işlemi bu aşamada yapılır.')
