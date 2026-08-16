@@ -335,7 +335,24 @@ def normalize_rows(raw, cutoff, mode, user_query):
         url=(r.get('url') or r.get('link') or '').strip(); title=html.unescape((r.get('title') or '').strip())
         if not url or not title: reasons['gecersiz']+=1; continue
         dt=parse_dt(r.get('date') or r.get('publishedAt') or r.get('seendate'))
-        if dt and dt<cutoff: reasons['zaman']+=1; continue
+        # Tüm tarihleri UTC-aware datetime olarak karşılaştır. Bazı RSS/arama
+        # sağlayıcıları timezone bilgisi olmadan tarih döndürebildiği için
+        # doğrudan datetime karşılaştırması TypeError üretebilir.
+        if dt:
+            try:
+                if dt.tzinfo is None:
+                    dt=dt.replace(tzinfo=timezone.utc)
+                else:
+                    dt=dt.astimezone(timezone.utc)
+                cutoff_utc = cutoff if cutoff.tzinfo is not None else cutoff.replace(tzinfo=timezone.utc)
+                cutoff_utc = cutoff_utc.astimezone(timezone.utc)
+                if dt < cutoff_utc:
+                    reasons['zaman']+=1
+                    continue
+            except (TypeError, ValueError, AttributeError):
+                # Tarih karşılaştırılamıyorsa haberi düşürme; aşağıda
+                # bilinmeyen tarih olarak sıralanmasına izin ver.
+                dt=None
         if not dt and mode=='turkish':
             # tarih yoksa hızlı bakışta atmayalım; sadece sıralamada alta al.
             pass
@@ -1093,7 +1110,7 @@ if 'docx_bytes' not in st.session_state: st.session_state.docx_bytes=None
 if 'note_bytes' not in st.session_state: st.session_state.note_bytes=None
 
 if run:
-    cutoff=datetime.now(timezone.utc)-timedelta(hours=hours)
+    cutoff=(datetime.now(timezone.utc)-timedelta(hours=hours)).astimezone(timezone.utc)
     when=period_window(hours)
     batches=[('🇹🇷 Türk medya / sanayi-teknoloji',build_turkish_queries(when,query),'turkish')]
     if neg: batches.append(('⚠️ Negatif haber taraması',build_negative_queries(when),'negative'))
