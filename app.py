@@ -144,18 +144,27 @@ def fetch_news_rss(query, time_range="1d", max_results=50):
             
     return articles
 
-# --- GÜVENLİ WORD KÖPRÜ LİNK FONKSİYONU ---
+# --- KESİN KORUMALI WORD KÖPRÜ LİNK FONKSİYONU ---
 def add_hyperlink(paragraph, url, text):
-    part = paragraph.part
-    r_id = part.relate_to(url, "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink", is_external=True)
-    
-    # XML karakter çökmesini engellemek için metin escape edilir
-    safe_text = html.escape(text)
-    
-    hyperlink = parse_xml(f'<w:hyperlink xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" r:id="{r_id}"/>')
-    new_run = parse_xml(f'<w:r xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:rPr><w:rStyle w:val="Hyperlink"/><w:color w:val="0000FF"/><w:u w:val="single"/></w:rPr><w:t>{safe_text}</w:t></w:r>')
-    hyperlink.append(new_run)
-    paragraph._p.append(hyperlink)
+    try:
+        part = paragraph.part
+        # URL içinde geçen &, <, > karakterlerinin XML'i bozmasını engelleme
+        safe_url = html.escape(url)
+        safe_text = html.escape(text)
+        
+        r_id = part.relate_to(url, "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink", is_external=True)
+        
+        hyperlink_xml = f'<w:hyperlink xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" r:id="{r_id}"/>'
+        hyperlink = parse_xml(hyperlink_xml)
+        
+        run_xml = f'<w:r xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:rPr><w:rStyle w:val="Hyperlink"/><w:color w:val="0000FF"/><w:u w:val="single"/></w:rPr><w:t>{safe_text}</w:t></w:r>'
+        new_run = parse_xml(run_xml)
+        
+        hyperlink.append(new_run)
+        paragraph._p.append(hyperlink)
+    except Exception:
+        # Hata ihtimaline karşı düz metin yedekleme
+        paragraph.add_run(f"{text} ({url})")
 
 # --- BİLGİ NOTU / RAPOR ÜRETİCİ (.DOCX) ---
 def generate_osint_docx(query, df_all, stats):
