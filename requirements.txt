@@ -1,6 +1,8 @@
 streamlit
 pandas
 requests
+beautifulsoup4
 python-docx
-duckduckgo_search
 feedparser
+duckduckgo_search
+trafilatura
