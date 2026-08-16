@@ -1,14 +1,12 @@
 import streamlit as st
-import feedparser
-import urllib.parse
 import pandas as pd
 import requests
 import datetime
 from datetime import date, datetime
-from email.utils import parsedate_to_datetime
 from io import BytesIO
 import re
 import html
+from duckduckgo_search import DDGS
 
 from docx import Document
 from docx.shared import Pt, RGBColor, Inches
@@ -17,7 +15,7 @@ from docx.oxml import parse_xml
 
 # --- ARAYÜZ AYARLARI ---
 st.set_page_config(
-    page_title="Açık Kaynak Tarama & Manipülasyon Radarı",
+    page_title="Sanayi & Teknoloji Açık Kaynak Radarı",
     page_icon="🛡️",
     layout="wide"
 )
@@ -39,7 +37,6 @@ def load_lexicon():
 
 lexicon = load_lexicon()
 
-# --- MANİPÜLASYON VE RİSK KELİME LİSTESİ ---
 MANIPULATION_KEYWORDS = [
     "fiyasko", "skandal", "gizlenen", "gerçekler", "fason", "montaj", "yerli değil",
     "illüzyon", "şişirme", "kandırıldık", "sümen altı", "israf", "teşvik vurgunu",
@@ -76,7 +73,6 @@ STRATEGIC_CATEGORIES = {
     ]
 }
 
-# --- METİN ANALİZ MOTORU ---
 def analyze_article(title, description):
     full_text = f"{title} {description}".lower()
     words = re.sub(r'[^\w\s]', ' ', full_text).split()
@@ -108,65 +104,58 @@ def analyze_article(title, description):
             
     return round(score, 2), sentiment, risk_level, found_manipulative, detected_category
 
-# --- CANLI GOOGLE NEWS RSS HABER ÇEKME ---
-def fetch_news_rss(query, time_range="1d", max_results=50):
-    clean_query = query.replace('"', '').replace("'", '')
-    search_query = f"{clean_query} when:{time_range}"
-    encoded_query = urllib.parse.quote(search_query)
-    rss_url = f"https://news.google.com/rss/search?q={encoded_query}&hl=tr&gl=TR&ceid=TR:tr"
-    
-    feed = feedparser.parse(rss_url)
+# --- DUCKDUCKGO İLE GERÇEK ZAMANLI CANLI HABER MOTORU ---
+def fetch_live_news_ddg(query, time_range="d", max_results=50):
     articles = []
-    today = date.today()
     
-    days_limit = {"1d": 1, "7d": 7, "14d": 14}.get(time_range, 1)
+    # Zaman Filtresi Eşleşmesi: d=Son 24 Saat, w=Son 1 Hafta, m=Son 1 Ay
+    time_map = {"1d": "d", "7d": "w", "14d": "w"}
+    selected_time = time_map.get(time_range, "d")
+    
+    try:
+        with DDGS() as ddgs:
+            results = ddgs.news(
+                keywords=query, 
+                region="tr-tr", 
+                timelimit=selected_time, 
+                max_results=max_results
+            )
+            
+            for r in results:
+                # Tarih Formatı Temizleme
+                raw_date = r.get('date', '')
+                try:
+                    dt = datetime.fromisoformat(raw_date.replace('Z', '+00:00'))
+                    formatted_date = dt.strftime('%d %b %Y %H:%M')
+                except:
+                    formatted_date = datetime.now().strftime('%d %b %Y %H:%M')
 
-    for entry in feed.entries:
-        pub_date_str = entry.get('published', '')
-        try:
-            pub_dt = parsedate_to_datetime(pub_date_str)
-            if (today - pub_dt.date()).days > days_limit:
-                continue
-            formatted_date = pub_dt.strftime('%d %b %Y %H:%M')
-        except:
-            formatted_date = datetime.now().strftime('%d %b %Y %H:%M')
-            
-        articles.append({
-            'title': entry.get('title', ''),
-            'description': entry.get('summary', ''),
-            'url': entry.get('link', ''),
-            'publishedAt': formatted_date,
-            'source': {'name': entry.get('source', {}).get('title', 'Google News')}
-        })
-            
-        if len(articles) >= max_results:
-            break
-            
+                articles.append({
+                    'title': r.get('title', ''),
+                    'description': r.get('body', ''),
+                    'url': r.get('url', ''),
+                    'publishedAt': formatted_date,
+                    'source': {'name': r.get('source', 'Web')}
+                })
+    except Exception as e:
+        st.error(f"Haber çekilirken hata oluştu: {e}")
+        
     return articles
 
-# --- KESİN KORUMALI WORD KÖPRÜ LİNK FONKSİYONU ---
 def add_hyperlink(paragraph, url, text):
     try:
         part = paragraph.part
-        # URL içinde geçen &, <, > karakterlerinin XML'i bozmasını engelleme
         safe_url = html.escape(url)
         safe_text = html.escape(text)
         
-        r_id = part.relate_to(url, "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink", is_external=True)
-        
-        hyperlink_xml = f'<w:hyperlink xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" r:id="{r_id}"/>'
-        hyperlink = parse_xml(hyperlink_xml)
-        
-        run_xml = f'<w:r xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:rPr><w:rStyle w:val="Hyperlink"/><w:color w:val="0000FF"/><w:u w:val="single"/></w:rPr><w:t>{safe_text}</w:t></w:r>'
-        new_run = parse_xml(run_xml)
-        
+        r_id = part.relate_to(safe_url, "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink", is_external=True)
+        hyperlink = parse_xml(f'<w:hyperlink xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" r:id="{r_id}"/>')
+        new_run = parse_xml(f'<w:r xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:rPr><w:rStyle w:val="Hyperlink"/><w:color w:val="0000FF"/><w:u w:val="single"/></w:rPr><w:t>{safe_text}</w:t></w:r>')
         hyperlink.append(new_run)
         paragraph._p.append(hyperlink)
-    except Exception:
-        # Hata ihtimaline karşı düz metin yedekleme
-        paragraph.add_run(f"{text} ({url})")
+    except:
+        paragraph.add_run(f"{text} - {url}")
 
-# --- BİLGİ NOTU / RAPOR ÜRETİCİ (.DOCX) ---
 def generate_osint_docx(query, df_all, stats):
     doc = Document()
     
@@ -179,7 +168,6 @@ def generate_osint_docx(query, df_all, stats):
     p_meta.add_run("RAPOR TARİHİ: ").bold = True
     p_meta.add_run(f"{datetime.now().strftime('%d.%m.%Y %H:%M')}\n")
     
-    # 1. YÖNETİCİ ÖZETİ
     doc.add_heading("1. Yönetici Özeti ve Risk Değerlendirmesi", level=1)
     p_sum = doc.add_paragraph()
     p_sum.add_run(
@@ -190,7 +178,6 @@ def generate_osint_docx(query, df_all, stats):
         f"manipülatif/sansasyonel söylem kalıplarının kullanıldığı tespit edilmiştir."
     )
     
-    # 2. KRİTİK HABERLER
     doc.add_heading("2. Kritik / Manipülatif Söylem Barındıran Haberler", level=1)
     risk_df = df_all[df_all['Risk_Durumu'] == 'Yüksek Risk']
     
@@ -215,7 +202,6 @@ def generate_osint_docx(query, df_all, stats):
     else:
         doc.add_paragraph("Kritik düzeyde manipülatif söylem barındıran haber tespit edilmemiştir.")
         
-    # 3. TÜM HABER AKIŞI TABLOSU
     doc.add_heading("3. Genel Haber Akışı ve Duygu Dağılımı", level=1)
     table2 = doc.add_table(rows=1, cols=5)
     table2.style = 'Table Grid'
@@ -251,11 +237,8 @@ with st.sidebar:
     
     default_query = (
         'sanayi OR teknoloji OR TOGG OR KAAN OR ASELSAN OR BAYKAR OR TUSAŞ OR ROKETSAN OR HAVELSAN OR '
-        'TÜBİTAK OR KOSGEB OR Çelik Kubbe OR SİHA OR İHA OR Milli Teknoloji OR çip OR Yapay Zeka OR '
-        'Siber Güvenlik OR Uzay Ajansı OR TUA OR Organize Sanayi OR OSB OR Yatırım Teşvik OR '
-        'İmalat Sanayii OR Yerli Üretim OR Kalkınma Ajansı OR Dijital Dönüşüm OR Yeşil Dönüşüm OR '
-        'Yunanistan OR Yunan basını OR Atina OR Kathimerini OR Ta Nea OR Protothema OR '
-        'Ege OR Doğu Akdeniz OR F-16 OR Rafale OR FIR hattı'
+        'TÜBİTAK OR KOSGEB OR "Çelik Kubbe" OR SİHA OR İHA OR "Milli Teknoloji" OR çip OR "Yapay Zeka" OR '
+        'Yunanistan OR "Yunan basını" OR Atina OR Kathimerini OR "Doğu Akdeniz" OR F-16 OR Rafale'
     )
 
     query = st.text_area(
@@ -280,8 +263,8 @@ with st.sidebar:
     btn_run = st.button("🔍 Açık Kaynak Taramasını Başlat", type="primary", use_container_width=True)
 
 if btn_run:
-    with st.spinner("Anlık haber kaynakları taranıyor, canlı veriler çekiliyor..."):
-        articles = fetch_news_rss(query, time_range=time_filter, max_results=max_news)
+    with st.spinner("Anlık canlı haber kaynakları taranıyor..."):
+        articles = fetch_live_news_ddg(query, time_range=time_filter, max_results=max_news)
         
         if articles:
             parsed_data = []
