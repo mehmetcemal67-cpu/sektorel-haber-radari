@@ -437,70 +437,140 @@ def source_reliability(domain_name, source_name=''):
     if d in SOCIAL: return '🟠 C — Sosyal / indeks'
     return '🟡 B — Açık kaynak'
 
-def verification_status(row, all_rows=None):
-    d=domain(row.get('Domain','')); source_group_name=str(row.get('Kaynak_Grubu',''))
-    if d in TR_OFFICIAL: return '🟢 Resmî açıklama / birincil kaynak'
-    if d in SOCIAL: return '🟠 Sosyal medya / tek kaynak'
-    title=norm(row.get('Başlık',''))
-    if all_rows:
-        matches=[r for r in all_rows if r is not row and title_similarity(title,norm(r.get('Başlık',''))) >= 0.72]
-        if len(matches)>=2: return '🟢 Çoklu kaynakla destekleniyor'
-    if d in TR_MAIN or d in TR_TECH or d in GR: return '🟡 Tek medya kaynağı'
-    return '🟡 Tek/açık kaynak'
 
-def title_similarity(a,b):
-    import difflib
-    a=norm(a); b=norm(b)
-    if not a or not b: return 0.0
-    return difflib.SequenceMatcher(None,a,b).ratio()
+def _title_tokens(text):
+    """Başlıktan olay eşleştirmesi için anlamlı token kümesi üretir."""
+    txt=norm(text)
+    txt=re.sub(r'[^\wçğıöşüÇĞİÖŞÜ]+',' ',txt)
+    stop={
+        've','ile','bir','bu','da','de','için','son','yeni','türkiye','türk','haberi','haber',
+        'açıklama','dedi','oldu','olarak','olan','milyon','milyar','bin','yüzde','ile ilgili'
+    }
+    return {x for x in txt.split() if len(x)>=3 and x not in stop}
 
-def dedupe(rows):
-    out=[]; urls=set(); titles=set()
-    for r in rows:
-        u=r['URL']; k=title_key(r['Başlık'])
-        if u in urls or k in titles: continue
-        urls.add(u); titles.add(k); out.append(r)
-    out.sort(key=lambda x:(x['Tarih_dt'] is not None,x['Tarih_dt'] or datetime.min.replace(tzinfo=timezone.utc),source_rank(x['Domain'])),reverse=True)
-    return out
+
+def _event_signature(title):
+    """
+    Aynı/çok benzer haber başlıklarını hızlı gruplamak için deterministik imza.
+    İlk 6 ayırt edici token kullanılır. O(n²) SequenceMatcher taraması yerine
+    ters indeks kullanacağımız için yüzlerce haberde çok daha hızlıdır.
+    """
+    toks=sorted(_title_tokens(title))
+    return ' '.join(toks[:6])
+
+
+def _jaccard(a,b):
+    if not a or not b:
+        return 0.0
+    inter=len(a & b)
+    union=len(a | b)
+    return inter/union if union else 0.0
+
+
+def source_reliability(source_domain,source_name=''):
+    d=domain(source_domain); n=norm(source_name)
+    if d in TR_OFFICIAL: return '🟢 A — Birincil / resmî'
+    if d in TR_MAIN or d in TR_TECH: return '🟢 A — Güvenilir medya'
+    if d in GR: return '🔵 B — Yunan medya'
+    if d in SOCIAL: return '🟠 C — Sosyal / indeks'
+    return '🟡 B — Açık kaynak'
+
 
 def enrich_rows(rows):
-    # Haber satırlarını analitik katmanla zenginleştirir; ağ çağrısı yapmaz.
-    # DataFrame -> dict dönüşümünde datetime değerleri pandas.Timestamp'a dönüşebilir.
-    # Olay zaman çizelgesinde tz-naive/tz-aware çakışmasını önlemek için hepsini UTC datetime'a normalize et.
+    """
+    HIZLI analitik katman.
+    Önceki sürümde her haber diğer bütün haberlerle SequenceMatcher üzerinden
+    karşılaştırılıyordu ve doğrulama için ikinci kez O(n²) tarama yapılıyordu.
+    Bu sürüm ters token indeksi + olay grubu istatistikleri kullanır.
+    """
+    if not rows:
+        return rows
+
+    # 1) Tarih + temel risk sınıflaması: O(n)
     for r in rows:
-        r['Tarih_dt'] = _to_utc_datetime(r.get('Tarih_dt'))
-    for r in rows:
-        sentiment,score,status,neg,risk,cat,reasons=classify(r.get('Başlık',''),r.get('İçerik_Özeti',''),r.get('Domain',''))
-        r['Duygu']=sentiment; r['Risk_Skoru']=score; r['Risk_Durumu']=status
-        r['Negatif_Sinyaller']=neg; r['Risk_Sinyalleri']=risk; r['Risk_Gerekçesi']='; '.join(reasons)
+        r['Tarih_dt']=_to_utc_datetime(r.get('Tarih_dt'))
+        sentiment,score,status,neg,risk,cat,reasons=classify(
+            r.get('Başlık',''),r.get('İçerik_Özeti',''),r.get('Domain','')
+        )
+        r['Duygu']=sentiment
+        r['Risk_Skoru']=score
+        r['Risk_Durumu']=status
+        r['Negatif_Sinyaller']=neg
+        r['Risk_Sinyalleri']=risk
+        r['Risk_Gerekçesi']='; '.join(reasons)
         r['Kaynak_Güvenilirliği']=source_reliability(r.get('Domain',''),r.get('Kaynak',''))
-    # Olay kümeleri: benzer başlıklar tek olay altında gruplanır.
-    event_ids=[]
-    for i,r in enumerate(rows):
-        assigned=None
-        for j,other in enumerate(rows[:i]):
-            if r.get('Domain')==other.get('Domain') and norm(r.get('Başlık'))==norm(other.get('Başlık')):
-                assigned=other.get('Olay_ID'); break
-            if title_similarity(r.get('Başlık',''),other.get('Başlık',''))>=0.76:
-                assigned=other.get('Olay_ID'); break
-        if not assigned:
-            assigned=f'OLAY-{len(event_ids)+1:03d}'
-            event_ids.append(assigned)
-        r['Olay_ID']=assigned
-    # Her olay için kaynak ve zaman sayısı
+        r['_tokens']=_title_tokens(r.get('Başlık',''))
+
+    # 2) Olay kümelemesi: ters token indeksi.
+    # Her haber yalnızca ortak token taşıyan sınırlı sayıdaki önceki adayla karşılaştırılır.
+    token_index={}
+    event_representative={}
+    next_event=1
+
+    for idx,r in enumerate(rows):
+        toks=r['_tokens']
+        candidate_events=set()
+        for tok in toks:
+            candidate_events.update(token_index.get(tok,set()))
+
+        best_event=None
+        best_score=0.0
+        for eid in candidate_events:
+            rep_tokens=event_representative[eid]
+            score=_jaccard(toks,rep_tokens)
+            if score>best_score:
+                best_score=score
+                best_event=eid
+
+        # Aynı olay için Jaccard eşiği. Çok kısa başlıklarda biraz daha sıkı.
+        threshold=0.48 if len(toks)>=6 else 0.58
+        if best_event is None or best_score < threshold:
+            best_event=f'OLAY-{next_event:03d}'
+            next_event+=1
+            event_representative[best_event]=set(toks)
+
+        r['Olay_ID']=best_event
+        for tok in toks:
+            token_index.setdefault(tok,set()).add(best_event)
+
+    # 3) Olay istatistikleri bir kez hesaplanır: O(n)
     groups={}
-    for r in rows: groups.setdefault(r['Olay_ID'],[]).append(r)
     for r in rows:
-        g=groups.get(r['Olay_ID'],[])
-        r['Olay_Kaynak_Sayisi']=len({x.get('Domain') for x in g if x.get('Domain')})
-        times=[]
-        for x in g:
-            dt_value=_to_utc_datetime(x.get('Tarih_dt'))
-            if dt_value is not None:
-                times.append(dt_value)
-        r['Olay_İlk_Görülme']=fmt_dt(min(times)) if times else r.get('Tarih','')
-        r['Olay_Son_Görülme']=fmt_dt(max(times)) if times else r.get('Tarih','')
-        r['Doğrulama']=verification_status(r,rows)
+        groups.setdefault(r['Olay_ID'],[]).append(r)
+
+    event_meta={}
+    for eid,g in groups.items():
+        domains={x.get('Domain') for x in g if x.get('Domain')}
+        times=[x.get('Tarih_dt') for x in g if x.get('Tarih_dt') is not None]
+        official=any(domain(x.get('Domain','')) in TR_OFFICIAL for x in g)
+        social_only=all(domain(x.get('Domain','')) in SOCIAL for x in g if x.get('Domain')) if domains else False
+
+        if official:
+            verification='🟢 Resmî açıklama / birincil kaynak'
+        elif len(domains)>=2 or len(g)>=3:
+            verification='🟢 Çoklu kaynakla destekleniyor'
+        elif social_only:
+            verification='🟠 Sosyal medya / tek kaynak'
+        elif any(domain(x.get('Domain','')) in TR_MAIN+TR_TECH+GR for x in g):
+            verification='🟡 Tek medya kaynağı'
+        else:
+            verification='🟡 Tek/açık kaynak'
+
+        event_meta[eid]={
+            'sources':len(domains),
+            'first':fmt_dt(min(times)) if times else '',
+            'last':fmt_dt(max(times)) if times else '',
+            'verification':verification
+        }
+
+    for r in rows:
+        meta=event_meta[r['Olay_ID']]
+        r['Olay_Kaynak_Sayisi']=meta['sources']
+        r['Olay_İlk_Görülme']=meta['first'] or r.get('Tarih','')
+        r['Olay_Son_Görülme']=meta['last'] or r.get('Tarih','')
+        r['Doğrulama']=meta['verification']
+        r.pop('_tokens',None)
+
     return rows
 
 def build_event_summary(df):
@@ -1180,24 +1250,21 @@ if run:
     live_alarm_box=st.empty()
     status_box=st.status('🔎 Tarama başlıyor...',expanded=True)
 
-    # Bu taramadaki bildirimleri tekilleştiriyoruz.
     alerted_keys=set()
     live_alerts=[]
     toast_count=0
-    MAX_TOASTS_PER_SCAN=3  # Çok sayıda toast tarayıcıyı/Streamlit'i yavaşlatmasın.
+    MAX_TOASTS_PER_SCAN=2
 
     def _alert_key(row):
         return row.get('URL') or title_key(row.get('Başlık',''))
 
     def _register_alert(row):
-        nonlocal_toast = None
         key=_alert_key(row)
         if not key or key in alerted_keys:
             return False
         alerted_keys.add(key)
-
-        risk_score=int(row.get('Risk_Skoru', row.get('Skor', 0)) or 0)
-        is_high=(row.get('Risk_Durumu')=='Yüksek Risk' or risk_score>=70)
+        risk_score=int(row.get('Risk_Skoru',row.get('Skor',0)) or 0)
+        is_high=row.get('Risk_Durumu')=='Yüksek Risk' or risk_score>=70
         live_alerts.insert(0,{
             'Tarih':str(row.get('Tarih','')),
             'Seviye':'YÜKSEK RİSK' if is_high else 'NEGATİF',
@@ -1206,89 +1273,100 @@ if run:
             'Risk':risk_score,
             'URL':row.get('URL','')
         })
-        del live_alerts[30:]
+        del live_alerts[25:]
         return True
 
-    for idx,(label,queries,mode) in enumerate(batches):
-        worker_count=min(8,len(queries))
-        status_box.write(f'{label} — {len(queries)} sorgu / {worker_count} eşzamanlı')
-
-        raw=[]
-        with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count) as ex:
-            fs=[ex.submit(rss,q) for q in queries]
-            for f in concurrent.futures.as_completed(fs):
-                try:
-                    raw.extend(f.result() or [])
-                except Exception:
-                    pass
-
-        stat['Ham sonuç']+=len(raw)
+    def _merge_batch(raw,mode):
+        nonlocal_dummy=None
         norm_rows,reasons=normalize_rows(raw,cutoff,mode,query)
         stat['Zaman dışı']+=reasons['zaman']
         stat['Konu dışı']+=reasons['konu']
         stat['Yunan dışı']+=reasons['yunan']
         stat['Kaynak dışı']+=reasons['kaynak']
+        return norm_rows
 
-        # Hızlı ilk bakışta sadece tekilleştir + sınıflandırılmış temel satırları kullan.
-        # Olay kümelemesi / doğrulama gibi O(n²) analizler bütün tarama bittikten sonra yalnızca 1 kez çalışır.
-        new_rows=dedupe(all_rows+norm_rows)
+    # 1) Türk ana taraması önce: kullanıcı ilk sonuçları en kısa sürede görsün.
+    primary_label,primary_queries,primary_mode=batches[0]
+    status_box.write(f'{primary_label} — {len(primary_queries)} sorgu / 10 eşzamanlı')
+    primary_raw=[]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(10,len(primary_queries))) as ex:
+        futures=[ex.submit(rss,q) for q in primary_queries]
+        for f in concurrent.futures.as_completed(futures):
+            try:
+                primary_raw.extend(f.result() or [])
+            except Exception:
+                pass
+    stat['Ham sonuç']+=len(primary_raw)
+    all_rows=dedupe(_merge_batch(primary_raw,primary_mode))
+    stat['Sonuç']=len(all_rows)
 
-        # Yeni eklenen negatif/riskli haberleri alarm listesine al.
+    if all_rows:
+        pv=pd.DataFrame(all_rows)
+        pv['Tarih_dt']=pd.to_datetime(pv['Tarih_dt'],utc=True,errors='coerce')
+        pv=pv.sort_values(['Tarih_dt','Domain'],ascending=[False,True],na_position='last')
+        fast=pv[['Tarih','Kaynak_Grubu','Kaynak','Başlık','İçerik_Özeti','Duygu','Risk_Skoru','Risk_Durumu','URL']].head(100).copy()
+        fast['İçerik_Özeti']=fast['İçerik_Özeti'].astype(str).str.slice(0,260)
+        placeholder.dataframe(
+            fast,
+            column_config={'URL':st.column_config.LinkColumn('Haber Linki'),'İçerik_Özeti':st.column_config.TextColumn('Kısa İçerik',width='large'),'Risk_Skoru':st.column_config.NumberColumn('Risk',format='%d/100')},
+            hide_index=True,use_container_width=True,height=440
+        )
+
+    # 2) Negatif + Yunan + sosyal + global sorgularını TEK HAVUZDA paralel çalıştır.
+    supplemental=batches[1:]
+    jobs=[]
+    for label,queries,mode in supplemental:
+        for q in queries:
+            jobs.append((label,q,mode))
+
+    supplemental_raw_by_mode={}
+    if jobs:
+        status_box.write(f'⚡ Tamamlayıcı kaynaklar — {len(jobs)} sorgu / 12 eşzamanlı')
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(12,len(jobs))) as ex:
+            future_map={ex.submit(rss,q):(label,mode) for label,q,mode in jobs}
+            for fut in concurrent.futures.as_completed(future_map):
+                label,mode=future_map[fut]
+                try:
+                    chunk=fut.result() or []
+                except Exception:
+                    chunk=[]
+                stat['Ham sonuç']+=len(chunk)
+                supplemental_raw_by_mode.setdefault(mode,[]).extend(chunk)
+
+    # Mode bazlı normalize + birleştirme.
+    for mode,raw in supplemental_raw_by_mode.items():
+        incoming=_merge_batch(raw,mode)
         old_keys={_alert_key(x) for x in all_rows}
-        just_added=[x for x in new_rows if _alert_key(x) not in old_keys]
-        new_alarm_count=0
-        for ar in just_added:
+        all_rows=dedupe(all_rows+incoming)
+        for ar in all_rows:
+            key=_alert_key(ar)
+            if key in old_keys:
+                continue
             if ar.get('Duygu')=='Negatif' or ar.get('Risk_Durumu')=='Yüksek Risk':
                 if _register_alert(ar):
-                    new_alarm_count+=1
                     if instant_alerts and toast_count < MAX_TOASTS_PER_SCAN:
-                        risk_score=int(ar.get('Risk_Skoru', ar.get('Skor',0)) or 0)
+                        risk_score=int(ar.get('Risk_Skoru',ar.get('Skor',0)) or 0)
                         is_high=ar.get('Risk_Durumu')=='Yüksek Risk' or risk_score>=70
                         st.toast(
-                            f'{"🚨 YÜKSEK RİSK" if is_high else "⚠️ NEGATİF"}: {str(ar.get("Başlık",""))[:105]}',
+                            f'{"🚨 YÜKSEK RİSK" if is_high else "⚠️ NEGATİF"}: {str(ar.get("Başlık",""))[:100]}',
                             icon='🚨' if is_high else '⚠️'
                         )
                         toast_count+=1
-
-        all_rows=new_rows
         stat['Sonuç']=len(all_rows)
 
-        if live_alerts:
-            live_alarm_box.warning(
-                f'🔔 Tarama sürüyor — {len(live_alerts)} negatif/riskli içerik yakalandı. '
-                f'Son: {live_alerts[0]["Başlık"][:105]}'
-            )
-
-        # Ekranı çok büyük DataFrame ile sürekli yeniden çizdirmemek için ilk bakışta en yeni 150 satır.
-        if all_rows:
-            pv=pd.DataFrame(all_rows)
-            pv['Tarih_dt']=pd.to_datetime(pv['Tarih_dt'],utc=True,errors='coerce')
-            pv=pv.sort_values(['Tarih_dt','Domain'],ascending=[False,True],na_position='last')
-            show=pv[['Tarih','Kaynak_Grubu','Kaynak','Başlık','İçerik_Özeti','Duygu','Risk_Skoru','Risk_Durumu','URL']].head(150)
-            placeholder.dataframe(
-                show,
-                column_config={
-                    'URL':st.column_config.LinkColumn('Haber Linki'),
-                    'İçerik_Özeti':st.column_config.TextColumn('İçerik / Özet',width='large'),
-                    'Risk_Skoru':st.column_config.NumberColumn('Risk',format='%d/100')
-                },
-                hide_index=True,use_container_width=True,height=480
-            )
-
-        status_box.update(
-            label=f'✅ {label} tamamlandı — toplam {len(all_rows)} haber',
-            state='complete' if idx==len(batches)-1 else 'running'
+    if live_alerts:
+        live_alarm_box.warning(
+            f'🔔 {len(live_alerts)} negatif/riskli içerik yakalandı. Son: {live_alerts[0]["Başlık"][:100]}'
         )
 
-    # Ağ taraması tamamen bittikten sonra analitik katmanı SADECE BİR KEZ çalıştır.
+    # 3) Analitik katman yalnızca bir kez ve artık hızlı ters indeks ile.
     if all_rows:
-        status_box.write('🧩 Olay kümeleri ve analitik katman hazırlanıyor...')
+        status_box.write('🧩 Hızlı olay analizi hazırlanıyor...')
         all_rows=enrich_rows(all_rows)
-        stat['Olay']=len(set(r.get('Olay_ID') for r in all_rows))
+        stat['Olay']=len({r.get('Olay_ID') for r in all_rows})
     else:
         stat['Olay']=0
 
-    # Analitik katmandan sonra yüksek risk seviyesine çıkan yeni içerikleri de alarm paneline ekle.
     for ar in all_rows:
         if ar.get('Duygu')=='Negatif' or ar.get('Risk_Durumu')=='Yüksek Risk' or int(ar.get('Risk_Skoru',0) or 0)>=70:
             _register_alert(ar)
@@ -1337,7 +1415,7 @@ else:
         alarms=df[(df.Risk_Skoru>=70) | (df.Duygu=='Negatif')].sort_values(['Risk_Skoru','Tarih_dt'],ascending=[False,False])
         if not alarms.empty:
             st.subheader('🚨 Yeni / Öncelikli Alarmlar')
-            for _,r in alarms.head(8).iterrows():
+            for _,r in alarms.head(5).iterrows():
                 icon='🔴' if int(r['Risk_Skoru'])>=70 else '🟠'
                 st.markdown(f"{icon} **{r['Tarih']} — {r['Başlık']}** — **{int(r['Risk_Skoru'])}/100**  \\n**{r['Kaynak']}** · {r['Kategori']} · {r['Risk_Gerekçesi']} · {r['Doğrulama']}")
 
@@ -1353,25 +1431,37 @@ else:
         cols=['Seç','Tarih','Kaynak_Grubu','Kaynak','Kategori','Başlık','İçerik_Özeti','Duygu','Risk_Skoru','Risk_Durumu','Kaynak_Güvenilirliği','Doğrulama','URL']
 
         if view=='📰 Kronolojik':
-            st.caption('☑️ Haberleri işaretleyin; bitirince **SEÇİMLERİ KAYDET** düğmesine basın.')
-            with st.form(key=f'selection_form_{st.session_state.scan_time}', clear_on_submit=False):
+            st.caption('☑️ Tüm haberler sistemde tutulur; hız için ekranda sayfa sayfa gösterilir.')
+            page_size=75
+            total_pages=max(1,(len(df)+page_size-1)//page_size)
+            page_no=st.number_input('Sayfa',min_value=1,max_value=total_pages,value=1,step=1,key='news_page')
+            start_i=(int(page_no)-1)*page_size
+            end_i=min(start_i+page_size,len(df))
+            page_df=df.iloc[start_i:end_i].copy()
+
+            # Tarayıcıya çok uzun RSS özetleri göndermeyelim; tam içerik backend'de korunur.
+            page_df['İçerik_Özeti']=page_df['İçerik_Özeti'].astype(str).str.slice(0,320)
+
+            st.caption(f'{start_i+1}-{end_i} / {len(df)} haber')
+            with st.form(key=f'selection_form_{st.session_state.scan_time}_{int(page_no)}', clear_on_submit=False):
                 edited=st.data_editor(
-                    df[cols],
+                    page_df[cols],
                     column_config={
                         'Seç':st.column_config.CheckboxColumn('Seç'),
                         'URL':st.column_config.LinkColumn('Haber Linki'),
-                        'İçerik_Özeti':st.column_config.TextColumn('İçerik / Özet',width='large'),
+                        'İçerik_Özeti':st.column_config.TextColumn('Kısa İçerik',width='large'),
                         'Risk_Skoru':st.column_config.NumberColumn('Risk',format='%d/100')
                     },
                     disabled=[x for x in cols if x!='Seç'],
-                    hide_index=True,use_container_width=True,height=620,
-                    key=f'editor_{st.session_state.scan_time}'
+                    hide_index=True,use_container_width=True,height=560,
+                    key=f'editor_{st.session_state.scan_time}_{int(page_no)}'
                 )
-                save_selection=st.form_submit_button('✅ SEÇİMLERİ KAYDET',use_container_width=True)
+                save_selection=st.form_submit_button('✅ BU SAYFADAKİ SEÇİMLERİ KAYDET',use_container_width=True)
             if save_selection:
-                df.loc[edited.index,'Seç']=edited['Seç'].astype(bool)
+                original_indices=df.index[start_i:end_i]
+                df.loc[original_indices,'Seç']=edited['Seç'].astype(bool).to_numpy()
                 st.session_state.rows=df.to_dict('records')
-                st.success(f'✅ {int(df["Seç"].sum())} haber seçildi.')
+                st.success(f'✅ Toplam {int(df["Seç"].sum())} haber seçili.')
 
         elif view=='⚠️ Negatif':
             st.dataframe(
