@@ -340,9 +340,17 @@ def build_turkish_queries(when, user_query=''):
         '(ihracat OR ithalat OR "yüksek teknoloji" OR "orta yüksek teknoloji" OR "kritik teknoloji" OR "stratejik ürün" OR yerlileştirme)'
     ]
     qs=[f'Türkiye {g} when:{when}' for g in groups]
-    # Kullanıcının kutuya eklediği özel terimler de ayrıca taranır.
-    custom=[x for x in _query_terms(user_query) if norm(x) not in {'sanayi','teknoloji','üretim','imalat','fabrika','türkiye','türk'}]
-    for term in custom[:20]:
+    # Kullanıcının kutuya eklediği ÖZEL terimler ayrıca taranır.
+    # Performans: varsayılan geniş evrende zaten bulunan terimleri ikinci kez sorgulamayız.
+    # Böylece normal kullanımda 38 civarı sorgu yerine yaklaşık 18 ana sorgu çalışır;
+    # kullanıcı gerçekten yeni bir terim eklerse yalnızca o terim(ler) ek sorgu olur.
+    built_in={norm(x) for x in TOPIC_TERMS}
+    generic={'sanayi','teknoloji','üretim','imalat','fabrika','türkiye','türk'}
+    custom=[
+        x for x in _query_terms(user_query)
+        if norm(x) not in generic and norm(x) not in built_in
+    ]
+    for term in custom[:8]:
         qs.append(f'Türkiye ("{term}") when:{when}')
     return qs
 
@@ -1172,90 +1180,123 @@ if run:
     live_alarm_box=st.empty()
     status_box=st.status('🔎 Tarama başlıyor...',expanded=True)
 
-    # Bu taramadaki bildirimleri tekilleştirmek için.
+    # Bu taramadaki bildirimleri tekilleştiriyoruz.
     alerted_keys=set()
     live_alerts=[]
+    toast_count=0
+    MAX_TOASTS_PER_SCAN=3  # Çok sayıda toast tarayıcıyı/Streamlit'i yavaşlatmasın.
 
     def _alert_key(row):
         return row.get('URL') or title_key(row.get('Başlık',''))
 
-    def _push_live_alert(row):
-        """Tarama devam ederken toast + kalıcı canlı alarm listesi üretir."""
+    def _register_alert(row):
+        nonlocal_toast = None
         key=_alert_key(row)
         if not key or key in alerted_keys:
-            return
+            return False
         alerted_keys.add(key)
 
         risk_score=int(row.get('Risk_Skoru', row.get('Skor', 0)) or 0)
         is_high=(row.get('Risk_Durumu')=='Yüksek Risk' or risk_score>=70)
-        icon='🚨' if is_high else '⚠️'
-        label='YÜKSEK RİSK' if is_high else 'NEGATİF'
-        title=str(row.get('Başlık','')).strip()
-        source=str(row.get('Kaynak','Açık Kaynak')).strip()
-        when_text=str(row.get('Tarih',''))
-
         live_alerts.insert(0,{
-            'Tarih':when_text,
-            'Seviye':label,
-            'Kaynak':source,
-            'Başlık':title,
+            'Tarih':str(row.get('Tarih','')),
+            'Seviye':'YÜKSEK RİSK' if is_high else 'NEGATİF',
+            'Kaynak':str(row.get('Kaynak','Açık Kaynak')),
+            'Başlık':str(row.get('Başlık','')),
             'Risk':risk_score,
             'URL':row.get('URL','')
         })
-        del live_alerts[20:]
-
-        if instant_alerts:
-            # Streamlit toast kısa süreli anlık bildirimdir.
-            st.toast(
-                f'{icon} {label}: {title[:110]}\n{source} · Risk {risk_score}/100',
-                icon='🚨' if is_high else '⚠️'
-            )
-
-        # Toast kaybolsa bile tarama boyunca ekranda kalıcı canlı alarm paneli.
-        if live_alerts:
-            live_alarm_box.warning(
-                f'🔔 Tarama devam ediyor — {len(live_alerts)} yeni negatif/riskli içerik yakalandı. '
-                f'Son alarm: {live_alerts[0]["Başlık"][:120]}'
-            )
+        del live_alerts[30:]
+        return True
 
     for idx,(label,queries,mode) in enumerate(batches):
-        status_box.write(f'{label} — {len(queries)} paralel arama')
-        with concurrent.futures.ThreadPoolExecutor(max_workers=min(8,len(queries))) as ex:
+        worker_count=min(8,len(queries))
+        status_box.write(f'{label} — {len(queries)} sorgu / {worker_count} eşzamanlı')
+
+        raw=[]
+        with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count) as ex:
             fs=[ex.submit(rss,q) for q in queries]
-            raw=[]
             for f in concurrent.futures.as_completed(fs):
                 try:
-                    chunk=f.result() or []
-                    raw.extend(chunk)
-
-                    # Sorgu tamamlandığı anda, tüm batch'in bitmesini beklemeden
-                    # negatif/yüksek risk adaylarını kontrol et.
-                    if instant_alerts and chunk:
-                        chunk_rows,_chunk_reasons=normalize_rows(chunk,cutoff,mode,query)
-                        for ar in chunk_rows:
-                            if ar.get('Duygu')=='Negatif' or ar.get('Risk_Durumu')=='Yüksek Risk':
-                                _push_live_alert(ar)
+                    raw.extend(f.result() or [])
                 except Exception:
                     pass
 
         stat['Ham sonuç']+=len(raw)
         norm_rows,reasons=normalize_rows(raw,cutoff,mode,query)
-        stat['Zaman dışı']+=reasons['zaman']; stat['Konu dışı']+=reasons['konu']; stat['Yunan dışı']+=reasons['yunan']; stat['Kaynak dışı']+=reasons['kaynak']
-        all_rows=enrich_rows(dedupe(all_rows+norm_rows)); stat['Sonuç']=len(all_rows); stat['Olay']=len(set(r.get('Olay_ID') for r in all_rows))
+        stat['Zaman dışı']+=reasons['zaman']
+        stat['Konu dışı']+=reasons['konu']
+        stat['Yunan dışı']+=reasons['yunan']
+        stat['Kaynak dışı']+=reasons['kaynak']
 
-        # enrich_rows sonrası risk skoru yükselen içerikleri de alarma dahil et.
-        if instant_alerts:
-            for ar in all_rows:
-                if ar.get('Duygu')=='Negatif' or ar.get('Risk_Durumu')=='Yüksek Risk' or int(ar.get('Risk_Skoru',0) or 0)>=70:
-                    _push_live_alert(ar)
+        # Hızlı ilk bakışta sadece tekilleştir + sınıflandırılmış temel satırları kullan.
+        # Olay kümelemesi / doğrulama gibi O(n²) analizler bütün tarama bittikten sonra yalnızca 1 kez çalışır.
+        new_rows=dedupe(all_rows+norm_rows)
 
+        # Yeni eklenen negatif/riskli haberleri alarm listesine al.
+        old_keys={_alert_key(x) for x in all_rows}
+        just_added=[x for x in new_rows if _alert_key(x) not in old_keys]
+        new_alarm_count=0
+        for ar in just_added:
+            if ar.get('Duygu')=='Negatif' or ar.get('Risk_Durumu')=='Yüksek Risk':
+                if _register_alert(ar):
+                    new_alarm_count+=1
+                    if instant_alerts and toast_count < MAX_TOASTS_PER_SCAN:
+                        risk_score=int(ar.get('Risk_Skoru', ar.get('Skor',0)) or 0)
+                        is_high=ar.get('Risk_Durumu')=='Yüksek Risk' or risk_score>=70
+                        st.toast(
+                            f'{"🚨 YÜKSEK RİSK" if is_high else "⚠️ NEGATİF"}: {str(ar.get("Başlık",""))[:105]}',
+                            icon='🚨' if is_high else '⚠️'
+                        )
+                        toast_count+=1
+
+        all_rows=new_rows
+        stat['Sonuç']=len(all_rows)
+
+        if live_alerts:
+            live_alarm_box.warning(
+                f'🔔 Tarama sürüyor — {len(live_alerts)} negatif/riskli içerik yakalandı. '
+                f'Son: {live_alerts[0]["Başlık"][:105]}'
+            )
+
+        # Ekranı çok büyük DataFrame ile sürekli yeniden çizdirmemek için ilk bakışta en yeni 150 satır.
         if all_rows:
-            pv=pd.DataFrame(all_rows).sort_values(['Tarih_dt','Domain'],ascending=[False,True],na_position='last')
-            show=pv[['Tarih','Kaynak_Grubu','Kaynak','Başlık','İçerik_Özeti','Duygu','Risk_Skoru','Risk_Durumu','URL']]
-            placeholder.dataframe(show,column_config={'URL':st.column_config.LinkColumn('Haber Linki'),'İçerik_Özeti':st.column_config.TextColumn('İçerik / Özet',width='large'),'Risk_Skoru':st.column_config.NumberColumn('Risk',format='%d/100')},hide_index=True,use_container_width=True,height=520)
+            pv=pd.DataFrame(all_rows)
+            pv['Tarih_dt']=pd.to_datetime(pv['Tarih_dt'],utc=True,errors='coerce')
+            pv=pv.sort_values(['Tarih_dt','Domain'],ascending=[False,True],na_position='last')
+            show=pv[['Tarih','Kaynak_Grubu','Kaynak','Başlık','İçerik_Özeti','Duygu','Risk_Skoru','Risk_Durumu','URL']].head(150)
+            placeholder.dataframe(
+                show,
+                column_config={
+                    'URL':st.column_config.LinkColumn('Haber Linki'),
+                    'İçerik_Özeti':st.column_config.TextColumn('İçerik / Özet',width='large'),
+                    'Risk_Skoru':st.column_config.NumberColumn('Risk',format='%d/100')
+                },
+                hide_index=True,use_container_width=True,height=480
+            )
 
-        status_box.update(label=f'✅ {label} tamamlandı — toplam {len(all_rows)} haber / {len(set(r.get("Olay_ID") for r in all_rows))} olay',state='complete' if idx==len(batches)-1 else 'running')
+        status_box.update(
+            label=f'✅ {label} tamamlandı — toplam {len(all_rows)} haber',
+            state='complete' if idx==len(batches)-1 else 'running'
+        )
 
+    # Ağ taraması tamamen bittikten sonra analitik katmanı SADECE BİR KEZ çalıştır.
+    if all_rows:
+        status_box.write('🧩 Olay kümeleri ve analitik katman hazırlanıyor...')
+        all_rows=enrich_rows(all_rows)
+        stat['Olay']=len(set(r.get('Olay_ID') for r in all_rows))
+    else:
+        stat['Olay']=0
+
+    # Analitik katmandan sonra yüksek risk seviyesine çıkan yeni içerikleri de alarm paneline ekle.
+    for ar in all_rows:
+        if ar.get('Duygu')=='Negatif' or ar.get('Risk_Durumu')=='Yüksek Risk' or int(ar.get('Risk_Skoru',0) or 0)>=70:
+            _register_alert(ar)
+
+    status_box.update(
+        label=f'✅ Tarama tamamlandı — {len(all_rows)} haber / {stat["Olay"]} olay',
+        state='complete'
+    )
     st.session_state.rows=all_rows
     st.session_state.scan_time=datetime.now().astimezone()
     st.session_state.stats=stat
@@ -1282,7 +1323,7 @@ else:
         # Son taramada anlık yakalanan bildirimlerin kalıcı özeti
         recent_alerts=st.session_state.get('last_scan_alerts',[])
         if recent_alerts:
-            with st.expander(f'🔔 Son taramada yakalanan yeni negatif/riskli içerikler ({len(recent_alerts)})',True):
+            with st.expander(f'🔔 Son taramada yakalanan yeni negatif/riskli içerikler ({len(recent_alerts)})',False):
                 alert_df=pd.DataFrame(recent_alerts)
                 st.dataframe(
                     alert_df,
@@ -1300,10 +1341,19 @@ else:
                 icon='🔴' if int(r['Risk_Skoru'])>=70 else '🟠'
                 st.markdown(f"{icon} **{r['Tarih']} — {r['Başlık']}** — **{int(r['Risk_Skoru'])}/100**  \\n**{r['Kaynak']}** · {r['Kategori']} · {r['Risk_Gerekçesi']} · {r['Doğrulama']}")
 
-        tabs=st.tabs([f'📰 Kronolojik ({total})',f'⚠️ Negatif ({negc})',f'🚨 Yüksek Risk ({riskc})',f'🇹🇷 Türk ({trc})',f'🇬🇷 Yunan ({grc})',f'🧩 Olaylar ({events})', '📈 Trend / Analiz', '⭐ Takip Listesi'])
+        # Performans: Streamlit tabs içindeki TÜM içerikleri arka planda çalıştırır.
+        # Bu nedenle tek seferde yalnızca seçilen görünümü üretiriz.
+        view=st.radio(
+            'Görünüm',
+            ['📰 Kronolojik','⚠️ Negatif','🚨 Yüksek Risk','🇹🇷 Türk','🇬🇷 Yunan','🧩 Olaylar','📈 Trend / Analiz','⭐ Takip Listesi'],
+            horizontal=True,
+            key='main_view'
+        )
+
         cols=['Seç','Tarih','Kaynak_Grubu','Kaynak','Kategori','Başlık','İçerik_Özeti','Duygu','Risk_Skoru','Risk_Durumu','Kaynak_Güvenilirliği','Doğrulama','URL']
-        with tabs[0]:
-            st.caption('☑️ İstediğiniz haberleri işaretleyin. Sayfa her tıkta yeniden çalışmaz; seçimlerinizi bitirince **SEÇİMLERİ KAYDET** düğmesine basın.')
+
+        if view=='📰 Kronolojik':
+            st.caption('☑️ Haberleri işaretleyin; bitirince **SEÇİMLERİ KAYDET** düğmesine basın.')
             with st.form(key=f'selection_form_{st.session_state.scan_time}', clear_on_submit=False):
                 edited=st.data_editor(
                     df[cols],
@@ -1314,44 +1364,75 @@ else:
                         'Risk_Skoru':st.column_config.NumberColumn('Risk',format='%d/100')
                     },
                     disabled=[x for x in cols if x!='Seç'],
-                    hide_index=True,
-                    use_container_width=True,
-                    height=650,
+                    hide_index=True,use_container_width=True,height=620,
                     key=f'editor_{st.session_state.scan_time}'
                 )
                 save_selection=st.form_submit_button('✅ SEÇİMLERİ KAYDET',use_container_width=True)
             if save_selection:
-                # İndeksler resetlenmiş olduğu için editor ile df satırları birebir eşleşir.
                 df.loc[edited.index,'Seç']=edited['Seç'].astype(bool)
                 st.session_state.rows=df.to_dict('records')
                 st.success(f'✅ {int(df["Seç"].sum())} haber seçildi.')
-        with tabs[1]:
-            st.dataframe(df[df.Duygu=='Negatif'][['Tarih','Kaynak','Kategori','Başlık','Risk_Skoru','Risk_Gerekçesi','Doğrulama','URL']],column_config={'URL':st.column_config.LinkColumn('Haber Linki')},hide_index=True,use_container_width=True,height=650)
-        with tabs[2]:
-            st.dataframe(df[df.Risk_Durumu=='Yüksek Risk'][['Tarih','Kaynak','Kategori','Başlık','Risk_Skoru','Risk_Gerekçesi','Doğrulama','URL']],column_config={'URL':st.column_config.LinkColumn('Haber Linki')},hide_index=True,use_container_width=True,height=650)
-        with tabs[3]:
-            st.dataframe(df[df.Kaynak_Grubu.astype(str).str.startswith('🇹🇷')][['Tarih','Kaynak','Kategori','Başlık','Risk_Skoru','Duygu','URL']],column_config={'URL':st.column_config.LinkColumn('Haber Linki')},hide_index=True,use_container_width=True,height=650)
-        with tabs[4]:
-            st.dataframe(df[df.Kaynak_Grubu.astype(str).str.startswith('🇬🇷')][['Tarih','Kaynak','Kategori','Başlık','Risk_Skoru','Duygu','URL']],column_config={'URL':st.column_config.LinkColumn('Haber Linki')},hide_index=True,use_container_width=True,height=650)
-        with tabs[5]:
-            ev=build_event_summary(df); st.dataframe(ev,hide_index=True,use_container_width=True,height=500)
+
+        elif view=='⚠️ Negatif':
+            st.dataframe(
+                df[df.Duygu=='Negatif'][['Tarih','Kaynak','Kategori','Başlık','Risk_Skoru','Risk_Gerekçesi','Doğrulama','URL']],
+                column_config={'URL':st.column_config.LinkColumn('Haber Linki')},
+                hide_index=True,use_container_width=True,height=600
+            )
+
+        elif view=='🚨 Yüksek Risk':
+            st.dataframe(
+                df[df.Risk_Durumu=='Yüksek Risk'][['Tarih','Kaynak','Kategori','Başlık','Risk_Skoru','Risk_Gerekçesi','Doğrulama','URL']],
+                column_config={'URL':st.column_config.LinkColumn('Haber Linki')},
+                hide_index=True,use_container_width=True,height=600
+            )
+
+        elif view=='🇹🇷 Türk':
+            st.dataframe(
+                df[df.Kaynak_Grubu.astype(str).str.startswith('🇹🇷')][['Tarih','Kaynak','Kategori','Başlık','Risk_Skoru','Duygu','URL']],
+                column_config={'URL':st.column_config.LinkColumn('Haber Linki')},
+                hide_index=True,use_container_width=True,height=600
+            )
+
+        elif view=='🇬🇷 Yunan':
+            st.dataframe(
+                df[df.Kaynak_Grubu.astype(str).str.startswith('🇬🇷')][['Tarih','Kaynak','Kategori','Başlık','Risk_Skoru','Duygu','URL']],
+                column_config={'URL':st.column_config.LinkColumn('Haber Linki')},
+                hide_index=True,use_container_width=True,height=600
+            )
+
+        elif view=='🧩 Olaylar':
+            ev=build_event_summary(df)
+            st.dataframe(ev,hide_index=True,use_container_width=True,height=480)
             chosen=st.selectbox('Olay zaman çizelgesini göster:',ev['Olay_ID'].tolist() if not ev.empty else [])
             if chosen:
                 g=df[df.Olay_ID==chosen].sort_values('Tarih_dt',ascending=True)
-                for _,r in g.iterrows(): st.markdown(f"**{r['Tarih']}** → **{r['Kaynak']}** — {r['Başlık']} — {r['Doğrulama']}")
-        with tabs[6]:
+                for _,r in g.iterrows():
+                    st.markdown(f"**{r['Tarih']}** → **{r['Kaynak']}** — {r['Başlık']} — {r['Doğrulama']}")
+
+        elif view=='📈 Trend / Analiz':
             st.subheader('📊 Konu yoğunluğu')
             tr=trend_table(df)
-            if not tr.empty: st.bar_chart(tr.set_index('Kategori')['Haber'])
+            if not tr.empty:
+                st.bar_chart(tr.set_index('Kategori')['Haber'])
             st.subheader('📈 Gündem yoğunluğu')
-            tmp=df[df['Tarih_dt'].notna()].copy(); tmp['Saat']=tmp['Tarih_dt'].dt.strftime('%Y-%m-%d %H:00')
-            if not tmp.empty: st.line_chart(tmp.groupby('Saat').size())
-            st.subheader('🧭 En hızlı yükselen / yoğun konular')
-            for _,r in tr.head(10).iterrows(): st.write(f"**{r['Kategori']}** — {int(r['Haber'])} haber")
-        with tabs[7]:
+            tmp=df[df['Tarih_dt'].notna()].copy()
+            tmp['Saat']=tmp['Tarih_dt'].dt.strftime('%Y-%m-%d %H:00')
+            if not tmp.empty:
+                st.line_chart(tmp.groupby('Saat').size())
+            st.subheader('🧭 Yoğun konular')
+            for _,r in tr.head(10).iterrows():
+                st.write(f"**{r['Kategori']}** — {int(r['Haber'])} haber")
+
+        elif view=='⭐ Takip Listesi':
             hits=watchlist_hits(df,watch)
             st.write(f'Listede eşleşen: **{len(hits)}** haber')
-            if not hits.empty: st.dataframe(hits[['Tarih','Kaynak','Kategori','Başlık','Risk_Skoru','Duygu','URL']],column_config={'URL':st.column_config.LinkColumn('Haber Linki')},hide_index=True,use_container_width=True,height=550)
+            if not hits.empty:
+                st.dataframe(
+                    hits[['Tarih','Kaynak','Kategori','Başlık','Risk_Skoru','Duygu','URL']],
+                    column_config={'URL':st.column_config.LinkColumn('Haber Linki')},
+                    hide_index=True,use_container_width=True,height=550
+                )
 
         st.markdown('---'); st.subheader('📝 Seçilen haberlerden çıktı üret')
         # Form gönderildiyse session_state güncellenmiştir; aksi halde mevcut kayıtlı seçimleri kullan.
