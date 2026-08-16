@@ -372,14 +372,14 @@ def normalize_rows(raw, cutoff, mode, user_query):
             # Bu, Google News'in yayıncı URL'sini Google domaininde tuttuğu durumlarda
             # Türk haberlerinin 0'a düşmesini engeller. Türk kaynakları sıralamada öne çıkar.
             if not relevant(t,user_query): reasons['konu']+=1; continue
-        sentiment,score,status,neg,risk,cat,reasons=classify(title,snippet,d)
+        sentiment,score,status,neg,risk,cat,risk_reasons=classify(title,snippet,d)
         out.append({
             'Tarih_dt':dt,'Tarih':fmt_dt(dt),'Başlık':title,'İçerik_Özeti':snippet or title,
             'URL':url,'RSS_URL':url,'Kaynak':(src if norm(src) not in {'google haberler','google news','google'} else (d or src or 'Açık Kaynak')),
             'Yayıncı_URL':(r.get('source_url') or '').strip(),'Yayıncı':src or d or 'Açık Kaynak',
             'Domain':d,'Kaynak_Grubu':source_group(d),
             'Kategori':cat,'Duygu':sentiment,'Skor':score,'Risk_Skoru':score,'Risk_Durumu':status,
-            'Risk_Gerekçesi':'; '.join(reasons),'Negatif_Sinyaller':neg,'Risk_Sinyalleri':risk,
+            'Risk_Gerekçesi':'; '.join(risk_reasons),'Negatif_Sinyaller':neg,'Risk_Sinyalleri':risk,
             'Seç':False,'Görsel_URL':'','_mode':mode
         })
     return out,reasons
