@@ -109,7 +109,7 @@ def analyze_article(title, description):
             
     return round(score, 2), sentiment, risk_level, found_manipulative, detected_category
 
-# --- KORUMALI & HİBRİT HABER ÇEKME MOTORU ---
+# --- HABER ÇEKME MOTORU (ÇALIŞAN DOKUNULMAYAN KISIM) ---
 def fetch_robust_news(query_text, time_range="1d", max_results=50):
     articles = []
     seen_urls = set()
@@ -205,7 +205,7 @@ def fetch_robust_news(query_text, time_range="1d", max_results=50):
 
     return articles[:max_results]
 
-# --- WORD İÇİN GÜVENLİ BİÇİMLENDİRME & LİNK YARDIMCILARI ---
+# --- WORD DOKÜMAN BİÇİMLENDİRME VE İŞLEME YARDIMCILARI ---
 def add_hyperlink(paragraph, url, text):
     try:
         part = paragraph.part
@@ -218,7 +218,7 @@ def add_hyperlink(paragraph, url, text):
         hyperlink.append(new_run)
         paragraph._p.append(hyperlink)
     except Exception:
-        paragraph.add_run(f"{text} ({url})")
+        paragraph.add_run(text)
 
 def download_image_to_bytes(img_url):
     if not img_url:
@@ -232,46 +232,46 @@ def download_image_to_bytes(img_url):
         pass
     return None
 
-def format_cell(cell, bg_hex=None, bold=False, font_size=9, color_rgb=(0,0,0)):
+def style_cell(cell, bg_hex=None, bold=False, font_size=8.5, color_rgb=(0,0,0)):
     if bg_hex:
-        shading = parse_xml(f'<w:shd {nsdecls("w")} w:fill="{bg_hex}"/>')
-        cell._tc.get_or_add_tcPr().append(shading)
+        shd = parse_xml(f'<w:shd {nsdecls("w")} w:fill="{bg_hex}"/>')
+        cell._tc.get_or_add_tcPr().append(shd)
     
-    # Hücre içi rahat dolgu (Padding)
     tcPr = cell._tc.get_or_add_tcPr()
     tcMar = OxmlElement('w:tcMar')
     for m in ['top', 'bottom', 'left', 'right']:
         node = OxmlElement(f'w:{m}')
-        node.set(qn('w:w'), '120')
+        node.set(qn('w:w'), '140')
         node.set(qn('w:type'), 'dxa')
         tcMar.append(node)
     tcPr.append(tcMar)
 
     for p in cell.paragraphs:
+        p.paragraph_format.space_before = Pt(2)
+        p.paragraph_format.space_after = Pt(2)
         for r in p.runs:
             r.font.name = 'Arial'
             r.font.size = Pt(font_size)
             r.font.bold = bold
             r.font.color.rgb = RGBColor(*color_rgb)
 
-# --- BİLGİ NOTU / RAPOR ÜRETİCİ (.DOCX) ---
+# --- YENİDEN TASARLANAN VE ÖZET SENTEZLEYEN RAPOR MOTORU ---
 def generate_osint_docx(query, df_all, stats):
     doc = Document()
     
-    # Sayfa Kenar Boşlukları
-    sections = doc.sections
-    for section in sections:
-        section.top_margin = Inches(0.8)
-        section.bottom_margin = Inches(0.8)
-        section.left_margin = Inches(0.8)
-        section.right_margin = Inches(0.8)
+    # Sayfa Boyut & Kenar Ayarları
+    for section in doc.sections:
+        section.top_margin = Inches(0.7)
+        section.bottom_margin = Inches(0.7)
+        section.left_margin = Inches(0.7)
+        section.right_margin = Inches(0.7)
 
-    # Başlık
+    # Başlık Paneli
     h = doc.add_heading("T.C. AÇIK KAYNAK MEDYA TARAMA VE İSTİHBARAT RAPORU", level=0)
     h.alignment = WD_ALIGN_PARAGRAPH.CENTER
     for r in h.runs:
         r.font.name = 'Arial'
-        r.font.size = Pt(14)
+        r.font.size = Pt(13)
         r.font.bold = True
         r.font.color.rgb = RGBColor(27, 54, 93)
 
@@ -282,21 +282,21 @@ def generate_osint_docx(query, df_all, stats):
     p_meta.add_run(f"{datetime.now().strftime('%d.%m.%Y %H:%M')}\n")
     for r in p_meta.runs:
         r.font.name = 'Arial'
-        r.font.size = Pt(9.5)
+        r.font.size = Pt(9)
 
-    # 1. YÖNETİCİ ÖZETİ
+    # 1. YÖNETİCİ ÖZETİ (MİŞTİR/MİŞTİR ANALİZ DİLİ İLE)
     doc.add_heading("1. Yönetici Özeti ve Risk Değerlendirmesi", level=1)
     p_sum = doc.add_paragraph()
     p_sum.add_run(
-        f"Seçilen zaman diliminde açık kaynak taramasında toplanan toplam {stats['total']} adet haber ve içerik "
-        f"sistem tarafından incelenmiştir. Yapılan analiz sonucunda haberlerin "
-        f"%{stats['neg_ratio']:.1f}'inin ({stats['neg']} adet) olumsuz/negatif tonda olduğu, "
-        f"{stats['risk_count']} adet haberde ise kamuoyunu yönlendirmeye veya algı oluşturmaya dönük "
-        f"manipülatif/sansasyonel söylem kalıplarının kullanıldığı tespit edilmiştir."
+        f"Seçilen zaman diliminde açık kaynaklardan derlenen toplam {stats['total']} adet haber ve veri içeriği "
+        f"sistem tarafından incelenmiştir. Yapılan detaylı metin analizleri sonucunda haberlerin "
+        f"%{stats['neg_ratio']:.1f}'inin ({stats['neg']} adet) olumsuz/negatif ton taşıdığı tespit edilmiştir. "
+        f"Ayrıca {stats['risk_count']} adet içerikte kamuoyunu yönlendirmeye veya stratejik algı oluşturmaya dönük "
+        f"manipülatif söylem kalıplarının kullanıldığı belirlenmiştir."
     )
     for r in p_sum.runs:
         r.font.name = 'Arial'
-        r.font.size = Pt(10)
+        r.font.size = Pt(9.5)
 
     # 2. KRİTİK HABERLER
     doc.add_heading("2. Kritik / Manipülatif Söylem Barındıran Haberler", level=1)
@@ -306,24 +306,24 @@ def generate_osint_docx(query, df_all, stats):
         table = doc.add_table(rows=1, cols=5)
         table.style = 'Table Grid'
         hdr_cells = table.rows[0].cells
-        headers = ['Görsel', 'Tarih / Kaynak', 'Kategori', 'Haber Başlığı (Bağlantılı)', 'Tespit Edilen Söylem']
+        headers = ['Görsel', 'Tarih / Kaynak', 'Kategori', 'Haber Başlığı', 'Tespit Edilen Söylem']
         for i, title in enumerate(headers):
             hdr_cells[i].text = title
-            format_cell(hdr_cells[i], bg_hex="1B365D", bold=True, font_size=9.5, color_rgb=(255, 255, 255))
+            style_cell(hdr_cells[i], bg_hex="1B365D", bold=True, font_size=9, color_rgb=(255, 255, 255))
 
         for _, r in risk_df.iterrows():
             row_cells = table.add_row().cells
             
-            # Görsel Sutunu
+            # Görsel Ekleme
             img_bytes = download_image_to_bytes(r.get('Görsel_URL', ''))
             if img_bytes:
                 try:
                     p_img = row_cells[0].paragraphs[0]
-                    p_img.add_run().add_picture(img_bytes, width=Inches(0.9))
+                    p_img.add_run().add_picture(img_bytes, width=Inches(0.85))
                 except Exception:
-                    row_cells[0].text = "Görsel Yok"
+                    row_cells[0].text = "[Görsel]"
             else:
-                row_cells[0].text = "Görsel Yok"
+                row_cells[0].text = "[Görsel]"
 
             row_cells[1].text = f"{r['Tarih']}\n{r['Kaynak']}"
             row_cells[2].text = r['Kategori']
@@ -334,7 +334,7 @@ def generate_osint_docx(query, df_all, stats):
             row_cells[4].text = ", ".join(r['Manipülasyon_Kelimeleri']) if r['Manipülasyon_Kelimeleri'] else "Yüksek Negatif Ton"
             
             for c in row_cells:
-                format_cell(c, font_size=8.5)
+                style_cell(c, font_size=8)
     else:
         doc.add_paragraph("Kritik düzeyde manipülatif söylem barındıran haber tespit edilmemiştir.")
         
@@ -343,24 +343,23 @@ def generate_osint_docx(query, df_all, stats):
     table2 = doc.add_table(rows=1, cols=6)
     table2.style = 'Table Grid'
     hdr_cells2 = table2.rows[0].cells
-    headers2 = ['Görsel', 'Tarih', 'Kaynak', 'Kategori', 'Başlık (Bağlantılı)', 'Duygu / Skor']
+    headers2 = ['Görsel', 'Tarih', 'Kaynak', 'Kategori', 'Haber Başlığı', 'Duygu / Skor']
     for i, title in enumerate(headers2):
         hdr_cells2[i].text = title
-        format_cell(hdr_cells2[i], bg_hex="1B365D", bold=True, font_size=9.5, color_rgb=(255, 255, 255))
+        style_cell(hdr_cells2[i], bg_hex="1B365D", bold=True, font_size=9, color_rgb=(255, 255, 255))
 
     for _, r in df_all.iterrows():
         rc = table2.add_row().cells
         
-        # Görsel Sutunu
         img_bytes = download_image_to_bytes(r.get('Görsel_URL', ''))
         if img_bytes:
             try:
                 p_img = rc[0].paragraphs[0]
-                p_img.add_run().add_picture(img_bytes, width=Inches(0.9))
+                p_img.add_run().add_picture(img_bytes, width=Inches(0.85))
             except Exception:
-                rc[0].text = "Görsel Yok"
+                rc[0].text = "[Görsel]"
         else:
-            rc[0].text = "Görsel Yok"
+            rc[0].text = "[Görsel]"
 
         rc[1].text = r['Tarih']
         rc[2].text = r['Kaynak']
@@ -372,7 +371,7 @@ def generate_osint_docx(query, df_all, stats):
         rc[5].text = f"{r['Duygu']} ({r['Skor']})"
         
         for c in rc:
-            format_cell(c, font_size=8.5)
+            style_cell(c, font_size=8)
         
     buf = BytesIO()
     doc.save(buf)
