@@ -223,7 +223,12 @@ def _run_single_search(term, region, time_ddg, per_query_results=10):
         from duckduckgo_search import DDGS
     try:
         with DDGS() as ddgs:
-            results = list(ddgs.news(keywords=term, region=region, timelimit=time_ddg, max_results=per_query_results))
+            # Not: yeni 'ddgs' paketi ilk parametreyi 'query', eski 'duckduckgo_search'
+            # paketi ise 'keywords' olarak adlandırıyor. İsimle (keyword argüman)
+            # göndermek bir pakette hataya yol açıp aramayı sessizce boşa düşürüyordu;
+            # bu yüzden terim artık POZİSYONEL argüman olarak veriliyor -> her iki
+            # pakette de doğru şekilde eşleşir.
+            results = list(ddgs.news(term, region=region, timelimit=time_ddg, max_results=per_query_results))
             return results or []
     except Exception:
         return []
