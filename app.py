@@ -648,28 +648,195 @@ def watchlist_hits(df, terms):
     mask=df.apply(lambda r:any(t in norm(f"{r.get('Başlık','')} {r.get('İçerik_Özeti','')}") for t in terms),axis=1)
     return df[mask].copy()
 
+def _clean_note_text(value):
+    text=BeautifulSoup(str(value or ''),'html.parser').get_text(' ',strip=True)
+    text=re.sub(r'\s+',' ',text).strip()
+    return text
+
+def _sentence_split_tr(text):
+    text=_clean_note_text(text)
+    if not text:
+        return []
+    parts=re.split(r'(?<=[.!?])\s+(?=[A-ZÇĞİÖŞÜ0-9“"])',text)
+    return [p.strip() for p in parts if len(p.strip())>20]
+
+def _unique_sentences(sentences):
+    out=[]; seen=set()
+    for s in sentences:
+        k=norm(s)
+        if not k or k in seen:
+            continue
+        seen.add(k); out.append(s)
+    return out
+
+def _note_source_sentence(r):
+    title=_clean_note_text(r.get('Başlık',''))
+    source=_clean_note_text(r.get('Kaynak','Açık Kaynak'))
+    when=_clean_note_text(r.get('Tarih',''))
+    cat=_clean_note_text(r.get('Kategori',''))
+    if when:
+        return f"{when} tarihinde {source} tarafından yayımlanan “{title}” başlıklı içerik, {cat.lower() if cat else 'sanayi ve teknoloji'} alanındaki gelişmelere ilişkindir."
+    return f"{source} tarafından yayımlanan “{title}” başlıklı içerik, {cat.lower() if cat else 'sanayi ve teknoloji'} alanındaki gelişmelere ilişkindir."
+
+def _compose_prose_note(df):
+    """
+    Seçili haberlerden düz yazı bilgi notu üretir.
+    Yalnızca mevcut haber başlığı/özeti/risk-kaynak alanlarını kullanır;
+    haberde bulunmayan olguları eklemez.
+    """
+    if df is None or df.empty:
+        return {'giris':'','gelisme':'','sonuc':''}
+
+    x=df.copy()
+    if 'Tarih_dt' in x.columns:
+        x['Tarih_dt']=pd.to_datetime(x['Tarih_dt'],utc=True,errors='coerce')
+        x=x.sort_values('Tarih_dt',ascending=True,na_position='last')
+
+    # GİRİŞ: kapsam, zaman ve ana tema.
+    dates=[_clean_note_text(v) for v in x.get('Tarih',pd.Series(dtype=str)).tolist() if _clean_note_text(v)]
+    cats=[_clean_note_text(v) for v in x.get('Kategori',pd.Series(dtype=str)).tolist() if _clean_note_text(v)]
+    sources=[_clean_note_text(v) for v in x.get('Kaynak',pd.Series(dtype=str)).tolist() if _clean_note_text(v)]
+    cat_text=', '.join(dict.fromkeys(cats[:5]))
+    source_count=len(set(sources))
+    if len(x)==1:
+        r=x.iloc[0]
+        giris=(
+            f"Bu bilgi notu, {_clean_note_text(r.get('Kaynak','Açık Kaynak'))} tarafından "
+            f"{_clean_note_text(r.get('Tarih',''))} tarihinde yayımlanan "
+            f"“{_clean_note_text(r.get('Başlık',''))}” başlıklı haber kapsamında hazırlanmıştır. "
+            f"Haber, {_clean_note_text(r.get('Kategori','Genel Sanayi / Teknoloji')).lower()} alanındaki gelişmeyi "
+            f"ve açık kaynakta yer alan mevcut ayrıntıları bütüncül biçimde ortaya koymaktadır."
+        )
+    else:
+        giris=(
+            f"Bu bilgi notu, seçilen {len(x)} açık kaynak haberinin birlikte değerlendirilmesi amacıyla hazırlanmıştır. "
+            f"İncelenen içerikler {source_count} farklı kaynakta yer almakta"
+            + (f" ve ağırlıklı olarak {cat_text} başlıklarını kapsamaktadır." if cat_text else ".")
+            + " Notta gelişmeler kronolojik bağlamı, haberlerde aktarılan temel unsurlar ve öne çıkan risk göstergeleri dikkate alınarak ele alınmıştır."
+        )
+
+    # GELİŞME: her seçili haberdeki tüm mevcut özet cümlelerini kapsa.
+    paragraphs=[]
+    for _,r in x.iterrows():
+        intro=_note_source_sentence(r)
+        body=_clean_note_text(r.get('İçerik_Özeti',''))
+        title=_clean_note_text(r.get('Başlık',''))
+        sentences=_unique_sentences(_sentence_split_tr(body))
+
+        # RSS özeti çok kısa/başlığın tekrarıysa yine mevcut bilgiyi kaybetmeden kullan.
+        if not sentences and body:
+            sentences=[body]
+        if not sentences:
+            sentences=[title]
+
+        # Başlığın aynısını özet içinde gereksiz tekrar etme.
+        body_parts=[]
+        title_key_norm=norm(title)
+        for s in sentences:
+            if norm(s)==title_key_norm:
+                continue
+            body_parts.append(s)
+        if not body_parts and body:
+            body_parts=[body]
+
+        detail=' '.join(body_parts).strip()
+        para=intro
+        if detail:
+            para += " Haberde, " + detail[0].lower() + detail[1:] if len(detail)>1 else " Haberde, " + detail
+            if para and para[-1] not in '.!?':
+                para += '.'
+
+        risk_reason=_clean_note_text(r.get('Risk_Gerekçesi',''))
+        risk_status=_clean_note_text(r.get('Risk_Durumu',''))
+        risk_score=r.get('Risk_Skoru','')
+        if risk_status and risk_status!='Normal' and risk_reason and 'olumsuz risk sinyali tespit edilmedi' not in norm(risk_reason):
+            para += f" Açık kaynak sınıflandırmasında içerik {risk_status.lower()} olarak değerlendirilmiş; risk puanı {risk_score}/100 olarak hesaplanmış ve öne çıkan göstergeler {risk_reason.lower()} şeklinde kaydedilmiştir."
+
+        paragraphs.append(para)
+
+    gelisme='\n\n'.join(paragraphs)
+
+    # SONUÇ: kaynakta desteklenen ortak çerçeve + doğrulama uyarısı; yeni olgu ekleme.
+    neg_count=int((x.get('Duygu',pd.Series(dtype=str))=='Negatif').sum()) if 'Duygu' in x else 0
+    high_count=int((x.get('Risk_Durumu',pd.Series(dtype=str))=='Yüksek Risk').sum()) if 'Risk_Durumu' in x else 0
+    if len(x)==1:
+        r=x.iloc[-1]
+        sonuc=(
+            f"Sonuç olarak haber, “{_clean_note_text(r.get('Başlık',''))}” başlığı altında aktarılan gelişmenin "
+            f"mevcut açık kaynak bilgileri çerçevesinde izlenmesi gereken yönlerini ortaya koymaktadır."
+        )
+        if neg_count or high_count:
+            sonuc += f" İçeriğin sistemde {_clean_note_text(r.get('Risk_Durumu','')).lower()} olarak sınıflandırılması, gelişmenin etkileri ve devam eden yansımaları bakımından takip edilmesini gerekli kılan bir açık kaynak sinyali oluşturmaktadır."
+    else:
+        sonuc=(
+            f"Sonuç olarak incelenen {len(x)} haber, seçilen dönem içinde sanayi ve teknoloji gündeminde birbirini tamamlayan gelişmeler bulunduğunu göstermektedir."
+        )
+        if neg_count or high_count:
+            sonuc += f" Bunların {neg_count} adedi negatif, {high_count} adedi ise yüksek riskli olarak sınıflandırılmıştır."
+        sonuc += " Haberlerde yer alan hususlar birlikte değerlendirildiğinde, gelişmelerin yeni açıklamalar ve farklı kaynaklardan gelecek teyitlerle izlenmesi uygun olacaktır."
+
+    sonuc += " Bu bilgi notu açık kaynak haber içeriklerine dayanmaktadır; haberlerde yer almayan hususlar olgu olarak eklenmemiştir."
+    return {'giris':giris,'gelisme':gelisme,'sonuc':sonuc}
+
+
 def make_analyst_docx(df, title='BİLGİ NOTU'):
-    doc=Document(); sec=doc.sections[0]
-    sec.top_margin=Cm(2); sec.bottom_margin=Cm(2); sec.left_margin=Cm(2.5); sec.right_margin=Cm(2.5)
-    doc.styles['Normal'].font.name='Times New Roman'; doc.styles['Normal'].font.size=Pt(11)
-    p=doc.add_paragraph(); p.alignment=WD_ALIGN_PARAGRAPH.CENTER; r=p.add_run(title); r.bold=True; r.font.size=Pt(14)
-    p=doc.add_paragraph(); p.add_run('Tarih/Saat: ').bold=True; p.add_run(datetime.now().astimezone().strftime('%d.%m.%Y %H:%M:%S'))
-    events=build_event_summary(df)
-    p=doc.add_paragraph(); p.add_run('Genel değerlendirme: ').bold=True; p.add_run(f'{len(df)} haber, {len(events)} olay kümesi incelenmiştir.')
-    if not events.empty:
-        p=doc.add_paragraph(); p.add_run('Öncelikli olaylar').bold=True
-        for _,e in events.head(10).iterrows():
-            p=doc.add_paragraph(style=None); p.paragraph_format.left_indent=Cm(.5)
-            p.add_run(f"{e['Olay_ID']} — {e['Öne Çıkan Başlık']} | Risk {e['Risk']}/100 | {e['Haber Sayısı']} haber / {e['Kaynak Sayısı']} kaynak").bold=True
-            p.add_run(f"\nKategori: {e['Kategori']}\nKaynaklar: {e['Kaynaklar']}")
-            members=df[df['Olay_ID']==e['Olay_ID']].sort_values('Tarih_dt',ascending=True)
-            for _,m in members.iterrows():
-                p=doc.add_paragraph(); p.paragraph_format.left_indent=Cm(1)
-                p.add_run(f"{m.get('Tarih','')} — {m.get('Kaynak','')}: ").bold=True
-                p.add_run(str(m.get('Başlık',''))+' — '+str(m.get('Risk_Gerekçesi','')))
-                if m.get('URL'): _word_hyperlink(p,m['URL'],'Haber linki')
-    doc.add_paragraph('Risk değerlendirmesi, açık kaynak sinyallerine dayalı analitik bir önceliklendirmedir; tek başına doğrulama anlamına gelmez.')
-    bio=BytesIO(); doc.save(bio); bio.seek(0); return bio.getvalue()
+    doc=Document()
+    sec=doc.sections[0]
+    sec.top_margin=Cm(2)
+    sec.bottom_margin=Cm(2)
+    sec.left_margin=Cm(2.5)
+    sec.right_margin=Cm(2.5)
+
+    styles=doc.styles
+    styles['Normal'].font.name='Times New Roman'
+    styles['Normal'].font.size=Pt(11)
+
+    p=doc.add_paragraph()
+    p.alignment=WD_ALIGN_PARAGRAPH.CENTER
+    r=p.add_run(title)
+    r.bold=True
+    r.font.size=Pt(14)
+
+    p=doc.add_paragraph()
+    p.add_run('Tarih/Saat: ').bold=True
+    p.add_run(datetime.now().astimezone().strftime('%d.%m.%Y %H:%M:%S'))
+
+    note=_compose_prose_note(df)
+
+    # Kullanıcının istediği ana gövde: madde madde değil, düz yazı giriş-gelişme-sonuç.
+    for heading,key in [('GİRİŞ','giris'),('GELİŞME','gelisme'),('SONUÇ','sonuc')]:
+        hp=doc.add_paragraph()
+        hr=hp.add_run(heading)
+        hr.bold=True
+        hr.font.size=Pt(11)
+
+        for block in str(note.get(key,'')).split('\n\n'):
+            block=block.strip()
+            if not block:
+                continue
+            bp=doc.add_paragraph()
+            bp.alignment=WD_ALIGN_PARAGRAPH.JUSTIFY
+            bp.paragraph_format.first_line_indent=Cm(1.25)
+            bp.paragraph_format.space_after=Pt(6)
+            bp.add_run(block)
+
+    # Kaynaklar dipte; ana metnin akışını bozmaz.
+    doc.add_paragraph()
+    hp=doc.add_paragraph()
+    rr=hp.add_run('KAYNAKLAR')
+    rr.bold=True
+    for _,row in df.iterrows():
+        p=doc.add_paragraph()
+        p.paragraph_format.left_indent=Cm(.5)
+        p.add_run(f"{_clean_note_text(row.get('Kaynak','Açık Kaynak'))} — {_clean_note_text(row.get('Başlık',''))}")
+        if row.get('URL'):
+            p.add_run(' — ')
+            _word_hyperlink(p,row['URL'],'Haber linki')
+
+    bio=BytesIO()
+    doc.save(bio)
+    bio.seek(0)
+    return bio.getvalue()
 
 # -----------------------------
 # DOCX — AKT / Açık Kaynak Taraması formatı
@@ -1626,7 +1793,7 @@ else:
                     with st.spinner(f'{len(selected)} haber zenginleştiriliyor...'): st.session_state.docx_bytes=make_docx(selected.to_dict('records'))
             if st.session_state.docx_bytes: st.download_button('⬇️ Açık Kaynak Raporu DOCX',st.session_state.docx_bytes,file_name=f'Sanayi_Teknoloji_Acik_Kaynak_{date.today()}.docx',mime='application/vnd.openxmlformats-officedocument.wordprocessingml.document',use_container_width=True)
         with c2:
-            if st.button('📌 BİLGİ NOTU / ANALİTİK WORD',use_container_width=True):
+            if st.button('📌 DÜZ YAZI BİLGİ NOTU / WORD',use_container_width=True):
                 if selected.empty: st.warning('Önce haber seçin.')
                 else: st.session_state.note_bytes=make_analyst_docx(selected,title='SANAYİ & TEKNOLOJİ BİLGİ NOTU')
             if st.session_state.note_bytes: st.download_button('⬇️ Bilgi Notu DOCX',st.session_state.note_bytes,file_name=f'Sanayi_Teknoloji_Bilgi_Notu_{date.today()}.docx',mime='application/vnd.openxmlformats-officedocument.wordprocessingml.document',use_container_width=True)
