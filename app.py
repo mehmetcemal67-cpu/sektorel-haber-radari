@@ -1,15 +1,14 @@
 import streamlit as st
 import pandas as pd
 import requests
+import time
 import datetime
 from datetime import date, datetime
 from io import BytesIO
 import re
 import html
-import feedparser
-import urllib.parse
-from email.utils import parsedate_to_datetime
-from bs4 import BeautifulSoup
+
+from PIL import Image
 
 from docx import Document
 from docx.shared import Pt, RGBColor, Inches
@@ -41,6 +40,7 @@ def load_lexicon():
 
 lexicon = load_lexicon()
 
+# Not: liste biraz genişletildi (gecikme/soruşturma/ceza gibi ek kriz sinyalleri eklendi)
 MANIPULATION_KEYWORDS = [
     "fiyasko", "skandal", "gizlenen", "gerçekler", "fason", "montaj", "yerli değil",
     "illüzyon", "şişirme", "kandırıldık", "sümen altı", "israf", "teşvik vurgunu",
@@ -52,12 +52,20 @@ MANIPULATION_KEYWORDS = [
     "kriz", "zarar", "iflas", "konkordato", "borç batağı", "maliyet artışı",
     "bütçe açığı", "daralma", "sert düşüş", "kaynak tükendi", "pazar kaybı",
     "ambargo", "gizli ambargo", "yaptırım", "çip krizi", "tedarik engeli",
-    "karbon engeli", "lisans reddi", "kırmızı çizgi", "blokaj", "provokasyon"
+    "karbon engeli", "lisans reddi", "kırmızı çizgi", "blokaj", "provokasyon",
+    "soruşturma", "denetim", "para cezası", "greve gitti", "işten çıkarma",
+    "geri çekildi", "ertelendi", "davası açıldı"
+]
+
+# Hedefli negatif tarama için kullanılan çekirdek kelime havuzu (ana terimlerle birleştirilir)
+NEGATIVE_BOOST_KEYWORDS = [
+    "skandal", "kriz", "iptal", "arıza", "zarar", "ambargo", "fiyasko",
+    "üretim durdu", "gecikme", "soruşturma", "yaptırım", "iflas"
 ]
 
 STRATEGIC_CATEGORIES = {
     "Savunma & Havacılık": [
-        "aselsan", "baykar", "tusaş", "iha", "siha", "bayraktar", "kaan", 
+        "aselsan", "baykar", "tusaş", "iha", "siha", "bayraktar", "kaan",
         "çelikkubbe", "hisar", "siper", "tübitak sage", "roketsan", "havelsan", "kamikaze"
     ],
     "Otomotiv & Mobilite": [
@@ -68,163 +76,188 @@ STRATEGIC_CATEGORIES = {
         "ege", "doğu akdeniz", "rafale", "f-16", "fir hattı"
     ],
     "Sanayi & Kurumsal Ekosistem": [
-        "sanayi ve teknoloji bakanlığı", "mehmet fatih kacır", "tübitak", "kosgeb", 
+        "sanayi ve teknoloji bakanlığı", "mehmet fatih kacır", "tübitak", "kosgeb",
         "organize sanayi bölgesi", "osb", "yatırım teşvik"
     ],
     "Uzay, İleri Teknoloji & Kalite": [
-        "alper gezeravcı", "tua", "türkiye uzay ajansı", "tse", "türkpatent", 
+        "alper gezeravcı", "tua", "türkiye uzay ajansı", "tse", "türkpatent",
         "teknofest", "çip", "yapay zeka"
     ]
 }
 
-# --- TARAYICI TAKLİDİ İLE GELİŞMİŞ VERİ VE GÖRSEL KAZIMA ---
-def fetch_article_details(rss_url, title_fallback=""):
-    """
-    Google yönlendirme linklerini izler, gerçek siteye bağlanarak 
-    orijinal kapak görselini ve makale paragraflarını çeker.
-    """
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-        'Accept-Language': 'tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7'
-    }
-    
-    final_url = rss_url
-    img_url = ""
-    paragraphs = []
-
-    try:
-        session = requests.Session()
-        resp = session.get(rss_url, headers=headers, timeout=5, allow_redirects=True)
-        if resp.status_code == 200:
-            final_url = resp.url
-            soup = BeautifulSoup(resp.text, 'html.parser')
-
-            # 1. Görsel Avcısı (Og:image, Twitter:image)
-            for meta_name in ['og:image', 'twitter:image', 'og:image:url', 'twitter:image:src']:
-                tag = soup.find('meta', property=meta_name) or soup.find('meta', attrs={'name': meta_name})
-                if tag and tag.get('content'):
-                    cand = tag['content'].strip()
-                    if cand.startswith('http') and "google" not in cand.lower() and "gstatic" not in cand.lower():
-                        img_url = cand
-                        break
-
-            # 2. İçerik Avcısı (p etiketleri)
-            for p in soup.find_all('p'):
-                t = p.get_text().strip()
-                if len(t) > 40 and not any(w in t.lower() for w in ['çerez', 'cookie', 'abone', 'tıklayın', 'copyright', 'gizlilik']):
-                    paragraphs.append(t)
-    except Exception:
-        pass
-
-    full_text = " ".join(paragraphs) if paragraphs else title_fallback
-    return final_url, img_url, full_text
-
-# --- DUYGU VE RİSK ANALİZİ ---
+# --- METİN VE DUYGU ANALİZİ ---
 def analyze_article(title, text):
     full_text = f"{title} {text}".lower()
     words = re.sub(r'[^\w\s]', ' ', full_text).split()
-    
+
     total_score = 0.0
     matched_words = []
     for w in words:
         if w in lexicon:
             total_score += lexicon[w]
             matched_words.append(w)
-            
+
     score = total_score / len(matched_words) if matched_words else 0.0
-    
+
     if score > 0.15:
         sentiment = "Pozitif"
     elif score < -0.15:
         sentiment = "Negatif"
     else:
         sentiment = "Nötr"
-        
+
     found_manipulative = [kw for kw in MANIPULATION_KEYWORDS if kw in full_text]
     risk_level = "Yüksek Risk" if len(found_manipulative) > 0 or score < -0.3 else "Normal"
-    
+
     detected_category = "Genel Sanayi/Teknoloji"
     for cat, keywords in STRATEGIC_CATEGORIES.items():
         if any(kw in full_text for kw in keywords):
             detected_category = cat
             break
-            
+
     return round(score, 2), sentiment, risk_level, found_manipulative, detected_category
 
-# --- AKICI DÜZYAZI ÖZET ÜRETİCİ ---
-def build_prose_summary(title, full_text, category, sentiment, risk_level, manip_words):
-    clean_text = full_text.strip() if full_text else ""
+# --- DÜZYAZI ANALİZ ÜRETİCİ ---
+def build_prose_analysis(title, body_text, category, sentiment, risk_level, manip_words):
+    clean_text = body_text.strip() if body_text else ""
     sentences = [s.strip() for s in re.split(r'(?<=[.!?])\s+', clean_text) if len(s.strip()) > 20]
-    
+
     if len(sentences) >= 2:
         story = " ".join(sentences[:4])
     elif sentences:
         story = sentences[0]
     else:
-        story = f"{title} konusuyla ilgili gelişmeler açık kaynak verileri üzerinden takip edilmektedir."
+        story = f"{title} hususunda basına yansıyan detaylar açık kaynak akışı üzerinden takip edilmektedir."
 
-    prose_eval = f" Gelişme stratejik açıdan {category.lower()} ekosistemini doğrudan ilgilendirmektedir."
-    
+    prose_eval = f" Yapılan değerlendirmeye göre gelişme {category.lower()} ekosistemini doğrudan ilgilendirmektedir."
+
     if sentiment == "Pozitif":
-        prose_eval += " Haber içeriğinde öne çıkan detaylar; yerli üretim yetkinlikleri, sektörel büyüme ve kurumsal altyapının güçlenmesi yönünde olumlu bir tablo çizmektedir."
+        prose_eval += " İçerikte sunulan veriler; yerli üretim yetkinliklerinin gelişimi, sektörel büyüme ve kurumsal altyapının güçlenmesi yönünde olumlu mesajlar vermektedir."
     elif sentiment == "Negatif":
-        prose_eval += " İncelenen detaylarda; pazardaki daralma, maliyet baskıları veya operasyonel risklerin öne çıktığı değerlendirilmektedir."
+        prose_eval += " Detaylar incelendiğinde; pazardaki daralma, maliyet artışları veya operasyonel risklerin ön plana çıktığı görülmektedir."
     else:
-        prose_eval += " Makale genel itibarıyla teknik bilgilendirme ve kurumsal süreç aktarımı niteliğindedir."
+        prose_eval += " Haber içeriği genel itibarıyla teknik bilgilendirme ve kurumsal süreç aktarımı niteliğindedir."
 
     if risk_level == "Yüksek Risk":
-        prose_eval += f" Ek olarak metin içerisinde kamuoyunu yönlendirme veya algı oluşturma riski barındıran ifadelere ({', '.join(manip_words)}) rastlanmış olup takibi önerilmektedir."
+        prose_eval += f" Ek olarak metin içerisinde algı oluşturma veya kamuoyunu yönlendirme riski barındıran ifadelere ({', '.join(manip_words)}) rastlanmış olup konunun kurumsal takibi önerilmektedir."
 
     return f"{story}{prose_eval}"
 
-# --- HABER TOPLAMA MOTORU (GOOGLE NEWS RSS ENGINE) ---
-def fetch_robust_news(query_text, time_range="1d", max_results=25):
+# --- SORGU AYRIŞTIRMA ---
+def build_search_terms(query_text, max_terms=15):
+    """
+    Kullanıcının sidebar'a yazdığı 'A OR B OR C' / 'A, B, C' formatındaki
+    sorguyu ayrı arama terimlerine böler ve tekilleştirir.
+    Önceki sürümde bu sorgu hiç kullanılmıyordu; şimdi taramanın temelini oluşturuyor.
+    """
+    raw_terms = re.split(r'\bOR\b|,|\n', query_text, flags=re.IGNORECASE)
+    cleaned = []
+    seen = set()
+    for t in raw_terms:
+        t = t.strip().strip('"').strip("'")
+        if len(t) < 2:
+            continue
+        low = t.lower()
+        if low in seen:
+            continue
+        seen.add(low)
+        cleaned.append(t)
+        if len(cleaned) >= max_terms:
+            break
+    return cleaned if cleaned else ["sanayi teknoloji"]
+
+def normalize_title(t):
+    t = (t or "").lower()
+    t = re.sub(r'[^\w\s]', ' ', t)
+    t = re.sub(r'\s+', ' ', t).strip()
+    return t
+
+# --- HABER TOPLAMA MOTORU ---
+def fetch_robust_news(query_text, time_range="1d", max_results=30, negative_boost=True, extra_regions=True):
+    """
+    Değişiklikler:
+    - query_text artık fiilen kullanılıyor (eski sürümde sabit kelime listesi vardı).
+    - negative_boost=True iken ana terimler kritik/negatif kelimelerle birleştirilip
+      ek aramalar yapılıyor -> kritik/manipülatif haberleri yakalama olasılığı artıyor.
+    - extra_regions=True iken 'wt-wt' (dünya geneli) bölgesinde de arama yapılıyor,
+      böylece 'Bölgesel Güvenlik & Jeopolitik' kategorisindeki yabancı basın
+      (Kathimerini vb.) da yakalanabiliyor.
+    - Her arama terimi kendi try/except bloğunda; bir terim hata verirse
+      (rate limit vb.) tüm tarama durmuyor, sıradaki terimle devam ediliyor.
+    """
     articles = []
     seen_urls = set()
+    seen_titles = set()
+    time_ddg = {"1d": "d", "7d": "w", "14d": "w"}.get(time_range, "d")
 
-    # Query düzenleme
-    clean_terms = [k.strip().replace('"', '') for k in query_text.split('OR') if k.strip()]
-    top_query = " OR ".join(clean_terms[:6])
-    
-    encoded_q = urllib.parse.quote(f"{top_query} when:{time_range}")
-    rss_url = f"https://news.google.com/rss/search?q={encoded_q}&hl=tr&gl=TR&ceid=TR:tr"
+    base_terms = build_search_terms(query_text)
+
+    search_jobs = [(t, "tr-tr") for t in base_terms]
+
+    if extra_regions:
+        for t in base_terms[:8]:
+            search_jobs.append((t, "wt-wt"))
+
+    if negative_boost:
+        for i, t in enumerate(base_terms):
+            neg_kw = NEGATIVE_BOOST_KEYWORDS[i % len(NEGATIVE_BOOST_KEYWORDS)]
+            search_jobs.append((f"{t} {neg_kw}", "tr-tr"))
 
     try:
-        feed = feedparser.parse(rss_url)
-        for entry in feed.entries:
-            if len(articles) >= max_results:
-                break
+        from ddgs import DDGS  # yeni paket adı
+    except ImportError:
+        from duckduckgo_search import DDGS  # eski paket adı (fallback)
 
-            raw_link = entry.get('link', '')
-            if not raw_link or raw_link in seen_urls:
-                continue
+    try:
+        with DDGS() as ddgs:
+            for term, region in search_jobs:
+                if len(articles) >= max_results:
+                    break
+                try:
+                    results = ddgs.news(keywords=term, region=region, timelimit=time_ddg, max_results=10)
+                except Exception:
+                    time.sleep(1.0)
+                    continue
 
-            seen_urls.add(raw_link)
-            title = entry.get('title', '')
-            
-            # Detayları ve orijinal görselleri kazı
-            final_url, img_url, full_text = fetch_article_details(raw_link, title)
+                for r in results or []:
+                    url = r.get('url', '')
+                    title = r.get('title', '') or ''
+                    norm_title = normalize_title(title)
+                    title_key = " ".join(norm_title.split()[:8])
 
-            pub_date_str = entry.get('published', '')
-            try:
-                pub_dt = parsedate_to_datetime(pub_date_str)
-                formatted_date = pub_dt.strftime('%d %b %Y %H:%M')
-            except Exception:
-                formatted_date = datetime.now().strftime('%d %b %Y %H:%M')
+                    if not url or url in seen_urls:
+                        continue
+                    if title_key and title_key in seen_titles:
+                        continue
 
-            articles.append({
-                'title': title,
-                'full_text': full_text,
-                'url': final_url,
-                'image_url': img_url,
-                'publishedAt': formatted_date,
-                'source': {'name': entry.get('source', {}).get('title', 'Açık Basın')}
-            })
+                    seen_urls.add(url)
+                    if title_key:
+                        seen_titles.add(title_key)
+
+                    raw_date = r.get('date', '')
+                    try:
+                        dt = datetime.fromisoformat(raw_date.replace('Z', '+00:00'))
+                        formatted_date = dt.strftime('%d %b %Y %H:%M')
+                    except Exception:
+                        formatted_date = datetime.now().strftime('%d %b %Y %H:%M')
+
+                    articles.append({
+                        'title': title,
+                        'body': r.get('body', ''),
+                        'url': url,
+                        'image_url': r.get('image', ''),
+                        'publishedAt': formatted_date,
+                        'source': {'name': r.get('source', 'Açık Basın')}
+                    })
+
+                    if len(articles) >= max_results:
+                        break
+
+                time.sleep(0.4)  # DuckDuckGo rate-limit riskini azaltmak için
     except Exception:
         pass
 
-    return articles
+    return articles[:max_results]
 
 # --- WORD DOKÜMANI YARDIMCILARI ---
 def add_safe_hyperlink(paragraph, url, text):
@@ -232,7 +265,7 @@ def add_safe_hyperlink(paragraph, url, text):
         part = paragraph.part
         r_id = part.relate_to(url, "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink", is_external=True)
         safe_text = html.escape(text)
-        
+
         xml_str = (
             f'<w:hyperlink xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" r:id="{r_id}">'
             f'<w:r><w:rPr><w:rStyle w:val="Hyperlink"/><w:color w:val="0000FF"/><w:u w:val="single"/></w:rPr>'
@@ -244,13 +277,28 @@ def add_safe_hyperlink(paragraph, url, text):
         paragraph.add_run(f"{text} ({url})")
 
 def download_image_stream(img_url):
-    if not img_url or "gstatic" in img_url or "google" in img_url:
+    """
+    Değişiklikler:
+    - Content-Type kontrolü eklendi (gerçekten görsel mi diye).
+    - Pillow ile her görsel JPEG'e dönüştürülüyor; böylece WebP/AVIF gibi
+      python-docx'in add_picture ile sorun çıkarabileceği formatlar da
+      güvenle rapora eklenebiliyor.
+    - Timeout 4sn -> 6sn (yavaş kaynaklarda boş kalan hücreleri azaltmak için).
+    """
+    if not img_url or "gstatic.com" in img_url:
         return None
     try:
         headers = {'User-Agent': 'Mozilla/5.0'}
-        resp = requests.get(img_url, headers=headers, timeout=4)
-        if resp.status_code == 200 and len(resp.content) > 1500:
-            return BytesIO(resp.content)
+        resp = requests.get(img_url, headers=headers, timeout=6)
+        content_type = resp.headers.get('Content-Type', '')
+        if resp.status_code == 200 and len(resp.content) > 1500 and content_type.startswith('image'):
+            img = Image.open(BytesIO(resp.content))
+            if img.mode in ("RGBA", "P", "LA"):
+                img = img.convert("RGB")
+            out = BytesIO()
+            img.save(out, format="JPEG", quality=85)
+            out.seek(0)
+            return out
     except Exception:
         pass
     return None
@@ -259,7 +307,7 @@ def style_table_cell(cell, bg_hex=None, bold=False, font_size=8.5, color_rgb=(0,
     if bg_hex:
         shd = parse_xml(f'<w:shd {nsdecls("w")} w:fill="{bg_hex}"/>')
         cell._tc.get_or_add_tcPr().append(shd)
-    
+
     tcPr = cell._tc.get_or_add_tcPr()
     tcMar = OxmlElement('w:tcMar')
     for m in ['top', 'bottom', 'left', 'right']:
@@ -281,7 +329,7 @@ def style_table_cell(cell, bg_hex=None, bold=False, font_size=8.5, color_rgb=(0,
 # --- WORD RAPOR OLUŞTURUCU ---
 def generate_osint_docx(query, df_all, stats):
     doc = Document()
-    
+
     for section in doc.sections:
         section.top_margin = Inches(0.5)
         section.bottom_margin = Inches(0.5)
@@ -320,19 +368,19 @@ def generate_osint_docx(query, df_all, stats):
 
     doc.add_heading("2. Kritik / Manipülatif Söylem Barındıran Haberler", level=1)
     risk_df = df_all[df_all['Risk_Durumu'] == 'Yüksek Risk']
-    
+
     if not risk_df.empty:
         table = doc.add_table(rows=1, cols=6)
         table.style = 'Table Grid'
         hdr_cells = table.rows[0].cells
-        headers = ['Görsel', 'Tarih / Kaynak', 'Kategori', 'Haber Başlığı (Linkli)', 'Düzyazı Haber Özeti & Analizi', 'Tespit Edilen Söylem']
+        headers = ['Görsel', 'Tarih / Kaynak', 'Kategori', 'Haber Başlığı (Linkli)', 'Düzyazı Haber Özeti & Analiz', 'Tespit Edilen Söylem']
         for i, title in enumerate(headers):
             hdr_cells[i].text = title
             style_table_cell(hdr_cells[i], bg_hex="1B365D", bold=True, font_size=9, color_rgb=(255, 255, 255))
 
         for _, r in risk_df.iterrows():
             row_cells = table.add_row().cells
-            
+
             img_stream = download_image_stream(r.get('Görsel_URL', ''))
             if img_stream:
                 try:
@@ -345,30 +393,30 @@ def generate_osint_docx(query, df_all, stats):
 
             row_cells[1].text = f"{r['Tarih']}\n{r['Kaynak']}"
             row_cells[2].text = r['Kategori']
-            
+
             p_link = row_cells[3].paragraphs[0]
             add_safe_hyperlink(p_link, r['URL'], r['Başlık'])
-            
+
             row_cells[4].text = r['Özet']
             row_cells[5].text = ", ".join(r['Manipülasyon_Kelimeleri']) if r['Manipülasyon_Kelimeleri'] else "Yüksek Negatif Ton"
-            
+
             for c in row_cells:
                 style_table_cell(c, font_size=8)
     else:
         doc.add_paragraph("Kritik düzeyde manipülatif söylem barındıran haber tespit edilmemiştir.")
-        
+
     doc.add_heading("3. Genel Haber Akışı ve Duygu Dağılımı", level=1)
     table2 = doc.add_table(rows=1, cols=6)
     table2.style = 'Table Grid'
     hdr_cells2 = table2.rows[0].cells
-    headers2 = ['Görsel', 'Tarih / Kaynak', 'Kategori', 'Haber Başlığı (Linkli)', 'Düzyazı Haber Özeti & Analizi', 'Duygu / Skor']
+    headers2 = ['Görsel', 'Tarih / Kaynak', 'Kategori', 'Haber Başlığı (Linkli)', 'Düzyazı Haber Özeti & Analiz', 'Duygu / Skor']
     for i, title in enumerate(headers2):
         hdr_cells2[i].text = title
         style_table_cell(hdr_cells2[i], bg_hex="1B365D", bold=True, font_size=9, color_rgb=(255, 255, 255))
 
     for _, r in df_all.iterrows():
         rc = table2.add_row().cells
-        
+
         img_stream = download_image_stream(r.get('Görsel_URL', ''))
         if img_stream:
             try:
@@ -381,16 +429,16 @@ def generate_osint_docx(query, df_all, stats):
 
         rc[1].text = f"{r['Tarih']}\n{r['Kaynak']}"
         rc[2].text = r['Kategori']
-        
+
         p_link2 = rc[3].paragraphs[0]
         add_safe_hyperlink(p_link2, r['URL'], r['Başlık'])
-        
+
         rc[4].text = r['Özet']
         rc[5].text = f"{r['Duygu']} ({r['Skor']})"
-        
+
         for c in rc:
             style_table_cell(c, font_size=8)
-        
+
     buf = BytesIO()
     doc.save(buf)
     buf.seek(0)
@@ -398,42 +446,61 @@ def generate_osint_docx(query, df_all, stats):
 
 # --- ARAYÜZ (STREAMLIT) ---
 st.title("🛡️ Sanayi, Teknoloji & Güvenlik Açık Kaynak Radarı")
-st.caption("Orijinal Metin Kazıma, Görsel Yakalama ve Düzyazı Analiz Platformu")
+st.caption("Doğrudan Haber Metni, Orijinal Görsel Yakalama ve Düzyazı Analiz Platformu")
 
 with st.sidebar:
     st.header("⚙️ Tarama Parametreleri")
-    
+
     default_query = (
         'sanayi OR teknoloji OR TOGG OR KAAN OR ASELSAN OR BAYKAR OR TUSAŞ OR ROKETSAN OR HAVELSAN OR '
-        'TÜBİTAK OR KOSGEB OR Çelik Kubbe OR SİHA OR İHA OR Milli Teknoloji OR çip OR Yapay Zeka'
+        'TÜBİTAK OR KOSGEB OR Çelik Kubbe OR SİHA OR İHA OR Milli Teknoloji OR çip OR Yapay Zeka OR '
+        'Hisar OR Siper OR Türkiye Uzay Ajansı OR Teknofest OR şarj istasyonu OR batarya OR '
+        'organize sanayi bölgesi OR yatırım teşvik OR Ege OR Doğu Akdeniz OR Yunanistan'
     )
 
-    query = st.text_area("Arama Sorgusu (Ana Terimler):", value=default_query, height=120)
-    
+    query = st.text_area("Arama Sorgusu (OR / virgül ile ayırın):", value=default_query, height=140)
+
     time_filter = st.selectbox(
         "Zaman Dilimi (Canlı Akış):",
         options=["1d", "7d", "14d"],
         format_func=lambda x: {"1d": "Son 24 Saat", "7d": "Son 1 Hafta", "14d": "Son 2 Hafta"}[x]
     )
 
-    max_news = st.slider("Maksimum Haber Sayısı:", 10, 40, 20)
+    max_news = st.slider("Maksimum Haber Sayısı:", 10, 80, 30)
+
+    negative_boost = st.checkbox(
+        "Kritik/Negatif Haber Yakalama Modunu Güçlendir",
+        value=True,
+        help="Ana anahtar kelimeleri 'skandal, kriz, iptal, arıza...' gibi kritik terimlerle birleştirerek ek aramalar yapar."
+    )
+    extra_regions = st.checkbox(
+        "Yabancı Basını da Tara (Bölgesel Güvenlik için önerilir)",
+        value=True,
+        help="Kathimerini, Ta Nea gibi yabancı kaynakları yakalamak için dünya geneli (wt-wt) bölgesinde de arar."
+    )
     only_negative = st.checkbox("Sadece Negatif/Riskli Haberleri Ekrana Getir", value=False)
-    
+
     btn_run = st.button("🔍 Taramayı Başlat", type="primary", use_container_width=True)
 
 if btn_run:
-    with st.spinner("Haber kaynakları taranıyor, görseller indiriliyor ve düzyazı analizler oluşturuluyor..."):
-        articles = fetch_robust_news(query, time_range=time_filter, max_results=max_news)
-        
+    with st.spinner("Haberler taranıyor, görseller indiriliyor ve düzyazı analizler oluşturuluyor..."):
+        articles = fetch_robust_news(
+            query,
+            time_range=time_filter,
+            max_results=max_news,
+            negative_boost=negative_boost,
+            extra_regions=extra_regions
+        )
+
         if articles:
             parsed_data = []
             for a in articles:
                 title = a.get('title', '') or ''
-                full_text = a.get('full_text', '') or ''
-                
-                score, sentiment, risk, manip_words, category = analyze_article(title, full_text)
-                prose_summary = build_prose_summary(title, full_text, category, sentiment, risk, manip_words)
-                
+                body = a.get('body', '') or ''
+
+                score, sentiment, risk, manip_words, category = analyze_article(title, body)
+                prose_summary = build_prose_analysis(title, body, category, sentiment, risk, manip_words)
+
                 parsed_data.append({
                     "Tarih": a.get('publishedAt', ''),
                     "Kaynak": a.get('source', {}).get('name', 'Bilinmiyor'),
@@ -447,23 +514,23 @@ if btn_run:
                     "URL": a.get('url', ''),
                     "Görsel_URL": a.get('image_url', '')
                 })
-            
+
             df = pd.DataFrame(parsed_data)
-            
+
             if only_negative:
                 df = df[(df['Duygu'] == 'Negatif') | (df['Risk_Durumu'] == 'Yüksek Risk')]
-            
+
             tot = len(df)
             neg_cnt = sum(df['Duygu'] == 'Negatif')
             risk_cnt = sum(df['Risk_Durumu'] == 'Yüksek Risk')
             neg_ratio = (neg_cnt / tot * 100) if tot > 0 else 0
-            
+
             k1, k2, k3, k4 = st.columns(4)
             k1.metric("İncelenen Haber", tot)
             k2.metric("Negatif Haberler", neg_cnt)
             k3.metric("Manipülasyon Riskli", risk_cnt, delta="Kritik Dil" if risk_cnt > 0 else "Normal", delta_color="inverse")
             k4.metric("Negatif Haber Oranı", f"%{neg_ratio:.1f}")
-            
+
             st.markdown("---")
             st.subheader("📋 Canlı Haber Akışı ve Düzyazı Analiz Tablosu")
             st.dataframe(
@@ -471,10 +538,10 @@ if btn_run:
                 column_config={"URL": st.column_config.LinkColumn("Orijinal Haber Linki")},
                 use_container_width=True
             )
-            
+
             stats_dict = {'total': tot, 'neg': neg_cnt, 'risk_count': risk_cnt, 'neg_ratio': neg_ratio}
             docx_b = generate_osint_docx(query, df, stats_dict)
-            
+
             st.download_button(
                 label="📄 DÜZYAZI ANALİZLİ RAPORU İNDİR (.DOCX)",
                 data=docx_b,
@@ -483,4 +550,4 @@ if btn_run:
                 type="primary"
             )
         else:
-            st.info("Seçilen zaman diliminde kriterlere uygun haber bulunamamıştır.")
+            st.info("Seçilen zaman diliminde kriterlere uygun haber bulunamamıştır. Sorguyu daraltmayı veya zaman dilimini genişletmeyi deneyin.")
