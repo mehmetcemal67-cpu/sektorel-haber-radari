@@ -46,11 +46,26 @@ def load_lexicon():
 
 lexicon = load_lexicon()
 
-# --- MANİPÜLASYON VE SÖYLEM KELİME LİSTELERİ ---
+# --- MANİPÜLASYON, ALGI VE RİSK KELİME LİSTESİ ---
 MANIPULATION_KEYWORDS = [
+    # 1. Doğrudan Manipülasyon & Dezenformasyon Söylemleri
     "fiyasko", "skandal", "gizlenen", "gerçekler", "fason", "montaj", "yerli değil",
-    "illüzyon", "şişirme", "kandırıldık", "üretim durdu", "sümen altı", "israf",
-    "bağımlı", "teşvik vurgunu", "hayal kırıklığı", "yılan hikayesi", "rafa kaldırıldı", "kriz"
+    "illüzyon", "şişirme", "kandırıldık", "sümen altı", "israf", "teşvik vurgunu",
+    "hayal kırıklığı", "yılan hikayesi", "rafa kaldırıldı", "yalan", "sansür", "şüphe",
+    "algı operasyonu", "makyajlı", "hayali", "balon", "vurgun", "pes dedirtti",
+
+    # 2. Üretim, Operasyon ve Proje Riskleri
+    "üretim durdu", "şalter indirildi", "batık proje", "atıl", "gecikme", "iptal",
+    "askıya alındı", "testi geçemedi", "arıza", "çöküş", "teslim edilemedi", "patladı",
+    "kapasite kaybı", "sözleşme feshi", "hazır alım", "dışa bağımlı",
+
+    # 3. Ekonomik, Mali ve Finansal Sıkıntılar
+    "kriz", "zarar", "iflas", "konkordato", "borç batağı", "maliyet artışı",
+    "bütçe açığı", "daralma", "sert düşüş", "kaynak tükendi", "pazar kaybı",
+
+    # 4. Jeopolitik, Ambargo ve Tedarik Engel Riskleri
+    "ambargo", "gizli ambargo", "yaptırım", "çip krizi", "tedarik engeli",
+    "karbon engeli", "lisans reddi", "kırmızı çizgi", "blokaj"
 ]
 
 STRATEGIC_CATEGORIES = {
@@ -224,10 +239,12 @@ st.caption("Dezenformasyon, Manipülatif Söylem ve Anlık Negatif Haber Tespiti
 with st.sidebar:
     st.header("⚙️ Tarama Parametreleri")
     
-    # Anlık Takip İçin Esnetilmiş Arama Sorgusu
+    # Genişletilmiş Sanayi, Teknoloji ve Stratejik Alanlar Radarı
     default_query = (
-        'sanayi OR teknoloji OR TOGG OR KAAN OR ASELSAN OR BAYKAR OR TUSAŞ OR "Çelik Kubbe" OR '
-        'SİHA OR İHA OR TÜBİTAK OR KOSGEB OR OSB OR TUA OR "Milli Teknoloji" OR çip OR "Yapay Zeka"'
+        'sanayi OR teknoloji OR TOGG OR KAAN OR ASELSAN OR BAYKAR OR TUSAŞ OR ROKETSAN OR HAVELSAN OR '
+        'TÜBİTAK OR KOSGEB OR "Çelik Kubbe" OR SİHA OR İHA OR "Milli Teknoloji" OR çip OR "Yapay Zeka" OR '
+        '"Siber Güvenlik" OR "Uzay Ajansı" OR TUA OR "Organize Sanayi" OR OSB OR "Yatırım Teşvik" OR '
+        '"İmalat Sanayii" OR "Yavru Vatan" OR "Komşu" OR Yunan OR "Yerli Üretim" OR "Kalkınma Ajansı" OR "Dijital Dönüşüm" OR "Yeşil Dönüşüm"'
     )
 
     query = st.text_area(
