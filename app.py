@@ -254,9 +254,6 @@ with st.sidebar:
     with c2:
         e_date = st.date_input("Bitiş", date.today())
 
-    # Bugüne ait haberlerin kaçmaması için +1 gün ekleme
-    api_e_date = e_date + datetime.timedelta(days=1)
-        
     max_news = st.slider("Maksimum Haber Sayısı:", 10, 100, 30)
     only_negative = st.checkbox("Sadece Negatif/Riskli Haberleri Süz", value=False)
     
