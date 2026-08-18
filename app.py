@@ -856,6 +856,215 @@ def _is_official_radar_row(r):
            'epdk','teiaş','teias','türkiye uzay ajansı']
     return any(x in srcn for x in names)
 
+
+# -----------------------------
+# V52 — GÜNÜN EN DEĞERLİ 10 GELİŞMESİ
+# -----------------------------
+V52_STRATEGIC_TERMS=[
+    'savunma','savunma sanayii','tusaş','aselsan','roketsan','havelsan','baykar',
+    'kaan','kızılelma','füze','hava savunma','siber','kritik altyapı',
+    'yapay zeka','yarı iletken','çip','nükleer','enerji','otomotiv',
+    'yatırım','fabrika','üretim','ihracat','arge','ar-ge','teknoloji yatırımı',
+    'kritik mineral','nadir toprak','tedarik zinciri'
+]
+
+def _v52_event_value_table(df,n=10):
+    """
+    Olay bazlı 0-100 Değer Skoru.
+    Gerçek okunma/tıklanma verisi mevcut akışta bulunmadığından uydurulmaz.
+    Bunun yerine erişilebilen güçlü vekiller kullanılır:
+    önem/risk, kaynak yayılımı, resmî teyit, güncellik, stratejik önem,
+    negatif/eleştirel etki ve aynı olayın haber yoğunluğu.
+    """
+    cols=['Sıra','Değer_Skoru','Tarih','Gelişme','Neden_Değerli',
+          'Kaynak_Sayısı','Haber_Sayısı','Resmî_Teyit','Risk','URL']
+    if df is None or df.empty:
+        return pd.DataFrame(columns=cols)
+
+    now=pd.Timestamp.now(tz='UTC')
+    items=[]
+
+    for oid,g in df.groupby('Olay_ID',dropna=False):
+        g=g.sort_values('Tarih_dt',ascending=False).copy()
+        rep=g.iloc[0]
+        maxrisk=int(pd.to_numeric(g.get('Risk_Skoru',0),errors='coerce').fillna(0).max())
+        domains={domain(x) for x in g.get('Domain',pd.Series(dtype=str)).astype(str) if x}
+        source_count=max(1,len(domains))
+        news_count=len(g)
+        official=any(_is_official_radar_row(r) for _,r in g.iterrows())
+
+        latest=pd.to_datetime(g['Tarih_dt'],utc=True,errors='coerce').max()
+        age_h=max(0.0,(now-latest).total_seconds()/3600) if pd.notna(latest) else 24.0
+        recency=max(0.0,1.0-min(age_h,24.0)/24.0)
+
+        text=norm(' '.join(
+            (g['Başlık'].fillna('').astype(str)+' '+g['İçerik_Özeti'].fillna('').astype(str)).head(6).tolist()
+        ))
+        strategic_hits=sum(1 for x in V52_STRATEGIC_TERMS if x in text)
+        strategic=min(1.0,strategic_hits/3.0)
+
+        negative=bool(
+            (g.get('Duygu',pd.Series(index=g.index,dtype=str))=='Negatif').any()
+            or (g.get('Risk_Durumu',pd.Series(index=g.index,dtype=str))=='Yüksek Risk').any()
+        )
+
+        # 0-100: kullanıcının istediği kıstaslara göre dengeli ağırlık.
+        risk_part=min(25.0,maxrisk*0.25)
+        spread_part=min(20.0,5.0*source_count + max(0,news_count-source_count)*1.5)
+        official_part=15.0 if official else 0.0
+        recency_part=10.0*recency
+        strategic_part=15.0*strategic
+        impact_part=10.0 if negative else (5.0 if maxrisk>=35 else 0.0)
+
+        # Gerçek click/read metriği yoksa "çok sayıda bağımsız kaynakta yankı"
+        # popülerlik vekili olarak en fazla 5 puan taşır.
+        popularity_proxy=min(5.0,max(0,source_count-1)*1.5 + max(0,news_count-2)*0.5)
+
+        score=int(round(min(100,risk_part+spread_part+official_part+recency_part+
+                            strategic_part+impact_part+popularity_proxy)))
+
+        why=[]
+        if source_count>=4: why.append(f'{source_count} farklı kaynakta geniş yankı')
+        elif source_count>=2: why.append(f'{source_count} farklı kaynakta yer aldı')
+        if official: why.append('resmî/birincil kaynak teyidi')
+        if maxrisk>=70: why.append('yüksek risk/önem')
+        elif maxrisk>=35: why.append('dikkat gerektiren etki')
+        if strategic>=0.67: why.append('stratejik sanayi-teknoloji konusu')
+        elif strategic>0: why.append('sanayi-teknoloji açısından ilgili')
+        if negative: why.append('negatif/eleştirel etki')
+        if recency>=0.75: why.append('çok güncel')
+        if not why: why.append('güncel olay yoğunluğu')
+
+        items.append({
+            'Değer_Skoru':score,
+            'Tarih':rep.get('Tarih',''),
+            'Gelişme':rep.get('Başlık',''),
+            'Neden_Değerli':' • '.join(why[:5]),
+            'Kaynak_Sayısı':source_count,
+            'Haber_Sayısı':news_count,
+            'Resmî_Teyit':'Evet' if official else 'Hayır',
+            'Risk':maxrisk,
+            'URL':rep.get('URL','')
+        })
+
+    out=pd.DataFrame(items)
+    if out.empty: return pd.DataFrame(columns=cols)
+    out=out.sort_values(['Değer_Skoru','Kaynak_Sayısı','Haber_Sayısı','Tarih'],
+                        ascending=[False,False,False,False]).head(n).reset_index(drop=True)
+    out.insert(0,'Sıra',range(1,len(out)+1))
+    return out[cols]
+
+# -----------------------------
+# V51 — RESMÎ AÇIKLAMA / MEDYA KARŞILAŞTIRMASI
+# -----------------------------
+_COMPARE_STOP={
+    've','ile','bir','bu','şu','için','da','de','mi','mı','mu','mü','olan','olarak',
+    'son','yeni','göre','daha','çok','ise','ile','ancak','fakat','tarafından','dedi',
+    'açıkladı','açıklama','haber','gelişme','türkiye','türk'
+}
+
+def _compare_tokens(text):
+    t=norm(text)
+    toks=re.findall(r'[a-z0-9çğıöşü]{3,}',t)
+    return {x for x in toks if x not in _COMPARE_STOP}
+
+def _event_similarity(a,b):
+    """Başlık + kısa içerik üzerinden hızlı olay benzerliği; ağ isteği yapmaz."""
+    at=_compare_tokens(f"{a.get('Başlık','')} {str(a.get('İçerik_Özeti',''))[:500]}")
+    bt=_compare_tokens(f"{b.get('Başlık','')} {str(b.get('İçerik_Özeti',''))[:500]}")
+    if not at or not bt: return 0.0
+    inter=len(at & bt)
+    union=max(1,len(at | bt))
+    j=inter/union
+    title_a=_compare_tokens(a.get('Başlık',''))
+    title_b=_compare_tokens(b.get('Başlık',''))
+    tj=len(title_a & title_b)/max(1,min(len(title_a),len(title_b))) if title_a and title_b else 0
+    return 0.55*tj+0.45*j
+
+def _short_claim(r,limit=220):
+    txt=_clean_note_text(r.get('İçerik_Özeti',''))
+    if not txt or norm(txt)==norm(r.get('Başlık','')):
+        txt=_clean_note_text(r.get('Başlık',''))
+    sents=_sentence_chunks(txt)
+    if sents:
+        txt=' '.join(sents[:2])
+    return txt[:limit].strip()
+
+def _comparison_difference(media,official):
+    """İki kısa metindeki belirgin yön/iddia farklarını özetler; LLM/ağ çağrısı yok."""
+    mt=norm(f"{media.get('Başlık','')} {media.get('İçerik_Özeti','')}")
+    ot=norm(f"{official.get('Başlık','')} {official.get('İçerik_Özeti','')}")
+    pairs=[
+        (['tamamen durdu','üretim durdu','faaliyet durdu'],['kısmi','belirli bölüm','geçici','kısa süre','devam ediyor'],'Medya daha geniş bir durma/aksama bildirirken resmî açıklama etkinin kısmi veya geçici olduğunu belirtiyor.'),
+        (['yangın','patlama','kaza'],['kontrol altına','söndürüldü','müdahale edildi'],'Resmî açıklama olayın kontrol/müdahale durumuna ilişkin ek bilgi içeriyor.'),
+        (['can kaybı','öldü','hayatını kaybetti'],['can kaybı yok','can kaybı bulunmuyor'],'Can kaybına ilişkin medya ve resmî açıklama arasında farklı ifade bulunuyor.'),
+        (['yaralı','yaralandı'],['yaralı yok','yaralanan yok'],'Yaralanma bilgisine ilişkin farklı ifade bulunuyor.'),
+        (['veri sızıntısı','veri ihlali'],['etkilenmedi','sınırlı','belirli kullanıcı'],'Resmî açıklama olayın kapsamını medya anlatımına göre sınırlandırıyor/netleştiriyor.'),
+        (['kriz','tehlike','alarm'],['normal','rutin','planlandığı','devam ediyor'],'Medya daha olumsuz/uyarıcı bir çerçeve kullanırken resmî açıklama daha sınırlı veya olağan bir durum tarif ediyor.')
+    ]
+    for mkeys,okeys,msg in pairs:
+        if any(x in mt for x in mkeys) and any(x in ot for x in okeys):
+            return msg
+
+    mn=set(re.findall(r'(?:%\s*)?\d+(?:[.,]\d+)?',mt))
+    on=set(re.findall(r'(?:%\s*)?\d+(?:[.,]\d+)?',ot))
+    if mn and on and mn!=on:
+        return 'Medya ve resmî açıklamada yer alan sayısal bilgiler farklılık gösteriyor; rakamların ayrıca kontrol edilmesi önerilir.'
+
+    return 'Aynı olaya ilişkin resmî açıklama bulundu. Belirgin bir çelişki otomatik olarak tespit edilmedi; ayrıntılar birlikte kontrol edilebilir.'
+
+def _official_media_comparison(df):
+    """
+    Sabit panel için medya haberlerini aynı taramadaki resmî/birincil içeriklerle eşleştirir.
+    Ek web isteği yoktur; mevcut Resmî Kaynak Radarı verisini kullanır.
+    """
+    cols=['Tarih','Medya_Kaynağı','Medya_Haberi','Resmî_Kaynak','Resmî_Açıklama',
+          'Karşılaştırma','Eşleşme','Medya_URL','Resmî_URL']
+    if df is None or df.empty:
+        return pd.DataFrame(columns=cols)
+
+    officials=df[df.apply(_is_official_radar_row,axis=1)].copy()
+    media=df[~df.apply(_is_official_radar_row,axis=1)].copy()
+    if officials.empty or media.empty:
+        return pd.DataFrame(columns=cols)
+
+    rows=[]
+    # Performans için resmî havuz zaten küçüktür; medya tarafında en yeni 250 içerik yeterli.
+    media=media.sort_values('Tarih_dt',ascending=False).head(250)
+    officials=officials.sort_values('Tarih_dt',ascending=False).head(80)
+
+    for _,m in media.iterrows():
+        best=None; best_score=0.0
+        mdt=pd.to_datetime(m.get('Tarih_dt'),utc=True,errors='coerce')
+        for _,o in officials.iterrows():
+            odt=pd.to_datetime(o.get('Tarih_dt'),utc=True,errors='coerce')
+            if pd.notna(mdt) and pd.notna(odt):
+                if abs((mdt-odt).total_seconds()) > 72*3600:
+                    continue
+            score=_event_similarity(m,o)
+            if score>best_score:
+                best_score=score; best=o
+        # Yanlış eşleşmeyi azaltmak için ölçülü eşik.
+        if best is None or best_score<0.30:
+            continue
+
+        rows.append({
+            'Tarih':m.get('Tarih',''),
+            'Medya_Kaynağı':m.get('Kaynak',''),
+            'Medya_Haberi':_short_claim(m),
+            'Resmî_Kaynak':best.get('Kaynak',''),
+            'Resmî_Açıklama':_short_claim(best),
+            'Karşılaştırma':_comparison_difference(m,best),
+            'Eşleşme':int(round(best_score*100)),
+            'Medya_URL':m.get('URL',''),
+            'Resmî_URL':best.get('URL','')
+        })
+
+    if not rows:
+        return pd.DataFrame(columns=cols)
+    out=pd.DataFrame(rows).drop_duplicates(subset=['Medya_URL','Resmî_URL'])
+    return out.sort_values(['Eşleşme','Tarih'],ascending=[False,False])
+
 def _contains_number_or_rate(text):
     t=str(text or '')
     return bool(re.search(
@@ -3201,6 +3410,11 @@ def _section_select_table(section_key, data, columns, height=420):
         column_config={
             'Seç':st.column_config.CheckboxColumn('Seç'),
             'URL':st.column_config.LinkColumn('Haber Linki'),
+            'Medya_URL':st.column_config.LinkColumn('Medya'),
+            'Resmî_URL':st.column_config.LinkColumn('Resmî Açıklama'),
+            'Eşleşme':st.column_config.NumberColumn('Eşleşme',format='%d%%'),
+            'Değer_Skoru':st.column_config.ProgressColumn('Değer Skoru',min_value=0,max_value=100,format='%d/100'),
+            'Risk':st.column_config.NumberColumn('Risk',format='%d/100'),
             'Risk_Skoru':st.column_config.NumberColumn('Risk',format='%d/100'),
             'Risk':st.column_config.NumberColumn('Risk',format='%d/100'),
             '_row_key':None
@@ -3929,6 +4143,43 @@ else:
                 official_radar.head(30),
                 ['Tarih','Kaynak','Kategori','Başlık','İçerik_Özeti','Risk_Skoru','Doğrulama','URL'],
                 height=min(600,90+38*min(len(official_radar),30))
+            )
+
+        st.markdown('---')
+        st.subheader('🏆 Günün En Değerli 10 Gelişmesi')
+        st.caption(
+            'Aynı olaya ait haberlar tek gelişmede birleştirilir. Değer Skoru; önem/risk, farklı kaynak sayısı, '
+            'resmî teyit, güncellik, stratejik sanayi-teknoloji önemi, negatif/eleştirel etki ve haber yoğunluğunu birlikte değerlendirir. '
+            'Kaynak gerçek okunma/tıklanma verisi sağlıyorsa ileride ayrıca eklenebilir; mevcut sistem erişilemeyen okunma sayılarını tahmin etmez.'
+        )
+        value10=_v52_event_value_table(df,10)
+        if value10.empty:
+            st.info('Bu taramada sıralanabilecek gelişme bulunamadı.')
+        else:
+            _section_select_table(
+                'daily_top10_value',
+                value10,
+                ['Sıra','Değer_Skoru','Tarih','Gelişme','Neden_Değerli',
+                 'Kaynak_Sayısı','Haber_Sayısı','Resmî_Teyit','Risk','URL'],
+                height=min(680,105+55*len(value10))
+            )
+
+        st.markdown('---')
+        st.subheader('🔎 Resmî Açıklama – Medya Karşılaştırması')
+        st.caption(
+            'Bu alan sabittir. Aynı taramadaki medya haberlerini resmî/birincil kaynak açıklamalarıyla '
+            'otomatik eşleştirir; olayın medya anlatımı ile resmî açıklaması arasındaki belirgin farkları gösterir.'
+        )
+        official_media_cmp=_official_media_comparison(df)
+        if official_media_cmp.empty:
+            st.info('Bu taramada medya haberiyle eşleşen resmî/birincil açıklama bulunamadı.')
+        else:
+            _section_select_table(
+                'official_media_comparison',
+                official_media_cmp.head(25),
+                ['Tarih','Medya_Kaynağı','Medya_Haberi','Resmî_Kaynak','Resmî_Açıklama',
+                 'Karşılaştırma','Eşleşme','Medya_URL','Resmî_URL'],
+                height=min(650,110+54*min(len(official_media_cmp),25))
             )
 
         st.markdown('---')
