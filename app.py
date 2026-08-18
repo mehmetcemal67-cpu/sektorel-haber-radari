@@ -969,6 +969,21 @@ def _init_history_db():
                     UNIQUE(url,title)
                 )
             """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS osint_report_basket(
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    added_at TEXT NOT NULL,
+                    news_time TEXT,
+                    title TEXT NOT NULL,
+                    source TEXT,
+                    url TEXT,
+                    category TEXT,
+                    risk_score INTEGER,
+                    risk_status TEXT,
+                    summary TEXT,
+                    UNIQUE(url,title)
+                )
+            """)
             conn.commit()
         return True
     except Exception:
@@ -1435,6 +1450,74 @@ def _load_important_basket():
             )
     except Exception:
         return pd.DataFrame()
+
+
+def _add_rows_to_osint_basket(rows):
+    if rows is None or len(rows)==0 or not _init_history_db():
+        return 0
+    added=0
+    try:
+        with _history_connect() as conn:
+            for row in rows:
+                title=str(row.get('Başlık','') or '').strip()
+                url=str(row.get('URL','') or '').strip()
+                if not title:
+                    continue
+                cur=conn.execute("""
+                    INSERT OR IGNORE INTO osint_report_basket(
+                        added_at,news_time,title,source,url,category,risk_score,risk_status,summary
+                    ) VALUES(?,?,?,?,?,?,?,?,?)
+                """,(
+                    datetime.now().astimezone().isoformat(),
+                    str(row.get('Tarih','') or ''),
+                    title,
+                    str(row.get('Kaynak','') or ''),
+                    url,
+                    str(row.get('Kategori','') or ''),
+                    int(row.get('Risk_Skoru',0) or 0),
+                    str(row.get('Risk_Durumu','') or ''),
+                    str(row.get('İçerik_Özeti','') or '')[:8000]
+                ))
+                if cur.rowcount:
+                    added+=1
+            conn.commit()
+        return added
+    except Exception:
+        return 0
+
+def _load_osint_basket():
+    if not _init_history_db():
+        return pd.DataFrame()
+    try:
+        with _history_connect() as conn:
+            return pd.read_sql_query(
+                "SELECT * FROM osint_report_basket ORDER BY added_at ASC,id ASC",
+                conn
+            )
+    except Exception:
+        return pd.DataFrame()
+
+def _remove_osint_basket_ids(ids):
+    ids=[int(x) for x in ids if str(x).isdigit()]
+    if not ids:
+        return 0
+    try:
+        with _history_connect() as conn:
+            q="DELETE FROM osint_report_basket WHERE id IN (" + ",".join("?" for _ in ids) + ")"
+            cur=conn.execute(q,ids)
+            conn.commit()
+            return cur.rowcount
+    except Exception:
+        return 0
+
+def _clear_osint_basket():
+    try:
+        with _history_connect() as conn:
+            cur=conn.execute("DELETE FROM osint_report_basket")
+            conn.commit()
+            return cur.rowcount
+    except Exception:
+        return 0
 
 def _remove_basket_ids(ids):
     ids=[int(x) for x in ids if str(x).isdigit()]
@@ -2244,6 +2327,62 @@ def make_docx(rows):
     bio.seek(0)
     return bio.getvalue()
 
+
+def _section_select_table(section_key, data, columns, height=420):
+    """Her bölümde satır bazlı seçim kutusu gösterir."""
+    if data is None or data.empty:
+        return pd.DataFrame()
+
+    tbl=data.copy()
+    tbl['_row_key']=[
+        str(r.get('URL','')) if str(r.get('URL','')).strip()
+        else title_key(str(r.get('Başlık','')))
+        for _,r in tbl.iterrows()
+    ]
+    selected_map=st.session_state.section_selections.get(section_key,{})
+    tbl.insert(0,'Seç',[bool(selected_map.get(k,False)) for k in tbl['_row_key']])
+
+    show_cols=['Seç']+[c for c in columns if c in tbl.columns]
+    edited=st.data_editor(
+        tbl[show_cols+['_row_key']],
+        column_config={
+            'Seç':st.column_config.CheckboxColumn('Seç'),
+            'URL':st.column_config.LinkColumn('Haber Linki'),
+            'Risk_Skoru':st.column_config.NumberColumn('Risk',format='%d/100'),
+            'Risk':st.column_config.NumberColumn('Risk',format='%d/100'),
+            '_row_key':None
+        },
+        disabled=[c for c in show_cols if c!='Seç']+['_row_key'],
+        hide_index=True,use_container_width=True,height=height,
+        key=f'section_editor_{section_key}'
+    )
+    st.session_state.section_selections[section_key]={
+        str(r['_row_key']):bool(r['Seç']) for _,r in edited.iterrows()
+    }
+    selected_keys={str(r['_row_key']) for _,r in edited.iterrows() if bool(r['Seç'])}
+    return data[
+        data.apply(
+            lambda r:(str(r.get('URL','')) if str(r.get('URL','')).strip() else title_key(str(r.get('Başlık','')))) in selected_keys,
+            axis=1
+        )
+    ].copy()
+
+def _collect_section_selected_from_main_df(df):
+    if df is None or df.empty:
+        return pd.DataFrame()
+    keys=set()
+    for selmap in st.session_state.section_selections.values():
+        for k,v in selmap.items():
+            if v:
+                keys.add(str(k))
+    if not keys:
+        return pd.DataFrame()
+    mask=df.apply(
+        lambda r:(str(r.get('URL','')) if str(r.get('URL','')).strip() else title_key(str(r.get('Başlık','')))) in keys,
+        axis=1
+    )
+    return df[mask].copy()
+
 # -----------------------------
 # UI
 # -----------------------------
@@ -2274,6 +2413,7 @@ if 'note_bytes' not in st.session_state: st.session_state.note_bytes=None
 if 'current_scan_id' not in st.session_state: st.session_state.current_scan_id=None
 if 'history_status' not in st.session_state: st.session_state.history_status=_init_history_db()
 if 'basket_docx_bytes' not in st.session_state: st.session_state.basket_docx_bytes=None
+if 'section_selections' not in st.session_state: st.session_state.section_selections={}
 
 
 if run:
@@ -2493,10 +2633,10 @@ else:
             if shift_top.empty:
                 st.info('Öne çıkan gelişme bulunamadı.')
             else:
-                st.dataframe(
-                    shift_top[['Tarih','Kaynak','Kategori','Başlık','Risk_Skoru','Risk_Durumu','Doğrulama','URL']],
-                    column_config={'URL':st.column_config.LinkColumn('Haber Linki')},
-                    hide_index=True,use_container_width=True,
+                _section_select_table(
+                    'shift_top',
+                    shift_top,
+                    ['Tarih','Kaynak','Kategori','Başlık','Risk_Skoru','Risk_Durumu','Doğrulama','URL'],
                     height=min(330,70+45*len(shift_top))
                 )
 
@@ -2517,6 +2657,14 @@ else:
         st.caption('Gün boyunca önemli gördüğünüz haberleri burada biriktirin; vardiya sonunda Word olarak alın.')
 
         selected_now=df[df.get('Seç',False)==True] if 'Seç' in df.columns else pd.DataFrame()
+        selected_from_sections=_collect_section_selected_from_main_df(df)
+
+        if st.button('➕ BÖLÜMLERDE İŞARETLEDİKLERİMİ ÖNEMLİ GELİŞMELER SEPETİNE EKLE',use_container_width=True):
+            if selected_from_sections.empty:
+                st.warning('Önce herhangi bir bölümde haberlerin yanındaki kutucuklardan seçim yapın.')
+            else:
+                added=_add_rows_to_important_basket(selected_from_sections.to_dict('records'))
+                st.success(f'{added} yeni gelişme sepete eklendi.')
         if st.button('➕ SEÇİLİ HABERLERİ ÖNEMLİ GELİŞMELER SEPETİNE EKLE',use_container_width=True):
             if selected_now.empty:
                 st.warning('Önce kronolojik görünümden haber seçin ve seçimleri kaydedin.')
@@ -2576,13 +2724,11 @@ else:
         if candidates.empty:
             st.info('Bu taramada bilgi notu adayı oluşturulamadı.')
         else:
-            st.dataframe(
+            _section_select_table(
+                'candidates',
                 candidates,
-                column_config={
-                    'Aday Puanı':st.column_config.ProgressColumn('Aday Puanı',min_value=0,max_value=100,format='%d'),
-                    'URL':st.column_config.LinkColumn('Haber Linki')
-                },
-                hide_index=True,use_container_width=True,height=min(470,65+36*len(candidates))
+                ['Aday Puanı','Başlık','Kaynak','Kategori','Risk','Kaynak Sayısı','Doğrulama','Değişim','Neden Bilgi Notu?','URL'],
+                height=min(470,65+36*len(candidates))
             )
 
         # ---------------------------------------------------------
@@ -2613,10 +2759,12 @@ else:
                 q2.metric('Yeni Bilgi',upd_n)
                 q3.metric('Risk Artışı',risk_n)
                 q4.metric('Teyit Güçlendi',ver_n)
-                st.dataframe(
-                    changes.head(25),
-                    column_config={'URL':st.column_config.LinkColumn('Haber Linki')},
-                    hide_index=True,use_container_width=True,height=min(560,70+35*min(len(changes),25))
+                changes_view=changes.head(25).copy()
+                _section_select_table(
+                    'changes',
+                    changes_view,
+                    ['Değişim','Başlık','Kaynak','Kategori','Risk','Önceki Risk','Kaynak Sayısı','Açıklama','URL'],
+                    height=min(560,70+35*min(len(changes_view),25))
                 )
 
         # Son taramada anlık yakalanan bildirimlerin kalıcı özeti
@@ -2699,31 +2847,35 @@ else:
                 st.success(f'✅ Toplam {int(df["Seç"].sum())} haber seçili.')
 
         elif view=='⚠️ Negatif':
-            st.dataframe(
-                df[df.Duygu=='Negatif'][['Tarih','Kaynak','Kategori','Başlık','Risk_Skoru','Risk_Gerekçesi','Doğrulama','URL']],
-                column_config={'URL':st.column_config.LinkColumn('Haber Linki')},
-                hide_index=True,use_container_width=True,height=600
+            _section_select_table(
+                'negative_view',
+                df[df.Duygu=='Negatif'],
+                ['Tarih','Kaynak','Kategori','Başlık','Risk_Skoru','Risk_Gerekçesi','Doğrulama','URL'],
+                height=600
             )
 
         elif view=='🚨 Yüksek Risk':
-            st.dataframe(
-                df[df.Risk_Durumu=='Yüksek Risk'][['Tarih','Kaynak','Kategori','Başlık','Risk_Skoru','Risk_Gerekçesi','Doğrulama','URL']],
-                column_config={'URL':st.column_config.LinkColumn('Haber Linki')},
-                hide_index=True,use_container_width=True,height=600
+            _section_select_table(
+                'highrisk_view',
+                df[df.Risk_Durumu=='Yüksek Risk'],
+                ['Tarih','Kaynak','Kategori','Başlık','Risk_Skoru','Risk_Gerekçesi','Doğrulama','URL'],
+                height=600
             )
 
         elif view=='🇹🇷 Türk':
-            st.dataframe(
-                df[df.Kaynak_Grubu.astype(str).str.startswith('🇹🇷')][['Tarih','Kaynak','Kategori','Başlık','Risk_Skoru','Duygu','URL']],
-                column_config={'URL':st.column_config.LinkColumn('Haber Linki')},
-                hide_index=True,use_container_width=True,height=600
+            _section_select_table(
+                'turkish_view',
+                df[df.Kaynak_Grubu.astype(str).str.startswith('🇹🇷')],
+                ['Tarih','Kaynak','Kategori','Başlık','Risk_Skoru','Duygu','URL'],
+                height=600
             )
 
         elif view=='🇬🇷 Yunan':
-            st.dataframe(
-                df[df.Kaynak_Grubu.astype(str).str.startswith('🇬🇷')][['Tarih','Kaynak','Kategori','Başlık','Risk_Skoru','Duygu','URL']],
-                column_config={'URL':st.column_config.LinkColumn('Haber Linki')},
-                hide_index=True,use_container_width=True,height=600
+            _section_select_table(
+                'greek_view',
+                df[df.Kaynak_Grubu.astype(str).str.startswith('🇬🇷')],
+                ['Tarih','Kaynak','Kategori','Başlık','Risk_Skoru','Duygu','URL'],
+                height=600
             )
 
         elif view=='🧩 Olaylar':
@@ -2753,11 +2905,91 @@ else:
             hits=watchlist_hits(df,watch)
             st.write(f'Listede eşleşen: **{len(hits)}** haber')
             if not hits.empty:
-                st.dataframe(
-                    hits[['Tarih','Kaynak','Kategori','Başlık','Risk_Skoru','Duygu','URL']],
-                    column_config={'URL':st.column_config.LinkColumn('Haber Linki')},
-                    hide_index=True,use_container_width=True,height=550
+                _section_select_table(
+                    'watchlist_view',
+                    hits,
+                    ['Tarih','Kaynak','Kategori','Başlık','Risk_Skoru','Duygu','URL'],
+                    height=550
                 )
+
+        st.markdown('---')
+        st.subheader('🗂️ Açık Kaynak Tarama Çalışması Sepeti')
+        st.caption('14:00 açık kaynak tarama raporuna girecek haberleri gün boyunca ayrı bir sepette biriktirin.')
+
+        osint_selected_now=df[df.get('Seç',False)==True] if 'Seç' in df.columns else pd.DataFrame()
+        osint_selected_sections=_collect_section_selected_from_main_df(df)
+
+        o1,o2=st.columns(2)
+        with o1:
+            if st.button('➕ KRONOLOJİDE SEÇİLİ HABERLERİ AKT SEPETİNE EKLE',use_container_width=True):
+                if osint_selected_now.empty:
+                    st.warning('Önce kronolojik görünümden haber seçin ve seçimleri kaydedin.')
+                else:
+                    added=_add_rows_to_osint_basket(osint_selected_now.to_dict('records'))
+                    st.success(f'{added} haber AKT sepetine eklendi.')
+        with o2:
+            if st.button('➕ BÖLÜMLERDE İŞARETLEDİKLERİMİ AKT SEPETİNE EKLE',use_container_width=True):
+                if osint_selected_sections.empty:
+                    st.warning('Önce herhangi bir bölümde seçim yapın.')
+                else:
+                    added=_add_rows_to_osint_basket(osint_selected_sections.to_dict('records'))
+                    st.success(f'{added} haber AKT sepetine eklendi.')
+
+        osint_basket=_load_osint_basket()
+        if osint_basket.empty:
+            st.info('Açık kaynak tarama çalışması sepeti boş.')
+        else:
+            osint_view=osint_basket[['id','news_time','source','category','title','risk_score','risk_status','url']].copy()
+            osint_view.insert(0,'Sil',False)
+            with st.form('osint_basket_form',clear_on_submit=False):
+                edited_osint=st.data_editor(
+                    osint_view,
+                    column_config={
+                        'Sil':st.column_config.CheckboxColumn('Sil'),
+                        'url':st.column_config.LinkColumn('Haber Linki'),
+                        'risk_score':st.column_config.NumberColumn('Risk',format='%d/100')
+                    },
+                    disabled=[c for c in osint_view.columns if c!='Sil'],
+                    hide_index=True,use_container_width=True,height=min(430,80+36*len(osint_view))
+                )
+                remove_osint=st.form_submit_button('🗑️ İŞARETLENENLERİ AKT SEPETİNDEN ÇIKAR',use_container_width=True)
+            if remove_osint:
+                ids=edited_osint.loc[edited_osint['Sil']==True,'id'].tolist()
+                removed=_remove_osint_basket_ids(ids)
+                st.success(f'{removed} kayıt AKT sepetinden çıkarıldı.')
+
+            osint_rows=[]
+            for _,r in osint_basket.iterrows():
+                osint_rows.append({
+                    'Tarih':r.get('news_time',''),
+                    'Kaynak':r.get('source',''),
+                    'Başlık':r.get('title',''),
+                    'İçerik_Özeti':r.get('summary',''),
+                    'URL':r.get('url',''),
+                    'Kategori':r.get('category',''),
+                    'Risk_Skoru':r.get('risk_score',0),
+                    'Risk_Durumu':r.get('risk_status',''),
+                    'Yayıncı':r.get('source',''),
+                    'Yayıncı_URL':''
+                })
+
+            ob1,ob2=st.columns(2)
+            with ob1:
+                if st.button('📝 AKT SEPETİNDEN WORD HAZIRLA',use_container_width=True):
+                    with st.spinner('AKT sepetindeki haberler rapora hazırlanıyor...'):
+                        st.session_state.docx_bytes=make_docx(osint_rows)
+                if st.session_state.get('docx_bytes'):
+                    st.download_button(
+                        '⬇️ AKT SEPETİNDEN AÇIK KAYNAK RAPORU / WORD',
+                        st.session_state.docx_bytes,
+                        file_name=f'Sanayi_Teknoloji_Acik_Kaynak_Sepet_{date.today()}.docx',
+                        mime='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                        use_container_width=True
+                    )
+            with ob2:
+                if st.button('🧹 AKT SEPETİNİ TAMAMEN TEMİZLE',use_container_width=True):
+                    removed=_clear_osint_basket()
+                    st.success(f'{removed} kayıt silindi.')
 
         st.markdown('---')
         st.subheader('📊 Günlük Sanayi ve Teknoloji Durum Özeti')
