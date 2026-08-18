@@ -442,6 +442,50 @@ V49_STRUCTURAL_NEGATIVE = [
     'darboğaz','çıkmaz','kırılganlık','kırılgan hale geldi'
 ]
 
+
+# V50 — Geniş Negatif Bölümü
+# Kullanıcı açısından "Negatif" yalnızca gerçekleşmiş kötü olay değildir.
+# Eleştirel, uyarıcı, yetersizlik bildiren, politika/sektör performansını sorgulayan
+# ve yapısal sorun işaret eden haberler de aynı Negatif bölümüne girer.
+V50_CRITICAL_NEGATIVE = [
+    'eleştirdi','eleştiri','eleştirildi','tepki gösterdi','tepki çekti',
+    'itiraz etti','itiraz','uyarıda bulundu','uyarı yaptı','uyardı',
+    'dikkat çekti','dikkat çekiyor','endişesini dile getirdi','kaygısını dile getirdi',
+    'yeterli değil','yetersiz','yetersiz kaldı','yetersiz kalıyor',
+    'eksik kaldı','eksiklik','yetmiyor','yetmedi','karşılamıyor',
+    'çözüm değil','çözüm olmadı','çözüm olmuyor','sonuç vermiyor','sonuç vermedi',
+    'etkili değil','etkisiz','başarısız','başarısızlık',
+    'hedefin gerisinde','hedeflerin gerisinde','beklentinin altında','beklentilerin altında',
+    'istenen seviyede değil','istenilen seviyede değil','arzu edilen seviyede değil',
+    'sorunlu','sorunlar','sorun devam ediyor','sorun sürüyor','sorun büyüyor',
+    'risk taşıyor','risk oluşturuyor','risk yaratıyor','tehdit oluşturuyor',
+    'sürdürülebilir değil','kırılgan','kırılganlık','darboğaz',
+    'rekabet sorunu','rekabet gücü kaybı','rekabet gücü zayıflıyor',
+    'verimlilik sorunu','finansmana erişim sorunu','nitelikli iş gücü sorunu',
+    'maliyet baskısı','finansman baskısı','kur baskısı',
+    'sanayici zorlanıyor','sektör zorlanıyor','firmalar zorlanıyor',
+    'üretici zorlanıyor','ihracatçı zorlanıyor',
+    'teşvikler yetersiz','destekler yetersiz','teşvik yetmiyor','destek yetmiyor',
+    'politika yetersiz','politikalar yetersiz','düzenleme yetersiz',
+    'önlem yetersiz','tedbir yetersiz','önlemler yetersiz','tedbirler yetersiz'
+]
+
+def _v50_critical_negative_signals(text):
+    t = norm(text)
+    found = set()
+    for phrase in V50_CRITICAL_NEGATIVE:
+        if phrase in t:
+            # Açık biçimde reddedilen eleştirileri yanlış negatif yapma.
+            idx = t.find(phrase)
+            ctx = t[max(0, idx-65):idx+len(phrase)+65] if idx >= 0 else t
+            if any(x in ctx for x in [
+                'eleştiri yok','sorun yok','risk yok','yetersiz değil',
+                'başarısız değil','kırılgan değil','zorlanmıyor'
+            ]):
+                continue
+            found.add(phrase)
+    return found
+
 V49_PERSISTENCE_PATTERNS = [
     r'\b\d+\s*(?:çeyrektir|çeyrek boyunca|aydır|ay boyunca|yıldır|yıl boyunca|haftadır)\b',
     r'\buzun süredir\b',
@@ -569,16 +613,24 @@ def _negative_sentence_analysis(title, snippet):
         if phrase in title_n:
             title_neg.add(phrase)
 
+    # V50: eleştirel/uyarıcı/yetersizlik bildiren içerikler de doğrudan
+    # mevcut Negatif havuzuna eklenir. Ayrı kategori oluşturulmaz.
+    critical_negative=_v50_critical_negative_signals(full)
+    active_neg.update(critical_negative)
+    for phrase in critical_negative:
+        if phrase in title_n:
+            title_neg.add(phrase)
+
     if any(x in norm(full) for x in V48_STRONG_NEGATIVE):
         strong_event=True
 
-    return active_neg,active_risk,title_neg,title_risk,strong_event,directional,structural,persistent
+    return active_neg,active_risk,title_neg,title_risk,strong_event,directional,structural,persistent,critical_negative
 
 def classify(title,snippet,source_domain=''):
     full=f'{title} {snippet}'
     t=norm(full)
 
-    neg_set,risk_set,title_neg,title_risk,strong_event,directional,structural,persistent=_negative_sentence_analysis(title,snippet)
+    neg_set,risk_set,title_neg,title_risk,strong_event,directional,structural,persistent,critical_negative=_negative_sentence_analysis(title,snippet)
     neg=sorted(neg_set)
     risk=sorted(risk_set)
 
@@ -601,12 +653,16 @@ def classify(title,snippet,source_domain=''):
         reasons.append('ölçülebilir düşüş/gerileme')
 
     if structural:
-        # Eleştirel/yapısal bozulma dili: negatif için yeterince güçlü,
-        # ancak tek başına Yüksek Risk üretmeyecek ölçülü ağırlık.
         score += min(16, 7 + 3*len(structural))
         reasons.append('yapısal/eleştirel olumsuzluk')
 
-    if persistent and (structural or neg_set):
+    if critical_negative:
+        # Eleştirel yaklaşım doğrudan Negatif bölümüne girecek kadar ağırlık alır,
+        # fakat tek başına Yüksek Risk sayılmaz.
+        score += min(15, 8 + 2*len(critical_negative))
+        reasons.append('eleştirel/uyarıcı yaklaşım')
+
+    if persistent and (structural or critical_negative or neg_set):
         score += 8
         reasons.append('olumsuzluğun sürekliliği')
 
@@ -647,6 +703,8 @@ def classify(title,snippet,source_domain=''):
         status='Yüksek Risk'
     elif risk and score>=68:
         status='Yüksek Risk'
+    elif (structural or critical_negative) and neg:
+        status='Negatif'
     elif neg and score>=18:
         status='Negatif'
     else:
