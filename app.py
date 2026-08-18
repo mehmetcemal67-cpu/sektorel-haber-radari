@@ -2523,11 +2523,38 @@ if run:
         pv=pv.sort_values(['Tarih_dt','Domain'],ascending=[False,True],na_position='last')
         fast=pv[['Tarih','Kaynak_Grubu','Kaynak','Başlık','İçerik_Özeti','Duygu','Risk_Skoru','Risk_Durumu','URL']].head(100).copy()
         fast['İçerik_Özeti']=fast['İçerik_Özeti'].astype(str).str.slice(0,260)
-        placeholder.dataframe(
-            fast,
-            column_config={'URL':st.column_config.LinkColumn('Haber Linki'),'İçerik_Özeti':st.column_config.TextColumn('Kısa İçerik',width='large'),'Risk_Skoru':st.column_config.NumberColumn('Risk',format='%d/100')},
-            hide_index=True,use_container_width=True,height=440
+        # İlk ekrandaki hızlı haber akışında da seçim kutusu olsun.
+        # Böylece kullanıcı daha aşağıdaki kronolojik bölüme inmeden doğrudan haber seçebilir.
+        fast_view=fast.copy()
+        if 'Seç' not in fast_view.columns:
+            fast_view.insert(0,'Seç',False)
+
+        edited_fast=placeholder.data_editor(
+            fast_view,
+            column_config={
+                'Seç':st.column_config.CheckboxColumn('Seç'),
+                'URL':st.column_config.LinkColumn('Haber Linki'),
+                'İçerik_Özeti':st.column_config.TextColumn('Kısa İçerik',width='large'),
+                'Risk_Skoru':st.column_config.NumberColumn('Risk',format='%d/100')
+            },
+            disabled=[c for c in fast_view.columns if c!='Seç'],
+            hide_index=True,use_container_width=True,height=440,
+            key=f'fast_preview_{st.session_state.get("scan_time","running")}'
         )
+
+        # İlk ekrandaki seçimleri ana tarama kayıtlarına işle.
+        if not edited_fast.empty and 'Seç' in edited_fast.columns:
+            selected_fast_urls=set(
+                edited_fast.loc[edited_fast['Seç']==True,'URL'].astype(str).tolist()
+            )
+            selected_fast_titles=set(
+                edited_fast.loc[edited_fast['Seç']==True,'Başlık'].astype(str).map(title_key).tolist()
+            )
+            for rr in all_rows:
+                u=str(rr.get('URL','') or '')
+                tk=title_key(str(rr.get('Başlık','') or ''))
+                if u in selected_fast_urls or tk in selected_fast_titles:
+                    rr['Seç']=True
 
     # 2) Negatif + Yunan + sosyal + global sorgularını TEK HAVUZDA paralel çalıştır.
     supplemental=batches[1:]
