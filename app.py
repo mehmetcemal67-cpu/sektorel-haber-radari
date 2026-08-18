@@ -954,6 +954,151 @@ def _v52_event_value_table(df,n=10):
     out.insert(0,'Sıra',range(1,len(out)+1))
     return out[cols]
 
+
+def _v53_find_event_row(df, value_row):
+    """Top-10 satırını ana dataframe'deki temsilci haberle eşleştirir."""
+    if df is None or df.empty:
+        return None
+    url=str(value_row.get('URL','') or '')
+    title=norm(value_row.get('Gelişme',''))
+    if url and 'URL' in df.columns:
+        m=df[df['URL'].astype(str)==url]
+        if not m.empty:
+            return m.iloc[0]
+    if title:
+        m=df[df['Başlık'].astype(str).map(norm)==title]
+        if not m.empty:
+            return m.iloc[0]
+    return None
+
+def _v53_compact_event_summary(row, value_row):
+    """
+    Bir olay için başlığı tekrar etmek yerine mevcut içerikten 2-3 bilgi yoğun cümle çıkarır.
+    Ağ çağrısı yapmaz; taramada zaten bulunan içerik/özet kullanılır.
+    """
+    if row is None:
+        return _clean_note_text(value_row.get('Gelişme',''))
+
+    title=_clean_note_text(row.get('Başlık',''))
+    content=_clean_note_text(row.get('İçerik_Özeti',''))
+    sents=_detail_sentences(content,title)
+
+    useful=[]
+    seen=set()
+    # Sayı/etki/eylem içeren cümleleri öne al.
+    ranked=[]
+    for s in sents:
+        sn=norm(s)
+        score=0
+        if re.search(r'\b\d+(?:[.,]\d+)?\b',s): score+=3
+        if any(x in sn for x in [
+            'arttı','azaldı','düştü','yükseldi','geriledi','açıkladı','duyurdu',
+            'üretim','ihracat','yatırım','istihdam','kapasite','yangın','patlama',
+            'siber','teşvik','sözleşme','teslimat','hasar','kayıp','risk'
+        ]): score+=2
+        ranked.append((score,s))
+
+    # Önce metnin ilk anlamlı cümlesini koru; sonra bilgi yoğun cümleler.
+    if sents:
+        ranked = [(10,sents[0])] + ranked[1:]
+
+    for _,s in sorted(enumerate(ranked), key=lambda z:(-z[1][0], z[0])):
+        sentence=_clean_note_text(s[1])
+        key=norm(sentence)
+        if not sentence or key in seen or len(sentence)<30:
+            continue
+        seen.add(key)
+        useful.append(sentence)
+        if len(useful)>=3:
+            break
+
+    if useful:
+        return _join_sentences_naturally(useful)
+
+    return content[:650].strip() if content else title
+
+def _v53_top10_summary_text(df, value10, max_lines=45):
+    """
+    Yalnızca 'Günün En Değerli 10 Gelişmesi'ni özetler.
+    Çıktı maksimum 45 mantıksal satırdır.
+    """
+    if value10 is None or value10.empty:
+        return "Bugünün en değerli gelişmeleri arasında özet oluşturulabilecek içerik bulunamadı."
+
+    lines=[]
+    lines.append(
+        f"Sanayi ve teknoloji alanında yapılan taramada, önem düzeyi, kaynak yayılımı, resmî teyit, "
+        f"güncellik, stratejik etki ve haber yoğunluğu birlikte değerlendirilerek günün en değerli "
+        f"{len(value10)} gelişmesi aşağıdaki şekilde özetlenmiştir."
+    )
+    lines.append("")
+
+    for _,v in value10.head(10).iterrows():
+        rank=int(v.get('Sıra',0) or 0)
+        title=_clean_note_text(v.get('Gelişme',''))
+        row=_v53_find_event_row(df,v)
+        detail=_v53_compact_event_summary(row,v)
+        why=_clean_note_text(v.get('Neden_Değerli',''))
+        score=int(v.get('Değer_Skoru',0) or 0)
+        sources=int(v.get('Kaynak_Sayısı',0) or 0)
+        official=_clean_note_text(v.get('Resmî_Teyit',''))
+
+        lines.append(f"{rank}. {title}")
+        if detail:
+            lines.append(detail)
+        lines.append(
+            f"Değerlendirme: Değer skoru {score}/100; {sources} farklı kaynak; "
+            f"resmî teyit: {official.lower() if official else 'bilinmiyor'}. "
+            f"{why}"
+        )
+        lines.append("")
+
+        if len(lines) >= max_lines-3:
+            break
+
+    lines.append(
+        "Genel olarak, yukarıdaki gelişmeler günün sanayi ve teknoloji gündeminde en yüksek analitik "
+        "değere sahip başlıklar olarak öne çıkmakta olup yeni resmî açıklamalar, üretim/tedarik etkileri "
+        "ve ilave kaynak teyitleri bakımından takip edilmesi uygun değerlendirilmektedir."
+    )
+
+    # Kesin üst sınır.
+    return '\n'.join(lines[:max_lines])
+
+def make_v53_top10_summary_docx(df, value10):
+    text=_v53_top10_summary_text(df,value10,45)
+    doc=Document()
+    sec=doc.sections[0]
+    sec.top_margin=Cm(2); sec.bottom_margin=Cm(2)
+    sec.left_margin=Cm(2.5); sec.right_margin=Cm(2.5)
+    doc.styles['Normal'].font.name='Times New Roman'
+    doc.styles['Normal'].font.size=Pt(11)
+
+    p=doc.add_paragraph()
+    p.alignment=WD_ALIGN_PARAGRAPH.CENTER
+    r=p.add_run('BUGÜNÜN SANAYİ VE TEKNOLOJİ DURUM ÖZETİ')
+    r.bold=True; r.font.size=Pt(14)
+
+    p=doc.add_paragraph()
+    p.alignment=WD_ALIGN_PARAGRAPH.CENTER
+    p.add_run(datetime.now().astimezone().strftime('%d.%m.%Y %H:%M'))
+
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        bp=doc.add_paragraph()
+        bp.alignment=WD_ALIGN_PARAGRAPH.JUSTIFY
+        bp.paragraph_format.space_after=Pt(5)
+        if re.match(r'^\d+\.\s',line):
+            rr=bp.add_run(line)
+            rr.bold=True
+        else:
+            bp.add_run(line)
+
+    bio=BytesIO()
+    doc.save(bio); bio.seek(0)
+    return bio.getvalue()
+
 # -----------------------------
 # V51 — RESMÎ AÇIKLAMA / MEDYA KARŞILAŞTIRMASI
 # -----------------------------
@@ -4164,6 +4309,29 @@ else:
                 height=min(680,105+55*len(value10))
             )
 
+            if st.button('📊 BUGÜNÜN DURUM ÖZETİNİ OLUŞTUR',use_container_width=True,key='v53_top10_summary_btn'):
+                with st.spinner('Günün en değerli 10 gelişmesi özetleniyor...'):
+                    st.session_state.daily_summary_text=_v53_top10_summary_text(df,value10,45)
+                    st.session_state.daily_summary_bytes=make_v53_top10_summary_docx(df,value10)
+
+            if st.session_state.get('daily_summary_text'):
+                st.text_area(
+                    'Bugünün Durum Özeti — En Değerli 10 Gelişme',
+                    st.session_state.daily_summary_text,
+                    height=520,
+                    key='v53_daily_summary_preview'
+                )
+                st.caption('Özet yalnızca yukarıdaki en değerli 10 gelişmeden üretilir ve 45 satırı geçmez.')
+                if st.session_state.get('daily_summary_bytes'):
+                    st.download_button(
+                        '⬇️ BUGÜNÜN DURUM ÖZETİNİ WORD OLARAK İNDİR',
+                        data=st.session_state.daily_summary_bytes,
+                        file_name=f'bugunun_durum_ozeti_top10_{datetime.now().strftime("%Y%m%d_%H%M")}.docx',
+                        mime='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                        use_container_width=True,
+                        key='v53_top10_summary_download'
+                    )
+
         st.markdown('---')
         st.subheader('🔎 Resmî Açıklama – Medya Karşılaştırması')
         st.caption(
@@ -4195,51 +4363,6 @@ else:
                 presentation_view,
                 ['Tarih','Kaynak','Sunum_Başlığı','2_Cümle_Özet','Kritik_Sayı','Risk_Skoru','URL'],
                 height=min(520,90+70*len(presentation_view))
-            )
-
-        st.markdown('---')
-        st.subheader('📊 Günlük Sanayi ve Teknoloji Durum Özeti')
-        st.caption('Mevcut tarama sonuçlarının tamamından otomatik günlük görünüm ve günün öne çıkan 5 gelişmesini oluşturur.')
-
-        daily_stats=_daily_summary_stats(df)
-        if daily_stats:
-            c1,c2,c3,c4,c5,c6=st.columns(6)
-            c1.metric('Toplam Haber',daily_stats['total'])
-            c2.metric('Negatif',daily_stats['negative'])
-            c3.metric('Yüksek Risk',daily_stats['high_risk'])
-            c4.metric('OSB Yangını',daily_stats['osb_fire'])
-            c5.metric('Savunma',daily_stats['defence'])
-            c6.metric('Siber',daily_stats['cyber'])
-
-            daily_top_select=_daily_top_events(df,5)
-            if not daily_top_select.empty:
-                st.markdown('**Bugünün öne çıkan 5 gelişmesi**')
-                _section_select_table(
-                    'daily_top5',
-                    daily_top_select,
-                    ['Tarih','Kaynak','Kategori','Başlık','Risk_Skoru','Risk_Durumu','Doğrulama','URL'],
-                    height=min(330,70+45*len(daily_top_select))
-                )
-
-        if st.button('📊 BUGÜNÜN DURUM ÖZETİNİ OLUŞTUR',use_container_width=True):
-            with st.spinner('Günlük durum özeti hazırlanıyor...'):
-                daily_text,daily_top,daily_stats=_daily_summary_text(df)
-                st.session_state.daily_summary_text=daily_text
-                st.session_state.daily_summary_bytes=make_daily_summary_docx(df)
-
-        if st.session_state.get('daily_summary_text'):
-            st.text_area(
-                'Günlük Durum Özeti',
-                st.session_state.daily_summary_text,
-                height=360,
-                key='daily_summary_preview'
-            )
-            st.download_button(
-                '⬇️ GÜNLÜK DURUM ÖZETİNİ WORD OLARAK İNDİR',
-                data=st.session_state.daily_summary_bytes,
-                file_name=f'gunluk_sanayi_teknoloji_durum_ozeti_{datetime.now().strftime("%Y%m%d_%H%M")}.docx',
-                mime='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-                use_container_width=True
             )
 
         st.markdown('---'); st.subheader('📝 Seçilen haberlerden çıktı üret')
