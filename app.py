@@ -390,14 +390,79 @@ def _positive_strength(text):
     ]
     return sum(1 for x in positive_terms if x in t)
 
+# V48 — Ekonomik/operasyonel haber dilinde sık görülen, önceki sözlükte kolay
+# kaçabilen negatif sinyaller. Bunlar tam sayfa indirmeden RSS içerik/özetinde aranır.
+V48_NEGATIVE_PHRASES = [
+    'düştü','düşüş','azaldı','azalış','geriledi','gerileme','daraldı','daralma',
+    'zarar açıkladı','zarar etti','net zarar','faaliyet zararı','kayıp yaşadı',
+    'satışlar düştü','satışlar azaldı','satışlarda düşüş','satışlarda azalma',
+    'üretim düştü','üretim azaldı','üretimde düşüş','üretimde azalma',
+    'ihracat düştü','ihracat azaldı','ihracatta düşüş','ihracatta gerileme',
+    'siparişler düştü','siparişler azaldı','siparişlerde düşüş',
+    'kapasite düştü','kapasite azaldı','kapasite kullanım oranı düştü',
+    'istihdam azaldı','istihdam düştü','istihdam kaybı',
+    'işten çıkarma','işçi çıkarma','personel azaltma','toplu işten çıkarma',
+    'maliyet arttı','maliyet artışı','maliyet baskısı','girdi maliyetleri arttı',
+    'fiyat baskısı','finansman maliyeti','nakit sıkıntısı','likidite sıkıntısı',
+    'talep düştü','talep azaldı','talep daralması','talepte daralma',
+    'pazar payı düştü','pazar payı kaybı','rekabet gücü kaybı',
+    'beklentinin altında','beklentilerin altında','hedefin altında','hedefin gerisinde',
+    'kriz','aksama','kesinti','arıza','gecikme','ertelendi','iptal edildi',
+    'faaliyet durdu','üretim durdu','üretime ara verdi','üretime ara verildi',
+    'fabrika kapandı','tesis kapandı','kapanma kararı',
+    'iflas','konkordato','haciz','borç krizi',
+    'soruşturma','inceleme başlatıldı','ceza verildi','para cezası',
+    'yasaklandı','yasak','geri çağırma','ürün geri çağırma',
+    'siber saldırı','veri sızıntısı','veri ihlali','kritik açık','güvenlik açığı',
+    'tedarik sorunu','tedarik krizi','tedarik zinciri aksaması',
+    'kaza','yangın','patlama','yaralandı','can kaybı'
+]
+
+V48_STRONG_NEGATIVE = [
+    'üretim durdu','faaliyet durdu','fabrika kapandı','tesis kapandı',
+    'toplu işten çıkarma','iflas','konkordato','siber saldırı','veri sızıntısı',
+    'veri ihlali','yangın','patlama','can kaybı','hayatını kaybetti',
+    'ihracat yasağı','yaptırım','ambargo'
+]
+
+V48_DIRECTION_PATTERNS = [
+    r'(?:yüzde|%)\s*\d+(?:[.,]\d+)?\s*(?:düştü|azaldı|geriledi|daraldı)',
+    r'\d+(?:[.,]\d+)?\s*(?:%|yüzde)\s*(?:düştü|azaldı|geriledi|daraldı)',
+    r'(?:üretim|ihracat|satış|sipariş|istihdam|kapasite|talep|gelir|kâr|kar)\w*\s+.{0,55}\b(?:düştü|azaldı|geriledi|daraldı)\b',
+    r'\b(?:geçen yıla|önceki yıla|geçen aya|önceki aya)\s+göre.{0,70}\b(?:düştü|azaldı|geriledi|daraldı)\b'
+]
+
+def _v48_extra_negative_signals(text):
+    t=norm(text)
+    found=set()
+    for phrase in V48_NEGATIVE_PHRASES:
+        if phrase in t:
+            # "düşmedi / azalmadı / gerilemedi" gibi açık olumsuzlamaları alma.
+            pos=t.find(phrase)
+            ctx=t[max(0,pos-60):pos+len(phrase)+60] if pos>=0 else t
+            if any(x in ctx for x in [
+                'düşmedi','azalmadı','gerilemedi','daralmadı','iptal edilmedi',
+                'aksama olmadı','kesinti olmadı','etkilenmedi','risk yok'
+            ]):
+                continue
+            found.add(phrase)
+
+    directional=False
+    for pat in V48_DIRECTION_PATTERNS:
+        if re.search(pat,t,re.I):
+            directional=True
+            found.add('sayısal/yönsel düşüş')
+            break
+    return found,directional
+
 def _negative_sentence_analysis(title, snippet):
     """
-    Hızlı ama daha güçlü negatiflik analizi:
-    - yalnızca başlığa değil başlık + RSS içerik/özetine bakar
-    - cümle bazlı tarama yapar
-    - olumsuzlama/çözülme bağlamını eler
-    - başlıktaki olumsuzluğu daha yüksek ağırlıklandırır
-    - aynı kelimenin tekrarını tek risk gibi sayar
+    V48 hızlı hassas analiz:
+    - Başlık + RSS içerik/özet birlikte
+    - mevcut negatif/risk sözlükleri
+    - geniş ekonomik/operasyonel sözlük
+    - sayısal/yönsel düşüş tespiti
+    - olumsuzlama kontrolü
     """
     title_n=norm(title)
     full=f"{title}. {snippet}"
@@ -418,7 +483,6 @@ def _negative_sentence_analysis(title, snippet):
 
     for s in sentences:
         sn=norm(s)
-
         for term in NEGATIVE_TERMS:
             if not _term_regex(term).search(sn):
                 continue
@@ -443,20 +507,23 @@ def _negative_sentence_analysis(title, snippet):
             if _term_regex(term).search(title_n):
                 title_risk.add(term)
 
-        if any(x in sn for x in [
-            'üretim durdu','fabrika kapandı','faaliyet durdu','toplu işten çıkarma',
-            'veri sızıntısı','siber saldırı','iflas','konkordato',
-            'can kaybı','hayatını kaybetti','patlama meydana geldi','yangın çıktı'
-        ]):
-            strong_event=True
+    extra,directional=_v48_extra_negative_signals(full)
+    active_neg.update(extra)
 
-    return active_neg,active_risk,title_neg,title_risk,strong_event
+    for phrase in extra:
+        if phrase!='sayısal/yönsel düşüş' and phrase in title_n:
+            title_neg.add(phrase)
+
+    if any(x in norm(full) for x in V48_STRONG_NEGATIVE):
+        strong_event=True
+
+    return active_neg,active_risk,title_neg,title_risk,strong_event,directional
 
 def classify(title,snippet,source_domain=''):
     full=f'{title} {snippet}'
     t=norm(full)
 
-    neg_set,risk_set,title_neg,title_risk,strong_event=_negative_sentence_analysis(title,snippet)
+    neg_set,risk_set,title_neg,title_risk,strong_event,directional=_negative_sentence_analysis(title,snippet)
     neg=sorted(neg_set)
     risk=sorted(risk_set)
 
@@ -469,11 +536,14 @@ def classify(title,snippet,source_domain=''):
     score=5
     reasons=[]
 
-    # Başlıktaki sinyaller güçlü; içerikteki sinyaller daha düşük ağırlıklı.
     if neg:
-        score += min(24,5*len(neg))
-        score += min(12,4*len(title_neg))
+        score += min(30,6*len(neg))
+        score += min(14,5*len(title_neg))
         reasons.append(f'{len(neg)} doğrulanmış negatif sinyal')
+
+    if directional:
+        score += 8
+        reasons.append('ölçülebilir düşüş/gerileme')
 
     if risk:
         score += min(32,9*len(risk))
@@ -482,50 +552,43 @@ def classify(title,snippet,source_domain=''):
 
     if strong_event:
         score += 14
-        reasons.append('doğrudan olumsuz olay sonucu')
+        reasons.append('doğrudan ağır olumsuz olay')
 
-    # Etki bağlamları: tek başına negatif sayılmaz, ancak gerçek negatif sinyali varsa skoru artırır.
+    # Gerçek negatiflik varsa sektörel etki skoru eklenir.
     if neg or risk:
-        if any(x in t for x in ['üretim','fabrika','tesis','istihdam','kapasite','ihracat','tedarik']):
+        if any(x in t for x in ['üretim','fabrika','tesis','istihdam','kapasite','ihracat','tedarik','satış','sipariş']):
             score += 6
             reasons.append('üretim/ekonomi etkisi')
         if any(x in t for x in ['savunma','kritik altyapı','enerji','siber','yarı iletken','çip']):
             score += 7
             reasons.append('stratejik/kritik sektör etkisi')
 
-    # Güçlü olumlu haberlerde, ağır gerçek risk yoksa yanlış negatifliği aşağı çek.
     positive_count=_positive_strength(full)
-    severe_active=any(x in SEVERE_NEGATIVE_TERMS for x in neg_set|risk_set) or strong_event
+    severe_active=strong_event or any(x in norm(full) for x in V48_STRONG_NEGATIVE)
 
-    if positive_count:
-        if not severe_active:
-            score=max(0,score-min(16,4*positive_count))
-            if len(neg)<=1 and len(risk)==0 and positive_count>=2:
-                neg=[]
-                risk=[]
-                score=min(score,20)
-                reasons=['olumlu bağlam baskın']
-        else:
-            reasons.append('olumlu unsurlara rağmen ağır risk mevcut')
+    # V48 farkı: olumlu sinyal gerçek negatifliği SİLMEZ.
+    # Yalnızca ağır risk yoksa skoru sınırlı ölçüde dengeler.
+    if positive_count and neg and not severe_active:
+        score=max(0,score-min(8,2*positive_count))
+        reasons.append('karma/olumlu unsurlar mevcut')
 
     score=max(0,min(100,score))
 
+    # En kritik değişiklik: gerçek ve bağlamsal negatif sinyal bulunduysa,
+    # yüksek risk olmasa dahi haber Negatif olabilir.
     sentiment='Negatif' if neg else 'Nötr'
 
     if severe_active and (risk or score>=55):
         status='Yüksek Risk'
-    elif risk and score>=65:
+    elif risk and score>=68:
         status='Yüksek Risk'
-    elif neg and score>=28:
+    elif neg and score>=18:
         status='Negatif'
     else:
         status='Normal'
 
     if status=='Normal' and not neg:
-        if positive_count:
-            reasons=['olumsuz risk sinyali baskın değil']
-        elif not reasons:
-            reasons=['olumsuz risk sinyali tespit edilmedi']
+        reasons=['olumsuz risk sinyali tespit edilmedi']
 
     return sentiment,score,status,neg,risk,cat,reasons
 
