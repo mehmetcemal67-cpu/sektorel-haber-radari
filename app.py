@@ -360,13 +360,105 @@ def _active_adverse_terms(terms, text):
             active.append(term)
     return active
 
+def _sentence_chunks(text):
+    txt=re.sub(r'\s+',' ',str(text or '')).strip()
+    if not txt:
+        return []
+    return [x.strip() for x in re.split(r'(?<=[.!?;:])\s+',txt) if x.strip()]
+
+def _negated_in_context(term, sentence):
+    s=norm(sentence)
+    # Olumsuzluk/çözülme ifadeleri, ilgili risk kelimesinin yakın çevresindeyse baskılanır.
+    negators=[
+        'değil','değildir','olmadı','olmadığı','bulunmadı','bulunmadığı',
+        'yaşanmadı','gerçekleşmedi','etkilenmedi','etkilenmediği',
+        'risk yok','tehdit yok','iptal edilmedi','kapanmadı','durmadı',
+        'giderildi','çözüldü','önlendi','engellendi','kaldırıldı','sona erdi'
+    ]
+    return any(n in s for n in negators)
+
+def _positive_strength(text):
+    t=norm(text)
+    positive_terms=[
+        'arttı','artış','yükseldi','yükseliş','rekor','büyüdü','büyüme',
+        'yeni yatırım','yatırım kararı','yatırım yaptı','yatırım yapacak',
+        'ihracat arttı','ihracat artışı','kapasite artışı','kapasite arttı',
+        'üretim artışı','üretim arttı','devreye alındı','faaliyete geçti',
+        'başarıyla','başarılı','anlaşma imzalandı','sözleşme imzalandı',
+        'teslim edildi','teşvik','destek','hibe','istihdam artışı','yeni istihdam',
+        'pazar payı arttı','gelir arttı','kâr arttı','kar arttı'
+    ]
+    return sum(1 for x in positive_terms if x in t)
+
+def _negative_sentence_analysis(title, snippet):
+    """
+    Hızlı ama daha güçlü negatiflik analizi:
+    - yalnızca başlığa değil başlık + RSS içerik/özetine bakar
+    - cümle bazlı tarama yapar
+    - olumsuzlama/çözülme bağlamını eler
+    - başlıktaki olumsuzluğu daha yüksek ağırlıklandırır
+    - aynı kelimenin tekrarını tek risk gibi sayar
+    """
+    title_n=norm(title)
+    full=f"{title}. {snippet}"
+    sentences=_sentence_chunks(full)
+
+    active_neg=set()
+    active_risk=set()
+    title_neg=set()
+    title_risk=set()
+    strong_event=False
+
+    physical_terms={'yangın','patlama','can kaybı','ölüm'}
+    physical_markers=[
+        'çıktı','çıkan','meydana geldi','meydana gelen','patladı','infilak',
+        'alev','yaralandı','yaralı','hasar','müdahale','söndürüldü',
+        'kontrol altına','tahliye','hayatını kaybetti','öldü'
+    ]
+
+    for s in sentences:
+        sn=norm(s)
+
+        for term in NEGATIVE_TERMS:
+            if not _term_regex(term).search(sn):
+                continue
+            if term in physical_terms:
+                if not any(m in sn for m in physical_markers):
+                    continue
+            elif _negated_in_context(term,sn):
+                continue
+            active_neg.add(term)
+            if _term_regex(term).search(title_n):
+                title_neg.add(term)
+
+        for term in HIGH_RISK_TERMS:
+            if not _term_regex(term).search(sn):
+                continue
+            if term in physical_terms:
+                if not any(m in sn for m in physical_markers):
+                    continue
+            elif _negated_in_context(term,sn):
+                continue
+            active_risk.add(term)
+            if _term_regex(term).search(title_n):
+                title_risk.add(term)
+
+        if any(x in sn for x in [
+            'üretim durdu','fabrika kapandı','faaliyet durdu','toplu işten çıkarma',
+            'veri sızıntısı','siber saldırı','iflas','konkordato',
+            'can kaybı','hayatını kaybetti','patlama meydana geldi','yangın çıktı'
+        ]):
+            strong_event=True
+
+    return active_neg,active_risk,title_neg,title_risk,strong_event
+
 def classify(title,snippet,source_domain=''):
     full=f'{title} {snippet}'
     t=norm(full)
-    title_t=norm(title)
 
-    neg=_active_adverse_terms(NEGATIVE_TERMS,full)
-    risk=_active_adverse_terms(HIGH_RISK_TERMS,full)
+    neg_set,risk_set,title_neg,title_risk,strong_event=_negative_sentence_analysis(title,snippet)
+    neg=sorted(neg_set)
+    risk=sorted(risk_set)
 
     cat='Genel Sanayi / Teknoloji'
     for c,ks in CATEGORIES.items():
@@ -374,63 +466,66 @@ def classify(title,snippet,source_domain=''):
             cat=c
             break
 
-    score=6
+    score=5
     reasons=[]
 
-    # Başlıkta geçen gerçek olumsuzluk, gövde içindeki tekil ifadeden daha güçlü sinyal.
-    title_neg=[x for x in neg if _term_regex(x).search(title_t)]
-    title_risk=[x for x in risk if _term_regex(x).search(title_t)]
-
+    # Başlıktaki sinyaller güçlü; içerikteki sinyaller daha düşük ağırlıklı.
     if neg:
-        score += min(26,6*len(neg))
-        score += min(10,4*len(title_neg))
-        reasons.append(f'{len(neg)} bağlamsal negatif sinyal')
+        score += min(24,5*len(neg))
+        score += min(12,4*len(title_neg))
+        reasons.append(f'{len(neg)} doğrulanmış negatif sinyal')
 
     if risk:
-        score += min(34,11*len(risk))
-        score += min(12,5*len(title_risk))
-        reasons.append(f'{len(risk)} kritik risk sinyali')
+        score += min(32,9*len(risk))
+        score += min(14,5*len(title_risk))
+        reasons.append(f'{len(risk)} yüksek risk sinyali')
 
-    if any(x in t for x in ['savunma','aselsan','tusaş','tusas','roketsan','havelsan','baykar','iha','siha','füze','radar']):
-        score += 8
-        reasons.append('savunma/kritik teknoloji')
+    if strong_event:
+        score += 14
+        reasons.append('doğrudan olumsuz olay sonucu')
 
-    if any(x in t for x in ['kritik altyapı','enerji şebeke','elektrik üretimi','doğalgaz','nükleer','çip','yarı iletken','siber saldırı','veri sızıntısı']):
-        score += 10
-        reasons.append('kritik altyapı/teknoloji')
+    # Etki bağlamları: tek başına negatif sayılmaz, ancak gerçek negatif sinyali varsa skoru artırır.
+    if neg or risk:
+        if any(x in t for x in ['üretim','fabrika','tesis','istihdam','kapasite','ihracat','tedarik']):
+            score += 6
+            reasons.append('üretim/ekonomi etkisi')
+        if any(x in t for x in ['savunma','kritik altyapı','enerji','siber','yarı iletken','çip']):
+            score += 7
+            reasons.append('stratejik/kritik sektör etkisi')
 
-    if any(x in t for x in ['tedarik zinciri','tedarik krizi','çip krizi','ambargo','yaptırım']):
-        score += 8
-        reasons.append('tedarik/jeopolitik etki')
+    # Güçlü olumlu haberlerde, ağır gerçek risk yoksa yanlış negatifliği aşağı çek.
+    positive_count=_positive_strength(full)
+    severe_active=any(x in SEVERE_NEGATIVE_TERMS for x in neg_set|risk_set) or strong_event
 
-    if any(x in risk for x in ['iflas','konkordato','fabrika kapandı','üretim durdu','can kaybı','ölüm']):
-        score += 16
-        reasons.append('operasyonel/finansal ağır sonuç')
+    if positive_count:
+        if not severe_active:
+            score=max(0,score-min(16,4*positive_count))
+            if len(neg)<=1 and len(risk)==0 and positive_count>=2:
+                neg=[]
+                risk=[]
+                score=min(score,20)
+                reasons=['olumlu bağlam baskın']
+        else:
+            reasons.append('olumlu unsurlara rağmen ağır risk mevcut')
 
-    # Olumlu haberlerde yalnızca geçmiş/yan bağlamdaki tek olumsuz kelime nedeniyle
-    # "Negatif" işareti oluşmasını azalt.
-    positive_hits=[x for x in POSITIVE_SIGNAL_TERMS if x in t]
-    severe_active=any(x in SEVERE_NEGATIVE_TERMS for x in risk) or any(x in SEVERE_NEGATIVE_TERMS for x in neg)
-    if positive_hits and not severe_active:
-        score=max(0,score-min(18,5*len(positive_hits)))
-        if len(neg)<=1 and len(risk)==0 and len(positive_hits)>=2:
-            neg=[]
-            reasons=[r for r in reasons if 'negatif sinyal' not in r]
-
-    score=min(100,max(0,score))
+    score=max(0,min(100,score))
 
     sentiment='Negatif' if neg else 'Nötr'
-    if severe_active and (risk or score>=60):
+
+    if severe_active and (risk or score>=55):
         status='Yüksek Risk'
-    elif score>=70 and neg:
+    elif risk and score>=65:
         status='Yüksek Risk'
-    elif neg and score>=26:
+    elif neg and score>=28:
         status='Negatif'
     else:
         status='Normal'
 
-    if not neg and status=='Normal':
-        reasons=[r for r in reasons if r not in {'kritik altyapı/teknoloji','savunma/kritik teknoloji'}] or ['olumsuz risk sinyali tespit edilmedi']
+    if status=='Normal' and not neg:
+        if positive_count:
+            reasons=['olumsuz risk sinyali baskın değil']
+        elif not reasons:
+            reasons=['olumsuz risk sinyali tespit edilmedi']
 
     return sentiment,score,status,neg,risk,cat,reasons
 
