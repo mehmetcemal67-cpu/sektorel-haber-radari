@@ -2470,6 +2470,98 @@ def _word_hyperlink(paragraph, url, label):
         paragraph.add_run(url)
 
 
+# -----------------------------
+# V43 — TAM HABER METNİNE GÖRE NEGATİF/RİSK ANALİZİ
+# -----------------------------
+def _deep_negative_reclassify(rows, max_workers=14):
+    """
+    Her haberi mümkünse gerçek haber sayfasındaki tam metinle yeniden sınıflandırır.
+    Sayfaya erişilemezse mevcut başlık + kısa içerik fallback olur.
+
+    Yalnızca negatif/risk alanları güncellenir; kategori, olay kümeleri ve diğer
+    çalışan modüller korunur.
+    """
+    if not rows:
+        return rows, {'tam_metin':0,'kisa_icerik':0,'hata':0}
+
+    results=[None]*len(rows)
+    stats={'tam_metin':0,'kisa_icerik':0,'hata':0}
+
+    def one(idx,row):
+        try:
+            detail=article_detail(row)
+            full_text=re.sub(r'\s+',' ',str(detail.get('text') or '')).strip()
+            snippet=re.sub(r'\s+',' ',str(row.get('İçerik_Özeti') or '')).strip()
+
+            # article_detail erişemezse fallback olarak snippet döndürebilir.
+            is_full=bool(full_text) and len(full_text)>=max(450,len(snippet)+180)
+            analysis_text=full_text if is_full else (snippet or full_text or row.get('Başlık',''))
+
+            sentiment,score,status,neg,risk,_cat,reasons=classify(
+                row.get('Başlık',''),
+                analysis_text,
+                row.get('Domain','')
+            )
+
+            return idx,{
+                'Duygu':sentiment,
+                'Skor':score,
+                'Risk_Skoru':score,
+                'Risk_Durumu':status,
+                'Risk_Gerekçesi':'; '.join(reasons),
+                'Negatif_Sinyaller':neg,
+                'Risk_Sinyalleri':risk,
+                'Negatif_Analiz_Kapsamı':'Tam haber metni' if is_full else 'Başlık + kısa içerik',
+                '_is_full':is_full
+            }
+        except Exception:
+            sentiment,score,status,neg,risk,_cat,reasons=classify(
+                row.get('Başlık',''),
+                row.get('İçerik_Özeti',''),
+                row.get('Domain','')
+            )
+            return idx,{
+                'Duygu':sentiment,
+                'Skor':score,
+                'Risk_Skoru':score,
+                'Risk_Durumu':status,
+                'Risk_Gerekçesi':'; '.join(reasons),
+                'Negatif_Sinyaller':neg,
+                'Risk_Sinyalleri':risk,
+                'Negatif_Analiz_Kapsamı':'Başlık + kısa içerik',
+                '_is_full':False,
+                '_error':True
+            }
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(max_workers,len(rows))) as ex:
+        futures=[ex.submit(one,i,r.copy()) for i,r in enumerate(rows)]
+        for fut in concurrent.futures.as_completed(futures):
+            try:
+                idx,data=fut.result()
+                results[idx]=data
+            except Exception:
+                pass
+
+    out=[]
+    for i,row in enumerate(rows):
+        r=row.copy()
+        data=results[i]
+        if data:
+            if data.pop('_is_full',False):
+                stats['tam_metin']+=1
+            else:
+                stats['kisa_icerik']+=1
+            if data.pop('_error',False):
+                stats['hata']+=1
+            r.update(data)
+        else:
+            stats['kisa_icerik']+=1
+            r['Negatif_Analiz_Kapsamı']='Başlık + kısa içerik'
+        out.append(r)
+
+    return out,stats
+
+
 def _real_source(row, detail, real_url):
     generic = {"google haberler", "google news", "google", "google news rss", "rss"}
 
@@ -3041,38 +3133,51 @@ if run:
         incoming=_merge_batch(raw,mode)
         old_keys={_alert_key(x) for x in all_rows}
         all_rows=dedupe(all_rows+incoming)
-        for ar in all_rows:
-            key=_alert_key(ar)
-            if key in old_keys:
-                continue
-            if ar.get('Duygu')=='Negatif' or ar.get('Risk_Durumu')=='Yüksek Risk':
-                if _register_alert(ar):
-                    if instant_alerts and toast_count < MAX_TOASTS_PER_SCAN:
-                        risk_score=int(ar.get('Risk_Skoru',ar.get('Skor',0)) or 0)
-                        is_high=ar.get('Risk_Durumu')=='Yüksek Risk' or risk_score>=70
-                        st.toast(
-                            f'{"🚨 YÜKSEK RİSK" if is_high else "⚠️ NEGATİF"}: {str(ar.get("Başlık",""))[:100]}',
-                            icon='🚨' if is_high else '⚠️'
-                        )
-                        toast_count+=1
+        # Genel negatif/yüksek risk alarmı bu aşamada verilmez.
+        # Önce aşağıda gerçek haber sayfasının tam metni okunarak nihai sınıflandırma yapılır.
+        # Kritik sanayi yangın/patlama anlık alarmı yukarıdaki özel blokta aynen devam eder.
         stat['Sonuç']=len(all_rows)
-
-    if live_alerts:
-        live_alarm_box.warning(
-            f'🔔 {len(live_alerts)} negatif/riskli içerik yakalandı. Son: {live_alerts[0]["Başlık"][:100]}'
-        )
 
     # 3) Analitik katman yalnızca bir kez ve artık hızlı ters indeks ile.
     if all_rows:
         status_box.write('🧩 Hızlı olay analizi hazırlanıyor...')
         all_rows=enrich_rows(all_rows)
         stat['Olay']=len({r.get('Olay_ID') for r in all_rows})
+
+        # V43: negatiflik yalnız başlık/RSS özetiyle bırakılmaz.
+        # Her haberin gerçek sayfasındaki tam içerik mümkünse paralel alınır ve
+        # Başlık + TAM HABER METNİ üzerinden nihai sınıflandırma yapılır.
+        status_box.write(f'🧠 Negatif/risk analizi — {len(all_rows)} haberin tam içeriği paralel okunuyor...')
+        all_rows,deep_neg_stats=_deep_negative_reclassify(all_rows,max_workers=14)
+        stat['Tam metin negatif analizi']=deep_neg_stats['tam_metin']
+        stat['Kısa içerik fallback']=deep_neg_stats['kisa_icerik']
     else:
         stat['Olay']=0
 
+    # Nihai alarm listesi yalnızca tam içerik analizinden sonra oluşturulur.
+    # Böylece olumlu bir haberin kısa başlık/snippet nedeniyle yanlış alarm vermesi azaltılır.
+    live_alerts=[]
+    alerted_keys=set()
+    final_toast_count=0
     for ar in all_rows:
-        if ar.get('Duygu')=='Negatif' or ar.get('Risk_Durumu')=='Yüksek Risk' or int(ar.get('Risk_Skoru',0) or 0)>=70:
-            _register_alert(ar)
+        critical_label=critical_industrial_incident(ar.get('Başlık',''),ar.get('İçerik_Özeti',''))
+        is_negative=(ar.get('Duygu')=='Negatif')
+        is_high=(ar.get('Risk_Durumu')=='Yüksek Risk' or int(ar.get('Risk_Skoru',0) or 0)>=70)
+
+        if critical_label or is_negative or is_high:
+            if _register_alert(ar):
+                if instant_alerts and not critical_label and final_toast_count < MAX_TOASTS_PER_SCAN:
+                    st.toast(
+                        f'{"🚨 YÜKSEK RİSK" if is_high else "⚠️ NEGATİF"}: {str(ar.get("Başlık",""))[:100]}',
+                        icon='🚨' if is_high else '⚠️'
+                    )
+                    final_toast_count+=1
+
+    if live_alerts:
+        live_alarm_box.warning(
+            f'🔔 Tam içerik analizi sonrası {len(live_alerts)} negatif/riskli içerik yakalandı. '
+            f'Son: {live_alerts[0]["Başlık"][:100]}'
+        )
 
     status_box.update(
         label=f'✅ Tarama tamamlandı — {len(all_rows)} haber / {stat["Olay"]} olay',
