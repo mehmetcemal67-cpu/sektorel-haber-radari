@@ -2329,7 +2329,7 @@ def make_docx(rows):
 
 
 def _section_select_table(section_key, data, columns, height=420):
-    """Her bölümde satır bazlı seçim kutusu gösterir."""
+    """Her haber bölümünde kutucuk gösterir; seçilenler doğrudan iki sepete eklenebilir."""
     if data is None or data.empty:
         return pd.DataFrame()
 
@@ -2340,7 +2340,10 @@ def _section_select_table(section_key, data, columns, height=420):
         for _,r in tbl.iterrows()
     ]
     selected_map=st.session_state.section_selections.get(section_key,{})
-    tbl.insert(0,'Seç',[bool(selected_map.get(k,False)) for k in tbl['_row_key']])
+    if 'Seç' in tbl.columns:
+        tbl['Seç']=[bool(selected_map.get(k, bool(v))) for k,v in zip(tbl['_row_key'], tbl['Seç'].tolist())]
+    else:
+        tbl.insert(0,'Seç',[bool(selected_map.get(k,False)) for k in tbl['_row_key']])
 
     show_cols=['Seç']+[c for c in columns if c in tbl.columns]
     edited=st.data_editor(
@@ -2360,12 +2363,43 @@ def _section_select_table(section_key, data, columns, height=420):
         str(r['_row_key']):bool(r['Seç']) for _,r in edited.iterrows()
     }
     selected_keys={str(r['_row_key']) for _,r in edited.iterrows() if bool(r['Seç'])}
-    return data[
+    selected=data[
         data.apply(
             lambda r:(str(r.get('URL','')) if str(r.get('URL','')).strip() else title_key(str(r.get('Başlık','')))) in selected_keys,
             axis=1
         )
     ].copy()
+
+    # Kullanıcı kronolojiye dönmeden, seçtiği haberleri bulunduğu bölümden sepete atabilsin.
+    if selected_keys:
+        main_rows=pd.DataFrame(st.session_state.get('rows') or [])
+        if not main_rows.empty:
+            main_selected=main_rows[
+                main_rows.apply(
+                    lambda r:(str(r.get('URL','')) if str(r.get('URL','')).strip() else title_key(str(r.get('Başlık','')))) in selected_keys,
+                    axis=1
+                )
+            ].copy()
+        else:
+            main_selected=pd.DataFrame()
+
+        a1,a2=st.columns(2)
+        with a1:
+            if st.button('📌 Seçilenleri Önemli Gelişmeler Sepetine Ekle',key=f'imp_{section_key}',use_container_width=True):
+                if main_selected.empty:
+                    st.warning('Seçilen haber ana tarama kayıtlarıyla eşleştirilemedi.')
+                else:
+                    n=_add_rows_to_important_basket(main_selected.to_dict('records'))
+                    st.success(f'{n} haber önemli gelişmeler sepetine eklendi.')
+        with a2:
+            if st.button('🗂️ Seçilenleri Açık Kaynak Tarama Sepetine Ekle',key=f'akt_{section_key}',use_container_width=True):
+                if main_selected.empty:
+                    st.warning('Seçilen haber ana tarama kayıtlarıyla eşleştirilemedi.')
+                else:
+                    n=_add_rows_to_osint_basket(main_selected.to_dict('records'))
+                    st.success(f'{n} haber açık kaynak tarama sepetine eklendi.')
+
+    return selected
 
 def _collect_section_selected_from_main_df(df):
     if df is None or df.empty:
@@ -2772,12 +2806,14 @@ else:
         if recent_alerts:
             with st.expander(f'🔔 Son taramada yakalanan yeni negatif/riskli içerikler ({len(recent_alerts)})',False):
                 alert_df=pd.DataFrame(recent_alerts)
-                st.dataframe(
-                    alert_df,
-                    column_config={'URL':st.column_config.LinkColumn('Haber Linki')},
-                    hide_index=True,
-                    use_container_width=True,
-                    height=min(420, 42+35*len(alert_df))
+                alert_view=alert_df.copy()
+                if 'Risk' in alert_view.columns and 'Risk_Skoru' not in alert_view.columns:
+                    alert_view['Risk_Skoru']=alert_view['Risk']
+                _section_select_table(
+                    'recent_alerts',
+                    alert_view,
+                    ['Tarih','Seviye','Kaynak','Başlık','Risk_Skoru','URL'],
+                    height=min(420,42+35*len(alert_view))
                 )
 
         # Organize Sanayi Bölgesi yangınları için özel kalıcı alarm bölümü
@@ -2788,19 +2824,24 @@ else:
         osb_fires=df[osb_fire_mask].sort_values('Tarih_dt',ascending=False)
         if not osb_fires.empty:
             st.error(f'🔥 **OSB YANGIN ALARMI — {len(osb_fires)} içerik tespit edildi**')
-            st.dataframe(
-                osb_fires[['Tarih','Kaynak','Başlık','Risk_Skoru','URL']],
-                column_config={'URL':st.column_config.LinkColumn('Haber Linki')},
-                hide_index=True,use_container_width=True,height=min(300,60+36*len(osb_fires))
+            _section_select_table(
+                'osb_fires',
+                osb_fires,
+                ['Tarih','Kaynak','Başlık','Risk_Skoru','URL'],
+                height=min(300,60+36*len(osb_fires))
             )
 
         # Alarm bandı
         alarms=df[(df.Risk_Skoru>=70) | (df.Duygu=='Negatif')].sort_values(['Risk_Skoru','Tarih_dt'],ascending=[False,False])
         if not alarms.empty:
             st.subheader('🚨 Yeni / Öncelikli Alarmlar')
-            for _,r in alarms.head(5).iterrows():
-                icon='🔴' if int(r['Risk_Skoru'])>=70 else '🟠'
-                st.markdown(f"{icon} **{r['Tarih']} — {r['Başlık']}** — **{int(r['Risk_Skoru'])}/100**  \\n**{r['Kaynak']}** · {r['Kategori']} · {r['Risk_Gerekçesi']} · {r['Doğrulama']}")
+            alarm_view=alarms.head(10).copy()
+            _section_select_table(
+                'priority_alarms',
+                alarm_view,
+                ['Tarih','Kaynak','Kategori','Başlık','Risk_Skoru','Risk_Gerekçesi','Doğrulama','URL'],
+                height=min(470,70+38*len(alarm_view))
+            )
 
         # Performans: Streamlit tabs içindeki TÜM içerikleri arka planda çalıştırır.
         # Bu nedenle tek seferde yalnızca seçilen görünümü üretiriz.
@@ -2884,8 +2925,12 @@ else:
             chosen=st.selectbox('Olay zaman çizelgesini göster:',ev['Olay_ID'].tolist() if not ev.empty else [])
             if chosen:
                 g=df[df.Olay_ID==chosen].sort_values('Tarih_dt',ascending=True)
-                for _,r in g.iterrows():
-                    st.markdown(f"**{r['Tarih']}** → **{r['Kaynak']}** — {r['Başlık']} — {r['Doğrulama']}")
+                _section_select_table(
+                    f'event_{chosen}',
+                    g,
+                    ['Tarih','Kaynak','Kategori','Başlık','Risk_Skoru','Doğrulama','URL'],
+                    height=min(500,80+40*len(g))
+                )
 
         elif view=='📈 Trend / Analiz':
             st.subheader('📊 Konu yoğunluğu')
@@ -3004,6 +3049,16 @@ else:
             c4.metric('OSB Yangını',daily_stats['osb_fire'])
             c5.metric('Savunma',daily_stats['defence'])
             c6.metric('Siber',daily_stats['cyber'])
+
+            daily_top_select=_daily_top_events(df,5)
+            if not daily_top_select.empty:
+                st.markdown('**Bugünün öne çıkan 5 gelişmesi**')
+                _section_select_table(
+                    'daily_top5',
+                    daily_top_select,
+                    ['Tarih','Kaynak','Kategori','Başlık','Risk_Skoru','Risk_Durumu','Doğrulama','URL'],
+                    height=min(330,70+45*len(daily_top_select))
+                )
 
         if st.button('📊 BUGÜNÜN DURUM ÖZETİNİ OLUŞTUR',use_container_width=True):
             with st.spinner('Günlük durum özeti hazırlanıyor...'):
