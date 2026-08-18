@@ -971,102 +971,122 @@ def _v53_find_event_row(df, value_row):
             return m.iloc[0]
     return None
 
-def _v53_compact_event_summary(row, value_row):
-    """
-    Bir olay için başlığı tekrar etmek yerine mevcut içerikten 2-3 bilgi yoğun cümle çıkarır.
-    Ağ çağrısı yapmaz; taramada zaten bulunan içerik/özet kullanılır.
-    """
-    if row is None:
-        return _clean_note_text(value_row.get('Gelişme',''))
+def _v54_content_sentences(text,title=''):
+    """Tam haber metninden menü/tekrar/gürültüyü azaltarak bilgi taşıyan cümleleri seçer."""
+    clean=_clean_note_text(text)
+    if not clean:
+        return []
+    title_n=norm(title)
+    raw=_sentence_chunks(clean)
+    out=[]; seen=set()
+    noise=[
+        'çerez','cookie','reklam','abonelik','bildirimleri aç','tüm hakları saklıdır',
+        'gizlilik politikası','kullanım koşulları','facebook','instagram','twitter',
+        'whatsapp','telegram','son dakika haberleri için'
+    ]
+    for s in raw:
+        s=_clean_note_text(s)
+        sn=norm(s)
+        if len(s)<35 or len(s)>650: continue
+        if any(x in sn for x in noise): continue
+        if title_n and sn==title_n: continue
+        key=re.sub(r'\W+','',sn)[:260]
+        if not key or key in seen: continue
+        seen.add(key)
+        out.append(s)
+    return out
 
-    title=_clean_note_text(row.get('Başlık',''))
-    content=_clean_note_text(row.get('İçerik_Özeti',''))
-    sents=_detail_sentences(content,title)
+def _v54_article_summary(detail,fallback_row,max_sentences=4):
+    """
+    Haberin içeriğini 2-4 bilgi yoğun cümlede özetler.
+    Değer skoru, kaynak sayısı, resmî teyit gibi sıralama metadatasını özete katmaz.
+    """
+    title=_clean_note_text((detail or {}).get('title','') or fallback_row.get('Başlık',''))
+    text=_clean_note_text((detail or {}).get('text','') or fallback_row.get('İçerik_Özeti',''))
+    sents=_v54_content_sentences(text,title)
 
-    useful=[]
-    seen=set()
-    # Sayı/etki/eylem içeren cümleleri öne al.
-    ranked=[]
-    for s in sents:
+    if not sents:
+        fallback=_clean_note_text(fallback_row.get('İçerik_Özeti',''))
+        return fallback[:900].strip() if fallback else title
+
+    # İlk anlamlı cümle bağlamı korur. Sonraki cümleler bilgi yoğunluğuna göre seçilir.
+    selected=[sents[0]]
+    candidates=[]
+    for idx,s in enumerate(sents[1:],1):
         sn=norm(s)
         score=0
-        if re.search(r'\b\d+(?:[.,]\d+)?\b',s): score+=3
+        if re.search(r'\b\d+(?:[.,]\d+)?\b',s): score+=4
         if any(x in sn for x in [
-            'arttı','azaldı','düştü','yükseldi','geriledi','açıkladı','duyurdu',
-            'üretim','ihracat','yatırım','istihdam','kapasite','yangın','patlama',
-            'siber','teşvik','sözleşme','teslimat','hasar','kayıp','risk'
-        ]): score+=2
-        ranked.append((score,s))
+            'açıkladı','duyurdu','belirtti','bildirdi','ifade etti','kaydetti',
+            'üretim','ihracat','ithalat','yatırım','istihdam','kapasite','satış',
+            'sözleşme','anlaşma','teslim','tedarik','teşvik','destek','proje',
+            'yangın','patlama','hasar','yaralı','kayıp','siber','veri',
+            'arttı','azaldı','düştü','yükseldi','geriledi','başladı','tamamlandı'
+        ]): score+=3
+        if any(x in sn for x in [
+            'bakanlık','tüik','ssb','şirket','firma','kurum','başkanlığı',
+            'genel müdür','bakan','başkanı'
+        ]): score+=1
+        # Çok erken cümlelere hafif öncelik.
+        score+=max(0,3-min(idx,3))
+        candidates.append((score,idx,s))
 
-    # Önce metnin ilk anlamlı cümlesini koru; sonra bilgi yoğun cümleler.
-    if sents:
-        ranked = [(10,sents[0])] + ranked[1:]
-
-    for _,s in sorted(enumerate(ranked), key=lambda z:(-z[1][0], z[0])):
-        sentence=_clean_note_text(s[1])
-        key=norm(sentence)
-        if not sentence or key in seen or len(sentence)<30:
-            continue
-        seen.add(key)
-        useful.append(sentence)
-        if len(useful)>=3:
+    for _,_,s in sorted(candidates,key=lambda x:(-x[0],x[1])):
+        if s not in selected:
+            selected.append(s)
+        if len(selected)>=max_sentences:
             break
 
-    if useful:
-        return _join_sentences_naturally(useful)
+    # Haber akışını bozmayacak şekilde özgün sıraya döndür.
+    order={s:i for i,s in enumerate(sents)}
+    selected=sorted(selected,key=lambda s:order.get(s,999))
+    result=_join_sentences_naturally(selected)
 
-    return content[:650].strip() if content else title
+    # Tek olayın 45 satırlık toplam özeti şişirmesini önle.
+    return result[:1500].strip()
 
-def _v53_top10_summary_text(df, value10, max_lines=45):
+def _v54_deep_top10_summary(df,value10,max_lines=45):
     """
-    Yalnızca 'Günün En Değerli 10 Gelişmesi'ni özetler.
-    Çıktı maksimum 45 mantıksal satırdır.
+    Yalnızca Top-10 olayın temsilci haber sayfalarını butona basılınca zenginleştirir.
+    Normal tarama hızını etkilemez. Her olay içerik odaklı özetlenir.
     """
     if value10 is None or value10.empty:
         return "Bugünün en değerli gelişmeleri arasında özet oluşturulabilecek içerik bulunamadı."
 
-    lines=[]
-    lines.append(
-        f"Sanayi ve teknoloji alanında yapılan taramada, önem düzeyi, kaynak yayılımı, resmî teyit, "
-        f"güncellik, stratejik etki ve haber yoğunluğu birlikte değerlendirilerek günün en değerli "
-        f"{len(value10)} gelişmesi aşağıdaki şekilde özetlenmiştir."
-    )
-    lines.append("")
+    lines=[
+        f"Sanayi ve teknoloji gündeminde günün en değerli {len(value10)} gelişmesine ilişkin durum özeti aşağıda sunulmuştur.",
+        ""
+    ]
 
     for _,v in value10.head(10).iterrows():
+        if len(lines)>=max_lines-3:
+            break
         rank=int(v.get('Sıra',0) or 0)
-        title=_clean_note_text(v.get('Gelişme',''))
         row=_v53_find_event_row(df,v)
-        detail=_v53_compact_event_summary(row,v)
-        why=_clean_note_text(v.get('Neden_Değerli',''))
-        score=int(v.get('Değer_Skoru',0) or 0)
-        sources=int(v.get('Kaynak_Sayısı',0) or 0)
-        official=_clean_note_text(v.get('Resmî_Teyit',''))
+        title=_clean_note_text(v.get('Gelişme',''))
+
+        if row is None:
+            detail_text=title
+        else:
+            try:
+                # Ağ/tam metin işlemi SADECE özet butonuna basıldığında bu 10 haber için çalışır.
+                detail=article_detail(row.to_dict() if hasattr(row,'to_dict') else row)
+            except Exception:
+                detail=None
+            detail_text=_v54_article_summary(detail,row,4)
 
         lines.append(f"{rank}. {title}")
-        if detail:
-            lines.append(detail)
-        lines.append(
-            f"Değerlendirme: Değer skoru {score}/100; {sources} farklı kaynak; "
-            f"resmî teyit: {official.lower() if official else 'bilinmiyor'}. "
-            f"{why}"
-        )
+        if detail_text:
+            lines.append(detail_text)
         lines.append("")
 
-        if len(lines) >= max_lines-3:
-            break
-
     lines.append(
-        "Genel olarak, yukarıdaki gelişmeler günün sanayi ve teknoloji gündeminde en yüksek analitik "
-        "değere sahip başlıklar olarak öne çıkmakta olup yeni resmî açıklamalar, üretim/tedarik etkileri "
-        "ve ilave kaynak teyitleri bakımından takip edilmesi uygun değerlendirilmektedir."
+        "Söz konusu gelişmelerin yeni açıklamalar ve ilave açık kaynak verileri doğrultusunda takip edilmesi önem taşımaktadır."
     )
-
-    # Kesin üst sınır.
     return '\n'.join(lines[:max_lines])
 
-def make_v53_top10_summary_docx(df, value10):
-    text=_v53_top10_summary_text(df,value10,45)
+def make_v54_top10_summary_docx(df,value10,text=None):
+    text=text or _v54_deep_top10_summary(df,value10,45)
     doc=Document()
     sec=doc.sections[0]
     sec.top_margin=Cm(2); sec.bottom_margin=Cm(2)
@@ -1076,28 +1096,26 @@ def make_v53_top10_summary_docx(df, value10):
 
     p=doc.add_paragraph()
     p.alignment=WD_ALIGN_PARAGRAPH.CENTER
-    r=p.add_run('BUGÜNÜN SANAYİ VE TEKNOLOJİ DURUM ÖZETİ')
-    r.bold=True; r.font.size=Pt(14)
+    rr=p.add_run('BUGÜNÜN SANAYİ VE TEKNOLOJİ DURUM ÖZETİ')
+    rr.bold=True; rr.font.size=Pt(14)
 
     p=doc.add_paragraph()
     p.alignment=WD_ALIGN_PARAGRAPH.CENTER
     p.add_run(datetime.now().astimezone().strftime('%d.%m.%Y %H:%M'))
 
     for line in text.splitlines():
-        if not line.strip():
-            continue
+        if not line.strip(): continue
         bp=doc.add_paragraph()
         bp.alignment=WD_ALIGN_PARAGRAPH.JUSTIFY
         bp.paragraph_format.space_after=Pt(5)
+        r=bp.add_run(line)
         if re.match(r'^\d+\.\s',line):
-            rr=bp.add_run(line)
-            rr.bold=True
-        else:
-            bp.add_run(line)
+            r.bold=True
 
     bio=BytesIO()
     doc.save(bio); bio.seek(0)
     return bio.getvalue()
+
 
 # -----------------------------
 # V51 — RESMÎ AÇIKLAMA / MEDYA KARŞILAŞTIRMASI
@@ -4309,19 +4327,23 @@ else:
                 height=min(680,105+55*len(value10))
             )
 
-            if st.button('📊 BUGÜNÜN DURUM ÖZETİNİ OLUŞTUR',use_container_width=True,key='v53_top10_summary_btn'):
-                with st.spinner('Günün en değerli 10 gelişmesi özetleniyor...'):
-                    st.session_state.daily_summary_text=_v53_top10_summary_text(df,value10,45)
-                    st.session_state.daily_summary_bytes=make_v53_top10_summary_docx(df,value10)
+            if st.button('📊 BUGÜNÜN DURUM ÖZETİNİ OLUŞTUR',use_container_width=True,key='v54_top10_summary_btn'):
+                with st.spinner('Yalnızca en değerli 10 gelişmenin haber içerikleri okunuyor ve özetleniyor...'):
+                    summary_text=_v54_deep_top10_summary(df,value10,45)
+                    st.session_state.daily_summary_text=summary_text
+                    st.session_state.daily_summary_bytes=make_v54_top10_summary_docx(df,value10,summary_text)
 
             if st.session_state.get('daily_summary_text'):
                 st.text_area(
                     'Bugünün Durum Özeti — En Değerli 10 Gelişme',
                     st.session_state.daily_summary_text,
                     height=520,
-                    key='v53_daily_summary_preview'
+                    key='v54_daily_summary_preview'
                 )
-                st.caption('Özet yalnızca yukarıdaki en değerli 10 gelişmeden üretilir ve 45 satırı geçmez.')
+                st.caption(
+                    'Özet yalnızca yukarıdaki 10 gelişmenin haber içeriğini anlatır; değer skoru, kaynak sayısı ve '
+                    'sıralama gerekçeleri metne eklenmez. Toplam çıktı 45 satırı geçmez.'
+                )
                 if st.session_state.get('daily_summary_bytes'):
                     st.download_button(
                         '⬇️ BUGÜNÜN DURUM ÖZETİNİ WORD OLARAK İNDİR',
@@ -4329,7 +4351,7 @@ else:
                         file_name=f'bugunun_durum_ozeti_top10_{datetime.now().strftime("%Y%m%d_%H%M")}.docx',
                         mime='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
                         use_container_width=True,
-                        key='v53_top10_summary_download'
+                        key='v54_top10_summary_download'
                     )
 
         st.markdown('---')
