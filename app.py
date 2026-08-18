@@ -418,6 +418,53 @@ V48_NEGATIVE_PHRASES = [
     'kaza','yangın','patlama','yaralandı','can kaybı'
 ]
 
+
+# V49 — Yapısal / eleştirel negatiflik katmanı
+# Haber sayfasına gitmez; yalnızca eldeki Başlık + RSS içerik/özet üzerinde çalışır.
+V49_STRUCTURAL_NEGATIVE = [
+    'tehlikeli gidiş','tehlikeli seyir','olumsuz gidiş','olumsuz seyir',
+    'kötü gidiş','kötüye gidiş','kötüleşiyor','kötüleşme',
+    'alarm veriyor','alarm zilleri','kan kaybediyor','kan kaybı',
+    'ivme kaybediyor','ivme kaybı','güç kaybediyor','güç kaybı',
+    'rekabet gücü zayıflıyor','rekabet gücü geriliyor','rekabet gücü kaybı',
+    'zayıf seyir','zayıflama','zayıflıyor','yavaşlıyor','yavaşlama',
+    'sıkıntılı süreç','sıkıntılı dönem','kritik süreç','kritik eşik',
+    'sorun büyüyor','sorunlar büyüyor','sorun devam ediyor','sorun sürüyor',
+    'risk artıyor','riskler artıyor','baskı artıyor','baskı altında',
+    'istenilen seviyede değil','istenen seviyede değil',
+    'beklenen seviyede değil','yeterli değil','yetersiz kaldı','yetersiz kalıyor',
+    'teşvik yetmiyor','teşvikler yetmiyor','destek yetmiyor','destekler yetmiyor',
+    'sadece teşvik vermekle olmuyor','sadece destek vermekle olmuyor',
+    'çözüm olmuyor','çözüm değil','sürdürülebilir değil',
+    'endişe yaratıyor','endişe veriyor','kaygı yaratıyor','kaygı veriyor',
+    'uyarı geldi','uyarı yaptı','uyardı','dikkat çekti',
+    'olumsuz tablo','karamsar tablo','zorlu görünüm','zayıf görünüm',
+    'darboğaz','çıkmaz','kırılganlık','kırılgan hale geldi'
+]
+
+V49_PERSISTENCE_PATTERNS = [
+    r'\b\d+\s*(?:çeyrektir|çeyrek boyunca|aydır|ay boyunca|yıldır|yıl boyunca|haftadır)\b',
+    r'\buzun süredir\b',
+    r'\bsüregelen\b',
+    r'\bdevam eden\b',
+    r'\bsürmekte olan\b',
+    r'\bkronik\b'
+]
+
+def _v49_structural_negative_signals(text):
+    t = norm(text)
+    found = set()
+
+    for phrase in V49_STRUCTURAL_NEGATIVE:
+        if phrase in t:
+            found.add(phrase)
+
+    persistent = any(re.search(pat, t, re.I) for pat in V49_PERSISTENCE_PATTERNS)
+
+    # Süre ifadesi tek başına negatif değildir. Ancak yapısal negatif bir ifade
+    # veya başka bir negatif sinyal ile birlikteyse ağırlık kazanır.
+    return found, persistent
+
 V48_STRONG_NEGATIVE = [
     'üretim durdu','faaliyet durdu','fabrika kapandı','tesis kapandı',
     'toplu işten çıkarma','iflas','konkordato','siber saldırı','veri sızıntısı',
@@ -514,16 +561,24 @@ def _negative_sentence_analysis(title, snippet):
         if phrase!='sayısal/yönsel düşüş' and phrase in title_n:
             title_neg.add(phrase)
 
+    # V49: klasik düşüş/zarar kelimesi bulunmasa bile eleştirel ve yapısal
+    # kötüleşme dili ayrıca yakalanır.
+    structural,persistent=_v49_structural_negative_signals(full)
+    active_neg.update(structural)
+    for phrase in structural:
+        if phrase in title_n:
+            title_neg.add(phrase)
+
     if any(x in norm(full) for x in V48_STRONG_NEGATIVE):
         strong_event=True
 
-    return active_neg,active_risk,title_neg,title_risk,strong_event,directional
+    return active_neg,active_risk,title_neg,title_risk,strong_event,directional,structural,persistent
 
 def classify(title,snippet,source_domain=''):
     full=f'{title} {snippet}'
     t=norm(full)
 
-    neg_set,risk_set,title_neg,title_risk,strong_event,directional=_negative_sentence_analysis(title,snippet)
+    neg_set,risk_set,title_neg,title_risk,strong_event,directional,structural,persistent=_negative_sentence_analysis(title,snippet)
     neg=sorted(neg_set)
     risk=sorted(risk_set)
 
@@ -544,6 +599,16 @@ def classify(title,snippet,source_domain=''):
     if directional:
         score += 8
         reasons.append('ölçülebilir düşüş/gerileme')
+
+    if structural:
+        # Eleştirel/yapısal bozulma dili: negatif için yeterince güçlü,
+        # ancak tek başına Yüksek Risk üretmeyecek ölçülü ağırlık.
+        score += min(16, 7 + 3*len(structural))
+        reasons.append('yapısal/eleştirel olumsuzluk')
+
+    if persistent and (structural or neg_set):
+        score += 8
+        reasons.append('olumsuzluğun sürekliliği')
 
     if risk:
         score += min(32,9*len(risk))
