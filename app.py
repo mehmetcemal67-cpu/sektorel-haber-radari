@@ -287,38 +287,151 @@ def critical_industrial_incident(title, snippet=''):
     return '🚨 KRİTİK SANAYİ OLAYI'
 
 
+NEGATION_OR_RESOLUTION_PHRASES = [
+    'olmadı','olmadığı','bulunmadı','bulunmadığı','yaşanmadı','gerçekleşmedi',
+    'etkilenmedi','etkilenmediği','risk bulunmuyor','risk yok','tehdit yok',
+    'iptal edilmedi','kapanmadı','durmadı','sona erdi','kaldırıldı',
+    'giderildi','çözüldü','önlendi','engellendi','bertaraf edildi'
+]
+
+POSITIVE_SIGNAL_TERMS = [
+    'arttı','artış','yükseldi','yükseliş','rekor','büyüdü','büyüme',
+    'yatırım','yatırım kararı','yeni yatırım','ihracat arttı','ihracat artışı',
+    'kapasite arttı','kapasite artışı','üretim arttı','üretim artışı',
+    'devreye alındı','faaliyete geçti','başarıyla','başarılı',
+    'anlaşma imzalandı','sözleşme imzalandı','teslim edildi',
+    'teşvik','destek','hibe','istihdam artışı','yeni istihdam'
+]
+
+SEVERE_NEGATIVE_TERMS = {
+    'iflas','konkordato','üretim durdu','fabrika kapandı','toplu işten çıkarma',
+    'siber saldırı','veri sızıntısı','fidye yazılımı','ambargo','yaptırım',
+    'ihracat yasağı','lisans reddi','ruhsat iptali','sözleşme feshi',
+    'ihale iptal edildi','patlama','yangın','can kaybı','ölüm',
+    'kritik zafiyet','yolsuzluk','usulsüzlük','casusluk','tedarik krizi','çip krizi'
+}
+
+def _term_regex(term):
+    # Alt-string kaynaklı "ceza/cezasız", "dava/davalar" vb. yanlış eşleşmeleri azalt.
+    escaped=re.escape(term)
+    if ' ' in term:
+        return re.compile(escaped,re.I)
+    return re.compile(r'(?<!\w)'+escaped+r'(?!\w)',re.I)
+
+def _physical_incident_is_real(term, context):
+    if term not in {'yangın','patlama','ölüm'}:
+        return True
+    incident_markers=[
+        'çıktı','çıkan','meydana geldi','meydana gelen','patladı','infilak',
+        'alev','yaralandı','yaralı','hasar','müdahale','söndürüldü',
+        'kontrol altına','tahliye','hayatını kaybetti','öldü'
+    ]
+    return any(x in context for x in incident_markers)
+
+def _active_adverse_terms(terms, text):
+    t=norm(text)
+    active=[]
+    for term in terms:
+        rx=_term_regex(term)
+        matches=list(rx.finditer(t))
+        if not matches:
+            continue
+
+        term_active=False
+        for m in matches:
+            lo=max(0,m.start()-90); hi=min(len(t),m.end()+90)
+            ctx=t[lo:hi]
+
+            # Fiziksel olay kelimesi yalnız kavramsal/önleyici bir kullanımdaysa alarm verme.
+            if not _physical_incident_is_real(term,ctx):
+                continue
+
+            # "yaptırım kaldırıldı", "ihlal yaşanmadı", "üretim durmadı" gibi bağlamları bastır.
+            # Gerçekleşmiş yangın/patlama/can kaybı ise "kontrol altına alındı" gibi sonraki olumlu
+            # gelişmeler olayın negatif niteliğini ortadan kaldırmaz.
+            if term not in {'yangın','patlama','can kaybı','ölüm'}:
+                if any(p in ctx for p in NEGATION_OR_RESOLUTION_PHRASES):
+                    continue
+
+            term_active=True
+            break
+
+        if term_active:
+            active.append(term)
+    return active
+
 def classify(title,snippet,source_domain=''):
-    t=norm(f'{title} {snippet}')
-    neg=[x for x in NEGATIVE_TERMS if x in t]
-    risk=[x for x in HIGH_RISK_TERMS if x in t]
+    full=f'{title} {snippet}'
+    t=norm(full)
+    title_t=norm(title)
+
+    neg=_active_adverse_terms(NEGATIVE_TERMS,full)
+    risk=_active_adverse_terms(HIGH_RISK_TERMS,full)
+
     cat='Genel Sanayi / Teknoloji'
     for c,ks in CATEGORIES.items():
-        if any(k in t for k in ks): cat=c; break
+        if any(k in t for k in ks):
+            cat=c
+            break
 
-    # Daha açıklanabilir 0-100 risk skoru.
-    score=8
+    score=6
     reasons=[]
+
+    # Başlıkta geçen gerçek olumsuzluk, gövde içindeki tekil ifadeden daha güçlü sinyal.
+    title_neg=[x for x in neg if _term_regex(x).search(title_t)]
+    title_risk=[x for x in risk if _term_regex(x).search(title_t)]
+
     if neg:
-        score += min(30, 8*len(neg))
-        reasons.append(f'{len(neg)} negatif sinyal')
+        score += min(26,6*len(neg))
+        score += min(10,4*len(title_neg))
+        reasons.append(f'{len(neg)} bağlamsal negatif sinyal')
+
     if risk:
-        score += min(38, 13*len(risk))
+        score += min(34,11*len(risk))
+        score += min(12,5*len(title_risk))
         reasons.append(f'{len(risk)} kritik risk sinyali')
-    # Etki alanı ağırlıkları
+
     if any(x in t for x in ['savunma','aselsan','tusaş','tusas','roketsan','havelsan','baykar','iha','siha','füze','radar']):
-        score += 10; reasons.append('savunma/kritik teknoloji')
-    if any(x in t for x in ['kritik altyapı','enerji şebeke','elektrik üretimi','doğalgaz','nükleer','çip','yarı iletken','siber','veri sızıntısı']):
-        score += 12; reasons.append('kritik altyapı/teknoloji')
-    if any(x in t for x in ['tedarik zinciri','tedarik krizi','çip krizi','lojistik','ambargo','yaptırım']):
-        score += 10; reasons.append('tedarik/jeopolitik etki')
-    if any(x in t for x in ['iflas','konkordato','fabrika kapandı','üretim durdu','can kaybı','ölüm']):
-        score += 18; reasons.append('operasyonel/finansal ağır sonuç')
-    score=min(100,score)
+        score += 8
+        reasons.append('savunma/kritik teknoloji')
+
+    if any(x in t for x in ['kritik altyapı','enerji şebeke','elektrik üretimi','doğalgaz','nükleer','çip','yarı iletken','siber saldırı','veri sızıntısı']):
+        score += 10
+        reasons.append('kritik altyapı/teknoloji')
+
+    if any(x in t for x in ['tedarik zinciri','tedarik krizi','çip krizi','ambargo','yaptırım']):
+        score += 8
+        reasons.append('tedarik/jeopolitik etki')
+
+    if any(x in risk for x in ['iflas','konkordato','fabrika kapandı','üretim durdu','can kaybı','ölüm']):
+        score += 16
+        reasons.append('operasyonel/finansal ağır sonuç')
+
+    # Olumlu haberlerde yalnızca geçmiş/yan bağlamdaki tek olumsuz kelime nedeniyle
+    # "Negatif" işareti oluşmasını azalt.
+    positive_hits=[x for x in POSITIVE_SIGNAL_TERMS if x in t]
+    severe_active=any(x in SEVERE_NEGATIVE_TERMS for x in risk) or any(x in SEVERE_NEGATIVE_TERMS for x in neg)
+    if positive_hits and not severe_active:
+        score=max(0,score-min(18,5*len(positive_hits)))
+        if len(neg)<=1 and len(risk)==0 and len(positive_hits)>=2:
+            neg=[]
+            reasons=[r for r in reasons if 'negatif sinyal' not in r]
+
+    score=min(100,max(0,score))
+
     sentiment='Negatif' if neg else 'Nötr'
-    if score>=70 or risk or len(neg)>=3: status='Yüksek Risk'
-    elif score>=30 or neg: status='Negatif'
-    else: status='Normal'
-    if not reasons: reasons=['olumsuz risk sinyali tespit edilmedi']
+    if severe_active and (risk or score>=60):
+        status='Yüksek Risk'
+    elif score>=70 and neg:
+        status='Yüksek Risk'
+    elif neg and score>=26:
+        status='Negatif'
+    else:
+        status='Normal'
+
+    if not neg and status=='Normal':
+        reasons=[r for r in reasons if r not in {'kritik altyapı/teknoloji','savunma/kritik teknoloji'}] or ['olumsuz risk sinyali tespit edilmedi']
+
     return sentiment,score,status,neg,risk,cat,reasons
 
 def rss(query, timeout=7):
@@ -2377,160 +2490,278 @@ def _real_source(row, detail, real_url):
 
     return "Açık Kaynak"
 
-def _expanded_report_text(title, body):
-    body = re.sub(r"\s+", " ", (body or "")).strip()
-    if not body:
-        return title
+def _akt_clean_sentences(title, body):
+    text=BeautifulSoup(str(body or ''),'html.parser').get_text(' ',strip=True)
+    text=re.sub(r'\s+',' ',text).strip()
+    if not text:
+        return []
 
-    # Haber gövdesini mümkün olduğunca geniş tut; sadece çok uzun teknik/menü tekrarlarını kes.
-    sentences = [
-        s.strip()
-        for s in re.split(r"(?<=[.!?])\s+", body)
-        if len(s.strip()) >= 40
+    raw=re.split(r'(?<=[.!?])\s+',text)
+    title_n=norm(title)
+    boiler=[
+        'çerez','cookie','abonelik','abone ol','reklam','tüm hakları saklıdır',
+        'gizlilik politikası','kullanım koşulları','google news','bildirimleri aç',
+        'uygulamamızı indirin','facebook','instagram','whatsapp','twitter',
+        'son dakika haberleri için','haberlerimizi takip','ilgili haberler',
+        'öne çıkan haberler','etiketler','yorumlar'
     ]
 
-    if sentences:
-        body = " ".join(sentences)
+    kept=[]
+    token_sets=[]
+    for s in raw:
+        s=re.sub(r'\s+',' ',s).strip()
+        sn=norm(s)
+        if len(s)<32 or sn==title_n:
+            continue
+        if any(b in sn for b in boiler):
+            continue
 
-    return body[:15000]
+        toks={x for x in re.findall(r'\w+',sn) if len(x)>2}
+        if not toks:
+            continue
 
+        duplicate=False
+        for old in token_sets[-20:]:
+            inter=len(toks & old); union=len(toks | old)
+            if union and inter/union>=0.78:
+                duplicate=True
+                break
+        if duplicate:
+            continue
+
+        kept.append(s)
+        token_sets.append(toks)
+
+    return kept
+
+def _akt_sentence_score(s):
+    n=norm(s)
+    score=0
+    if re.search(r'\b\d+(?:[.,]\d+)?\b',s): score+=4
+    if '%' in s or 'yüzde' in n: score+=3
+    if any(x in n for x in ['açıkladı','belirtti','bildirdi','kaydetti','duyurdu','ifade etti','vurguladı']): score+=2
+    if any(x in n for x in ['arttı','azaldı','geriledi','yükseldi','düştü','ulaştı','çıktı','indi','daraldı','büyüdü']): score+=3
+    if any(x in n for x in ['üretim','ihracat','ithalat','istihdam','kapasite','yatırım','hasar','etkilendi','müşteri','tesis','fabrika']): score+=2
+    if any(x in n for x in ['nedeni','sonucu','buna göre','bu kapsamda','öte yandan','ayrıca','son olarak']): score+=1
+    return score
+
+def _akt_formal_summary(title, body, max_sentences=10, max_chars=2800):
+    """
+    Haber başından sonuna okunur:
+    - tekrar/menü temizlenir,
+    - başlangıçtan ilk önemli bilgiler,
+    - ortadaki en güçlü veri/açıklamalar,
+    - sondaki sonuç/son durum birlikte seçilir,
+    - orijinal haber sırası korunur.
+    """
+    sentences=_akt_clean_sentences(title,body)
+    if not sentences:
+        fallback=re.sub(r'\s+',' ',str(body or title or '')).strip()
+        return fallback[:max_chars].rstrip(' .;')
+
+    n=len(sentences)
+    chosen=set(range(min(2,n)))  # başlangıç
+
+    # son durum / sonuç
+    for i in range(max(0,n-2),n):
+        chosen.add(i)
+
+    # gövdedeki en vurucu sayısal/kurumsal bilgiler
+    ranked=sorted(
+        [(i,_akt_sentence_score(s)) for i,s in enumerate(sentences)],
+        key=lambda z:(z[1],-z[0]),
+        reverse=True
+    )
+    for i,_ in ranked:
+        if len(chosen)>=max_sentences:
+            break
+        chosen.add(i)
+
+    ordered=[sentences[i] for i in sorted(chosen)]
+
+    clauses=[]
+    total=0
+    for s in ordered:
+        s=s.strip().rstrip(' .;:')
+        if not s:
+            continue
+        if total+len(s)>max_chars and clauses:
+            break
+        clauses.append(s)
+        total+=len(s)+2
+
+    if not clauses:
+        clauses=[sentences[0].strip().rstrip(' .;:')]
+
+    # Örnekteki resmî AKT anlatımına yakın tek akış.
+    text='; '.join(clauses)
+    if text:
+        first=text[0]
+        if first.isalpha() and not text[:5].isupper():
+            text=first.lower()+text[1:]
+    return text
+
+def _expanded_report_text(title, body):
+    # Geriye dönük uyumluluk: AKT artık ham tam metni değil, resmî ve tekrarsız özeti kullanır.
+    return _akt_formal_summary(title,body)
+
+def _akt_topic_labels(rows):
+    joined=norm(' '.join(
+        f"{r.get('Başlık','')} {r.get('İçerik_Özeti','')} {r.get('Kategori','')}"
+        for r in rows
+    ))
+    mapping=[
+        ('istihdam','istihdam'),
+        ('sanayi üret','sanayi üretimi'),
+        ('otomotiv','otomotiv üretimi'),
+        ('yapay zeka','yapay zeka'),
+        ('yapay zekâ','yapay zeka'),
+        ('veri sızınt','veri sızıntısı'),
+        ('siber saldır','siber güvenlik'),
+        ('ihracat','ihracat'),
+        ('yatırım','yatırım'),
+        ('kapasite kullanım','kapasite kullanım oranı'),
+        ('savunma','savunma sanayii'),
+        ('enerji','enerji'),
+        ('yangın','sanayi tesisi yangını'),
+        ('patlama','sanayi tesisi patlaması'),
+        ('ar-ge','Ar-Ge'),
+        ('arge','Ar-Ge')
+    ]
+    out=[]
+    for key,label in mapping:
+        if key in joined and label not in out:
+            out.append(label)
+        if len(out)>=6:
+            break
+    return out
+
+def _akt_findings_intro(rows):
+    topics=_akt_topic_labels(rows)
+    if topics:
+        if len(topics)==1:
+            topic_text=f'“{topics[0]}”'
+        else:
+            topic_text=', '.join(f'“{x}”' for x in topics[:-1]) + f' ve “{topics[-1]}”'
+        return (
+            "Sanayi ve Teknoloji alanlarında yapılan açık kaynak taraması neticesinde bazı haber "
+            f"bültenlerinde {topic_text} konu başlıklarıyla ilgili içerikler hazırlandığı tespit edilmiştir. "
+            "İçeriklerin hangi internet sitesinde yer aldığı, başlığı, bağlantı adresi, içeriğin detaylı özeti "
+            "ve görseli aşağıda yer almaktadır."
+        )
+    return (
+        "Sanayi ve Teknoloji alanlarında yapılan açık kaynak taraması neticesinde seçilen haber içerikleri "
+        "tespit edilmiştir. İçeriklerin hangi internet sitesinde yer aldığı, başlığı, bağlantı adresi, "
+        "içeriğin detaylı özeti ve görseli aşağıda yer almaktadır."
+    )
 
 def make_docx(rows):
     """
-    Seçilen haberleri, yüklenen AKT/Açık Kaynak Taraması örneğinin
-    anlatım yapısına yakın şekilde DOCX'e dönüştürür.
+    Kullanıcının ilettiği STB AKT örneğine yakın resmî format:
+    Başlık -> görev alanı -> tarih -> bulgular -> numaralı haber/özet/link -> görsel -> Arz olunur.
     """
-    doc = Document()
+    doc=Document()
+    section=doc.sections[0]
+    section.top_margin=Cm(2.0)
+    section.bottom_margin=Cm(2.0)
+    section.left_margin=Cm(2.5)
+    section.right_margin=Cm(2.5)
 
-    section = doc.sections[0]
-    section.top_margin = Cm(2.0)
-    section.bottom_margin = Cm(2.0)
-    section.left_margin = Cm(2.5)
-    section.right_margin = Cm(2.5)
+    normal=doc.styles["Normal"]
+    normal.font.name="Times New Roman"
+    normal.font.size=Pt(12)
+    normal._element.rPr.rFonts.set(qn("w:eastAsia"),"Times New Roman")
 
-    # Resmî rapor görünümü
-    normal = doc.styles["Normal"]
-    normal.font.name = "Times New Roman"
-    normal.font.size = Pt(12)
-    normal._element.rPr.rFonts.set(qn("w:eastAsia"), "Times New Roman")
+    p=doc.add_paragraph()
+    p.alignment=WD_ALIGN_PARAGRAPH.CENTER
+    p.paragraph_format.space_after=Pt(10)
+    r=p.add_run("AÇIK KAYNAK TARAMA ÇALIŞMASI")
+    r.bold=True
+    r.font.name="Times New Roman"
+    r.font.size=Pt(14)
 
-    # Başlık
-    p = doc.add_paragraph()
-    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    p.paragraph_format.space_after = Pt(10)
-    r = p.add_run("AÇIK KAYNAK TARAMA ÇALIŞMASI")
-    r.bold = True
-    r.font.name = "Times New Roman"
-    r.font.size = Pt(14)
-
-    # Üst bilgiler
-    p = doc.add_paragraph()
-    p.paragraph_format.space_after = Pt(0)
-    p.add_run("Tarama Yapılan Görev Alanı ").bold = True
+    p=doc.add_paragraph()
+    p.paragraph_format.space_after=Pt(0)
+    p.add_run("Tarama Yapılan Görev Alanı: ").bold=True
     p.add_run("Sanayi ve Teknoloji")
 
-    p = doc.add_paragraph()
-    p.paragraph_format.space_after = Pt(0)
-    p.add_run("Tarih ").bold = True
+    p=doc.add_paragraph()
+    p.paragraph_format.space_after=Pt(8)
+    p.add_run("Tarih: ").bold=True
     p.add_run(datetime.now().astimezone().strftime("%d.%m.%Y"))
 
-    p = doc.add_paragraph()
-    p.paragraph_format.space_after = Pt(10)
-    p.add_run("Rapor Saati ").bold = True
-    p.add_run(datetime.now().astimezone().strftime("%H:%M:%S"))
+    p=doc.add_paragraph()
+    p.paragraph_format.space_after=Pt(3)
+    p.add_run("Bulgular: ").bold=True
+    p.add_run(_akt_findings_intro(rows))
 
-    p = doc.add_paragraph()
-    p.paragraph_format.space_after = Pt(6)
-    p.add_run("Bulgular:").bold = True
+    for i,row in enumerate(rows,1):
+        detail=article_detail(row)
 
-    p = doc.add_paragraph()
-    p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
-    p.paragraph_format.first_line_indent = Cm(0.75)
-    p.paragraph_format.space_after = Pt(10)
-    p.add_run(
-        "Sanayi ve Teknoloji alanlarında yapılan açık kaynak taraması neticesinde, "
-        f"seçilen {len(rows)} haber/İçeriğe ilişkin bulgular aşağıda sunulmuştur."
-    )
+        real_url=detail.get("canonical") or row.get("Yayıncı_URL") or row.get("URL","")
+        title=(detail.get("title") or row.get("Başlık") or "").strip()
+        source=_real_source(row,detail,real_url)
+        body=detail.get("text") or row.get("İçerik_Özeti") or title
+        summary=_akt_formal_summary(title,body)
 
-    # Haberler
-    for i, row in enumerate(rows, 1):
-        detail = article_detail(row)
+        p=doc.add_paragraph()
+        p.alignment=WD_ALIGN_PARAGRAPH.JUSTIFY
+        p.paragraph_format.first_line_indent=Cm(0.75)
+        p.paragraph_format.space_before=Pt(4)
+        p.paragraph_format.space_after=Pt(6)
 
-        real_url = detail.get("canonical") or row.get("Yayıncı_URL") or row.get("URL", "")
-        title = (detail.get("title") or row.get("Başlık") or "").strip()
-        source = _real_source(row, detail, real_url)
-        body = detail.get("text") or row.get("İçerik_Özeti") or title
-        expanded = _expanded_report_text(title, body)
+        nr=p.add_run(f"{i}. ")
+        nr.bold=True
 
-        # Tek ana anlatım paragrafı — örnek rapordaki biçim.
-        p = doc.add_paragraph()
-        p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
-        p.paragraph_format.first_line_indent = Cm(0.75)
-        p.paragraph_format.space_after = Pt(5)
+        sr=p.add_run(f'“{source}”')
+        sr.bold=True
+        p.add_run(' isimli internet sitesinde, ')
+        tr=p.add_run(f'“{title}”')
+        tr.bold=True
+        p.add_run(' başlığıyla bir haber yayımlanmıştır. (')
+        _word_hyperlink(p,real_url,real_url if real_url else "Haber Linki")
+        p.add_run(') Söz konusu haber içeriğinde, ')
+        p.add_run(summary)
+        p.add_run(' hususları ifade edilmiştir.')
 
-        nr = p.add_run(f"{i}. ")
-        nr.bold = True
-
-        p.add_run(
-            f'“{source}” isimli internet sitesinde, “{title}” başlığıyla bir haber '
-            "yayımlanmıştır. ("
-        )
-        _word_hyperlink(p, real_url, real_url if real_url else "Haber Linki")
-        p.add_run(") Söz konusu haber içeriğinde, ")
-        p.add_run(expanded)
-
-        # Görsel başlığı
-        image_stream = None
-        image_url = ""
-        for candidate in detail.get("images", []):
-            image_stream = _download_report_image(candidate)
+        image_stream=None
+        image_url=""
+        for candidate in detail.get("images",[]):
+            image_stream=_download_report_image(candidate)
             if image_stream:
-                image_url = candidate
+                image_url=candidate
                 break
 
-        cap = doc.add_paragraph()
-        cap.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        cap.paragraph_format.space_before = Pt(5)
-        cap.paragraph_format.space_after = Pt(5)
-
-        cr = cap.add_run(
-            f'Görsel {i}: “{source}” Sitesinde Yer Alan İçerik'
-        )
-        cr.bold = True
-        cr.font.name = "Times New Roman"
-        cr.font.size = Pt(11)
+        if image_stream or detail.get("images"):
+            cap=doc.add_paragraph()
+            cap.alignment=WD_ALIGN_PARAGRAPH.CENTER
+            cap.paragraph_format.space_before=Pt(4)
+            cap.paragraph_format.space_after=Pt(4)
+            cr=cap.add_run(f'Görsel {i}: “{source}” Sitesinde Yer Alan Görsel')
+            cr.bold=True
+            cr.font.name="Times New Roman"
+            cr.font.size=Pt(11)
 
         if image_stream:
-            ip = doc.add_paragraph()
-            ip.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            ip.paragraph_format.space_after = Pt(2)
-            ip.add_run().add_picture(image_stream, width=Cm(14.5))
+            ip=doc.add_paragraph()
+            ip.alignment=WD_ALIGN_PARAGRAPH.CENTER
+            ip.paragraph_format.space_after=Pt(10)
+            ip.add_run().add_picture(image_stream,width=Cm(14.5))
+        elif detail.get("images"):
+            # Örnekte görsel esas; indirilemediyse raporu gereksiz teknik metinle doldurma.
+            lp=doc.add_paragraph()
+            lp.alignment=WD_ALIGN_PARAGRAPH.CENTER
+            lp.paragraph_format.space_after=Pt(8)
+            _word_hyperlink(lp,detail["images"][0],"Görseli Aç")
 
-            lp = doc.add_paragraph()
-            lp.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            lp.paragraph_format.space_after = Pt(12)
-            lp.add_run("(")
-            _word_hyperlink(lp, image_url, image_url if image_url else "Görsel Linki")
-            lp.add_run(")")
-        else:
-            lp = doc.add_paragraph()
-            lp.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            lp.paragraph_format.space_after = Pt(12)
-            lp.add_run("Görsel alınamadı.")
-            if detail.get("images"):
-                lp.add_run(" (")
-                _word_hyperlink(lp, detail["images"][0], "Görsel Linki")
-                lp.add_run(")")
+    endp=doc.add_paragraph()
+    endp.paragraph_format.space_before=Pt(8)
+    endp.add_run("Arz olunur.")
 
-    end = doc.add_paragraph()
-    end.paragraph_format.space_before = Pt(10)
-    end.add_run("Arz olunur.").bold = True
-
-    bio = BytesIO()
+    bio=BytesIO()
     doc.save(bio)
     bio.seek(0)
     return bio.getvalue()
-
 
 def _section_select_table(section_key, data, columns, height=420):
     """Her haber bölümünde kutucuk gösterir; seçilenler doğrudan iki sepete eklenebilir."""
