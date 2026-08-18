@@ -3217,6 +3217,125 @@ else:
         # ---------------------------------------------------------
         # V34 — VARDİYA BAŞLANGIÇ ÖZETİ
         # ---------------------------------------------------------
+        # V46 — ANA GÖRÜNÜM EN ÜSTTE
+        # Tarama tamamlandığında ilk bölüm doğrudan Kronolojik / Negatif / Yüksek Risk vb. ana haber görünümüdür.
+        # Performans: Streamlit tabs içindeki TÜM içerikleri arka planda çalıştırır.
+        # Bu nedenle tek seferde yalnızca seçilen görünümü üretiriz.
+        view=st.radio(
+            'Görünüm',
+            ['📰 Kronolojik','⚠️ Negatif','🚨 Yüksek Risk','🇹🇷 Türk','🇬🇷 Yunan','🧩 Olaylar','📈 Trend / Analiz','⭐ Takip Listesi'],
+            horizontal=True,
+            key='main_view'
+        )
+
+        cols=['Seç','Tarih','Kaynak_Grubu','Kaynak','Kategori','Başlık','İçerik_Özeti','Duygu','Risk_Skoru','Risk_Durumu','Kaynak_Güvenilirliği','Doğrulama','URL']
+
+        if view=='📰 Kronolojik':
+            st.caption('☑️ Tüm haberler sistemde tutulur; hız için ekranda sayfa sayfa gösterilir.')
+            page_size=75
+            total_pages=max(1,(len(df)+page_size-1)//page_size)
+            page_no=st.number_input('Sayfa',min_value=1,max_value=total_pages,value=1,step=1,key='news_page')
+            start_i=(int(page_no)-1)*page_size
+            end_i=min(start_i+page_size,len(df))
+            page_df=df.iloc[start_i:end_i].copy()
+
+            # Tarayıcıya çok uzun RSS özetleri göndermeyelim; tam içerik backend'de korunur.
+            page_df['İçerik_Özeti']=page_df['İçerik_Özeti'].astype(str).str.slice(0,320)
+
+            st.caption(f'{start_i+1}-{end_i} / {len(df)} haber')
+            with st.form(key=f'selection_form_{st.session_state.scan_time}_{int(page_no)}', clear_on_submit=False):
+                edited=st.data_editor(
+                    page_df[cols],
+                    column_config={
+                        'Seç':st.column_config.CheckboxColumn('Seç'),
+                        'URL':st.column_config.LinkColumn('Haber Linki'),
+                        'İçerik_Özeti':st.column_config.TextColumn('Kısa İçerik',width='large'),
+                        'Risk_Skoru':st.column_config.NumberColumn('Risk',format='%d/100')
+                    },
+                    disabled=[x for x in cols if x!='Seç'],
+                    hide_index=True,use_container_width=True,height=560,
+                    key=f'editor_{st.session_state.scan_time}_{int(page_no)}'
+                )
+                save_selection=st.form_submit_button('✅ BU SAYFADAKİ SEÇİMLERİ KAYDET',use_container_width=True)
+            if save_selection:
+                original_indices=df.index[start_i:end_i]
+                df.loc[original_indices,'Seç']=edited['Seç'].astype(bool).to_numpy()
+                st.session_state.rows=df.to_dict('records')
+                st.success(f'✅ Toplam {int(df["Seç"].sum())} haber seçili.')
+
+        elif view=='⚠️ Negatif':
+            _section_select_table(
+                'negative_view',
+                df[df.Duygu=='Negatif'],
+                ['Tarih','Kaynak','Kategori','Başlık','Risk_Skoru','Risk_Gerekçesi','Doğrulama','URL'],
+                height=600
+            )
+
+        elif view=='🚨 Yüksek Risk':
+            _section_select_table(
+                'highrisk_view',
+                df[df.Risk_Durumu=='Yüksek Risk'],
+                ['Tarih','Kaynak','Kategori','Başlık','Risk_Skoru','Risk_Gerekçesi','Doğrulama','URL'],
+                height=600
+            )
+
+        elif view=='🇹🇷 Türk':
+            _section_select_table(
+                'turkish_view',
+                df[df.Kaynak_Grubu.astype(str).str.startswith('🇹🇷')],
+                ['Tarih','Kaynak','Kategori','Başlık','Risk_Skoru','Duygu','URL'],
+                height=600
+            )
+
+        elif view=='🇬🇷 Yunan':
+            _section_select_table(
+                'greek_view',
+                df[df.Kaynak_Grubu.astype(str).str.startswith('🇬🇷')],
+                ['Tarih','Kaynak','Kategori','Başlık','Risk_Skoru','Duygu','URL'],
+                height=600
+            )
+
+        elif view=='🧩 Olaylar':
+            ev=build_event_summary(df)
+            st.dataframe(ev,hide_index=True,use_container_width=True,height=480)
+            chosen=st.selectbox('Olay zaman çizelgesini göster:',ev['Olay_ID'].tolist() if not ev.empty else [])
+            if chosen:
+                g=df[df.Olay_ID==chosen].sort_values('Tarih_dt',ascending=True)
+                _section_select_table(
+                    f'event_{chosen}',
+                    g,
+                    ['Tarih','Kaynak','Kategori','Başlık','Risk_Skoru','Doğrulama','URL'],
+                    height=min(500,80+40*len(g))
+                )
+
+        elif view=='📈 Trend / Analiz':
+            st.subheader('📊 Konu yoğunluğu')
+            tr=trend_table(df)
+            if not tr.empty:
+                st.bar_chart(tr.set_index('Kategori')['Haber'])
+            st.subheader('📈 Gündem yoğunluğu')
+            tmp=df[df['Tarih_dt'].notna()].copy()
+            tmp['Saat']=tmp['Tarih_dt'].dt.strftime('%Y-%m-%d %H:00')
+            if not tmp.empty:
+                st.line_chart(tmp.groupby('Saat').size())
+            st.subheader('🧭 Yoğun konular')
+            for _,r in tr.head(10).iterrows():
+                st.write(f"**{r['Kategori']}** — {int(r['Haber'])} haber")
+
+        elif view=='⭐ Takip Listesi':
+            hits=watchlist_hits(df,watch)
+            st.write(f'Listede eşleşen: **{len(hits)}** haber')
+            if not hits.empty:
+                _section_select_table(
+                    'watchlist_view',
+                    hits,
+                    ['Tarih','Kaynak','Kategori','Başlık','Risk_Skoru','Duygu','URL'],
+                    height=550
+                )
+
+
+
+
         st.subheader('🌅 Vardiya Başlangıç Özeti')
         shift_stats,shift_top,shift_baseline_label=_shift_start_summary(
             df,
@@ -3502,121 +3621,6 @@ else:
                 ['Tarih','Kaynak','Kategori','Başlık','Risk_Skoru','Risk_Gerekçesi','Doğrulama','URL'],
                 height=min(470,70+38*len(alarm_view))
             )
-
-        # Performans: Streamlit tabs içindeki TÜM içerikleri arka planda çalıştırır.
-        # Bu nedenle tek seferde yalnızca seçilen görünümü üretiriz.
-        view=st.radio(
-            'Görünüm',
-            ['📰 Kronolojik','⚠️ Negatif','🚨 Yüksek Risk','🇹🇷 Türk','🇬🇷 Yunan','🧩 Olaylar','📈 Trend / Analiz','⭐ Takip Listesi'],
-            horizontal=True,
-            key='main_view'
-        )
-
-        cols=['Seç','Tarih','Kaynak_Grubu','Kaynak','Kategori','Başlık','İçerik_Özeti','Duygu','Risk_Skoru','Risk_Durumu','Kaynak_Güvenilirliği','Doğrulama','URL']
-
-        if view=='📰 Kronolojik':
-            st.caption('☑️ Tüm haberler sistemde tutulur; hız için ekranda sayfa sayfa gösterilir.')
-            page_size=75
-            total_pages=max(1,(len(df)+page_size-1)//page_size)
-            page_no=st.number_input('Sayfa',min_value=1,max_value=total_pages,value=1,step=1,key='news_page')
-            start_i=(int(page_no)-1)*page_size
-            end_i=min(start_i+page_size,len(df))
-            page_df=df.iloc[start_i:end_i].copy()
-
-            # Tarayıcıya çok uzun RSS özetleri göndermeyelim; tam içerik backend'de korunur.
-            page_df['İçerik_Özeti']=page_df['İçerik_Özeti'].astype(str).str.slice(0,320)
-
-            st.caption(f'{start_i+1}-{end_i} / {len(df)} haber')
-            with st.form(key=f'selection_form_{st.session_state.scan_time}_{int(page_no)}', clear_on_submit=False):
-                edited=st.data_editor(
-                    page_df[cols],
-                    column_config={
-                        'Seç':st.column_config.CheckboxColumn('Seç'),
-                        'URL':st.column_config.LinkColumn('Haber Linki'),
-                        'İçerik_Özeti':st.column_config.TextColumn('Kısa İçerik',width='large'),
-                        'Risk_Skoru':st.column_config.NumberColumn('Risk',format='%d/100')
-                    },
-                    disabled=[x for x in cols if x!='Seç'],
-                    hide_index=True,use_container_width=True,height=560,
-                    key=f'editor_{st.session_state.scan_time}_{int(page_no)}'
-                )
-                save_selection=st.form_submit_button('✅ BU SAYFADAKİ SEÇİMLERİ KAYDET',use_container_width=True)
-            if save_selection:
-                original_indices=df.index[start_i:end_i]
-                df.loc[original_indices,'Seç']=edited['Seç'].astype(bool).to_numpy()
-                st.session_state.rows=df.to_dict('records')
-                st.success(f'✅ Toplam {int(df["Seç"].sum())} haber seçili.')
-
-        elif view=='⚠️ Negatif':
-            _section_select_table(
-                'negative_view',
-                df[df.Duygu=='Negatif'],
-                ['Tarih','Kaynak','Kategori','Başlık','Risk_Skoru','Risk_Gerekçesi','Doğrulama','URL'],
-                height=600
-            )
-
-        elif view=='🚨 Yüksek Risk':
-            _section_select_table(
-                'highrisk_view',
-                df[df.Risk_Durumu=='Yüksek Risk'],
-                ['Tarih','Kaynak','Kategori','Başlık','Risk_Skoru','Risk_Gerekçesi','Doğrulama','URL'],
-                height=600
-            )
-
-        elif view=='🇹🇷 Türk':
-            _section_select_table(
-                'turkish_view',
-                df[df.Kaynak_Grubu.astype(str).str.startswith('🇹🇷')],
-                ['Tarih','Kaynak','Kategori','Başlık','Risk_Skoru','Duygu','URL'],
-                height=600
-            )
-
-        elif view=='🇬🇷 Yunan':
-            _section_select_table(
-                'greek_view',
-                df[df.Kaynak_Grubu.astype(str).str.startswith('🇬🇷')],
-                ['Tarih','Kaynak','Kategori','Başlık','Risk_Skoru','Duygu','URL'],
-                height=600
-            )
-
-        elif view=='🧩 Olaylar':
-            ev=build_event_summary(df)
-            st.dataframe(ev,hide_index=True,use_container_width=True,height=480)
-            chosen=st.selectbox('Olay zaman çizelgesini göster:',ev['Olay_ID'].tolist() if not ev.empty else [])
-            if chosen:
-                g=df[df.Olay_ID==chosen].sort_values('Tarih_dt',ascending=True)
-                _section_select_table(
-                    f'event_{chosen}',
-                    g,
-                    ['Tarih','Kaynak','Kategori','Başlık','Risk_Skoru','Doğrulama','URL'],
-                    height=min(500,80+40*len(g))
-                )
-
-        elif view=='📈 Trend / Analiz':
-            st.subheader('📊 Konu yoğunluğu')
-            tr=trend_table(df)
-            if not tr.empty:
-                st.bar_chart(tr.set_index('Kategori')['Haber'])
-            st.subheader('📈 Gündem yoğunluğu')
-            tmp=df[df['Tarih_dt'].notna()].copy()
-            tmp['Saat']=tmp['Tarih_dt'].dt.strftime('%Y-%m-%d %H:00')
-            if not tmp.empty:
-                st.line_chart(tmp.groupby('Saat').size())
-            st.subheader('🧭 Yoğun konular')
-            for _,r in tr.head(10).iterrows():
-                st.write(f"**{r['Kategori']}** — {int(r['Haber'])} haber")
-
-        elif view=='⭐ Takip Listesi':
-            hits=watchlist_hits(df,watch)
-            st.write(f'Listede eşleşen: **{len(hits)}** haber')
-            if not hits.empty:
-                _section_select_table(
-                    'watchlist_view',
-                    hits,
-                    ['Tarih','Kaynak','Kategori','Başlık','Risk_Skoru','Duygu','URL'],
-                    height=550
-                )
-
 
         st.markdown('---')
         st.subheader('📊 Bugün Yayımlanan Önemli Veriler')
