@@ -409,6 +409,176 @@ def build_turkish_queries(when, user_query=''):
         qs.append(f'Türkiye ("{term}") when:{when}')
     return qs
 
+
+# -----------------------------
+# V41 — RESMÎ KAYNAK / İSTATİSTİK RADARI
+# -----------------------------
+OFFICIAL_RADAR_DOMAINS = [
+    'sanayi.gov.tr','tubitak.gov.tr','kosgeb.gov.tr','turkpatent.gov.tr','tse.org.tr',
+    'ssb.gov.tr','tuik.gov.tr','tcmb.gov.tr','ticaret.gov.tr','epdk.gov.tr','teias.gov.tr',
+    'tua.gov.tr'
+]
+
+PRIMARY_STATS_DOMAINS = [
+    'tuik.gov.tr','tcmb.gov.tr','ticaret.gov.tr','sanayi.gov.tr','ssb.gov.tr',
+    'epdk.gov.tr','teias.gov.tr','tim.org.tr','osd.org.tr','odmd.org.tr'
+]
+
+STATISTIC_TERMS = [
+    'sanayi üretim','sanayi üretimi','üretim endeksi','imalat sanayi',
+    'kapasite kullanım','kapasite kullanım oranı','kko',
+    'ihracat','dış ticaret','dış ticaret istatistik',
+    'otomotiv üretim','otomotiv ihracat','araç üretim',
+    'savunma ihracat','savunma ve havacılık ihracat',
+    'elektrik üretim','enerji üretim','kurulu güç','tüketim',
+    'yatırım teşvik','teşvik belgesi','sabit yatırım',
+    'ar-ge','arge','araştırma geliştirme','yenilik','patent başvuru',
+    'teknoloji istatistik','bilişim','girişim','yüksek teknoloji'
+]
+
+def build_official_radar_queries(when):
+    """Genel medya taramasından ayrı, birincil/resmî kaynak sorguları."""
+    gov_sites='('+' OR '.join('site:'+d for d in OFFICIAL_RADAR_DOMAINS)+')'
+    return [
+        f'(sanayi OR teknoloji OR üretim OR yatırım OR ihracat OR savunma OR Ar-Ge OR patent) {gov_sites} when:{when}',
+        f'("basın açıklaması" OR duyuru OR açıklandı OR yayımlandı OR rapor OR veri OR istatistik) {gov_sites} when:{when}'
+    ]
+
+def build_statistics_queries(when):
+    """Günlük sayısal veri yayımlarını yakalamaya dönük dar ve hızlı ek sorgular."""
+    sites='('+' OR '.join('site:'+d for d in PRIMARY_STATS_DOMAINS)+')'
+    return [
+        f'("sanayi üretimi" OR "kapasite kullanım" OR ihracat OR "dış ticaret" OR "otomotiv üretimi") {sites} when:{when}',
+        f'("savunma ihracatı" OR "enerji üretimi" OR "kurulu güç" OR "yatırım teşvik" OR "Ar-Ge") {sites} when:{when}'
+    ]
+
+def _is_official_radar_row(r):
+    d=domain(r.get('Domain','') or r.get('URL',''))
+    srcn=norm(r.get('Kaynak',''))
+    if d in OFFICIAL_RADAR_DOMAINS or d in PRIMARY_STATS_DOMAINS:
+        return True
+    names=['sanayi ve teknoloji bakanlığı','tübitak','tubitak','kosgeb','türkpatent','turkpatent',
+           'tse','savunma sanayii başkanlığı','ssb','tüik','tuik','tcmb','ticaret bakanlığı',
+           'epdk','teiaş','teias','türkiye uzay ajansı']
+    return any(x in srcn for x in names)
+
+def _contains_number_or_rate(text):
+    t=str(text or '')
+    return bool(re.search(
+        r'(?<!\w)(?:%\\s*)?\\d+(?:[.,]\\d+)?(?:\\s*%|\\s*(?:milyon|milyar|trilyon|bin|adet|ton|mw|gw|gwh|twh|tl|₺|dolar|euro|avro))?',
+        t,flags=re.I
+    ))
+
+def _critical_numbers(text, limit=4):
+    t=re.sub(r'\\s+',' ',str(text or ''))
+    pats=re.findall(
+        r'(?:%\\s*\\d+(?:[.,]\\d+)?|\\d+(?:[.,]\\d+)?\\s*%|'
+        r'\\d+(?:[.,]\\d+)?\\s*(?:milyon|milyar|trilyon|bin)\\s*(?:TL|₺|dolar|euro|avro)?|'
+        r'\\d+(?:[.,]\\d+)?\\s*(?:MW|GW|GWh|TWh|ton|adet))',
+        t,flags=re.I
+    )
+    out=[]
+    for p in pats:
+        p=p.strip()
+        if p and p not in out:
+            out.append(p)
+        if len(out)>=limit:
+            break
+    return ', '.join(out)
+
+def _important_statistics_rows(df):
+    """Bugün yayımlanan, sanayi/teknoloji açısından sayısal veri taşıyan içerikleri seçer."""
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    x=df.copy()
+    x['Tarih_dt']=pd.to_datetime(x.get('Tarih_dt'),utc=True,errors='coerce')
+    local_tz=datetime.now().astimezone().tzinfo
+    today_local=datetime.now().astimezone().date()
+
+    def is_today(v):
+        try:
+            return v is not None and pd.notna(v) and v.tz_convert(local_tz).date()==today_local
+        except Exception:
+            return False
+
+    def stat_match(r):
+        text=norm(f"{r.get('Başlık','')} {r.get('İçerik_Özeti','')} {r.get('Kategori','')}")
+        term_hit=any(term in text for term in STATISTIC_TERMS)
+        number_hit=_contains_number_or_rate(f"{r.get('Başlık','')} {r.get('İçerik_Özeti','')}")
+        return term_hit and number_hit
+
+    mask=x.apply(stat_match,axis=1)
+    today_mask=x['Tarih_dt'].apply(is_today)
+    result=x[mask & today_mask].copy()
+
+    # Eğer yayın saati eksik gelmişse ama resmî/statistik kaynağı ve veri içeriği varsa dışarıda bırakma.
+    missing_date=x['Tarih_dt'].isna()
+    fallback=x[mask & missing_date & x.apply(_is_official_radar_row,axis=1)].copy()
+    result=pd.concat([result,fallback],ignore_index=False).drop_duplicates(subset=['URL','Başlık'])
+
+    if result.empty:
+        return result
+
+    result['Kritik_Sayı']=result.apply(
+        lambda r:_critical_numbers(f"{r.get('Başlık','')} {r.get('İçerik_Özeti','')}"),
+        axis=1
+    )
+    result['Birincil_Kaynak']=result.apply(lambda r:'✅' if _is_official_radar_row(r) else '—',axis=1)
+    result=result.sort_values('Tarih_dt',ascending=False,na_position='last')
+    return result
+
+def _official_radar_rows(df):
+    if df is None or df.empty:
+        return pd.DataFrame()
+    x=df[df.apply(_is_official_radar_row,axis=1)].copy()
+    if x.empty:
+        return x
+    x=x.sort_values('Tarih_dt',ascending=False,na_position='last')
+    return x.drop_duplicates(subset=['URL','Başlık'])
+
+def _two_sentence_summary(text):
+    sents=_detail_sentences(str(text or ''),'')
+    if not sents:
+        raw=_clean_note_text(text)
+        return raw[:500]
+    return ' '.join(sents[:2])
+
+def _presentation_candidates(df,n=5):
+    """Sunuma girmeye değer 5 başlık: stratejik önem + risk + resmîlik + sayısal veri + güncellik."""
+    if df is None or df.empty:
+        return pd.DataFrame()
+    x=df.copy()
+    x['Tarih_dt']=pd.to_datetime(x.get('Tarih_dt'),utc=True,errors='coerce')
+
+    def score(r):
+        text=norm(f"{r.get('Başlık','')} {r.get('İçerik_Özeti','')} {r.get('Kategori','')}")
+        s=int(r.get('Risk_Skoru',0) or 0)//3
+        if r.get('Risk_Durumu')=='Yüksek Risk': s+=18
+        if _is_official_radar_row(r): s+=18
+        if _contains_number_or_rate(text): s+=8
+        if any(k in text for k in ['yatırım','ihracat','kapasite','savunma','yarı iletken','çip','yapay zeka',
+                                   'enerji','otomotiv','uzay','ar-ge','arge','üretim','teşvik']): s+=14
+        if critical_industrial_incident(r.get('Başlık',''),r.get('İçerik_Özeti','')): s+=16
+        try: s+=min(int(r.get('Olay_Kaynak_Sayisi',0) or 0)*3,12)
+        except Exception: pass
+        return s
+
+    x['_Sunum_Puanı']=x.apply(score,axis=1)
+    x=x.sort_values(['_Sunum_Puanı','Tarih_dt'],ascending=[False,False],na_position='last')
+    if 'Olay_ID' in x.columns:
+        x=x.drop_duplicates(subset=['Olay_ID'],keep='first')
+    else:
+        x=x.drop_duplicates(subset=['Başlık'],keep='first')
+    x=x.head(n).copy()
+    x['Sunum_Başlığı']=x['Başlık'].astype(str)
+    x['2_Cümle_Özet']=x['İçerik_Özeti'].apply(_two_sentence_summary)
+    x['Kritik_Sayı']=x.apply(
+        lambda r:_critical_numbers(f"{r.get('Başlık','')} {r.get('İçerik_Özeti','')}") or '—',
+        axis=1
+    )
+    return x.drop(columns=['_Sunum_Puanı'],errors='ignore')
+
 def build_negative_queries(when):
     return [
         f'Türkiye (iflas OR konkordato OR "üretim durdu" OR "fabrika kapandı" OR "işten çıkarma" OR grev OR soruşturma OR dava OR ceza OR "geri çağırma" OR "siber saldırı" OR "veri sızıntısı" OR yaptırım OR ambargo OR "ihale iptal" OR ertelendi OR gecikme OR "tedarik krizi" OR daralma OR zafiyet OR usulsüzlük OR yolsuzluk) (sanayi OR teknoloji OR üretim OR fabrika OR savunma OR otomotiv OR enerji OR şirket OR tesis OR proje) when:{when}',
@@ -2488,6 +2658,9 @@ if run:
     cutoff=(datetime.now(timezone.utc)-timedelta(hours=hours)).astimezone(timezone.utc)
     when=period_window(hours)
     batches=[('🇹🇷 Türk medya / sanayi-teknoloji',build_turkish_queries(when,query),'turkish')]
+    # V41 bağımsız katmanları: yalnızca 4 ek sorgu; mevcut paralel havuzda çalışır.
+    batches.append(('🏛️ Resmî kaynak radarı',build_official_radar_queries(when),'official'))
+    batches.append(('📊 Önemli istatistik radarı',build_statistics_queries(when),'statistics'))
     if neg: batches.append(('⚠️ Negatif haber taraması',build_negative_queries(when),'negative'))
     if greek: batches.append(('🇬🇷 Yunan medyası / Türk savunma',build_greek_queries(when),'greek'))
     if social: batches.append(('📱 Açık sosyal / indeks',build_social_queries(when),'social'))
@@ -3102,6 +3275,49 @@ else:
                 if st.button('🧹 AKT SEPETİNİ TAMAMEN TEMİZLE',use_container_width=True):
                     removed=_clear_osint_basket()
                     st.success(f'{removed} kayıt silindi.')
+
+        st.markdown('---')
+        st.subheader('📊 Bugün Yayımlanan Önemli Veriler')
+        st.caption('Sanayi üretimi, kapasite kullanımı, ihracat, otomotiv, savunma ihracatı, enerji, yatırım teşvikleri ve Ar-Ge/teknoloji verilerini öne çıkarır.')
+        stats_radar=_important_statistics_rows(df)
+        if stats_radar.empty:
+            st.info('Bugünkü taramada sayısal veri taşıyan önemli bir istatistik yayını tespit edilmedi.')
+        else:
+            _section_select_table(
+                'important_statistics',
+                stats_radar,
+                ['Tarih','Birincil_Kaynak','Kaynak','Kategori','Başlık','Kritik_Sayı','Risk_Skoru','URL'],
+                height=min(500,80+38*len(stats_radar))
+            )
+
+        st.markdown('---')
+        st.subheader('🏛️ Resmî Kaynak Radarı')
+        st.caption('Sanayi ve Teknoloji Bakanlığı, TÜBİTAK, KOSGEB, TÜRKPATENT, TSE, SSB, TÜİK ve diğer birincil kamu kaynaklarından gelen içerikleri ayrı gösterir.')
+        official_radar=_official_radar_rows(df)
+        if official_radar.empty:
+            st.info('Bu taramada resmî/birincil kaynaklardan eşleşen yeni içerik bulunamadı.')
+        else:
+            _section_select_table(
+                'official_radar',
+                official_radar.head(30),
+                ['Tarih','Kaynak','Kategori','Başlık','İçerik_Özeti','Risk_Skoru','Doğrulama','URL'],
+                height=min(600,90+38*min(len(official_radar),30))
+            )
+
+        st.markdown('---')
+        st.subheader('🖥️ Sunum Güncelleme Yardımcısı')
+        st.caption('Günün gelişmelerinden sunuma girmeye en uygun 5 başlığı; kısa özet ve kritik sayı ile birlikte önerir.')
+        presentation5=_presentation_candidates(df,5)
+        if presentation5.empty:
+            st.info('Sunum için önerilecek gelişme bulunamadı.')
+        else:
+            presentation_view=presentation5.copy()
+            _section_select_table(
+                'presentation_top5',
+                presentation_view,
+                ['Tarih','Kaynak','Sunum_Başlığı','2_Cümle_Özet','Kritik_Sayı','Risk_Skoru','URL'],
+                height=min(520,90+70*len(presentation_view))
+            )
 
         st.markdown('---')
         st.subheader('📊 Günlük Sanayi ve Teknoloji Durum Özeti')
