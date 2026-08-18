@@ -1982,35 +1982,77 @@ def _daily_summary_text(df):
         f"Sanayi ve teknoloji alanında gerçekleştirilen güncel açık kaynak taramasında toplam {stats['total']} haber tespit edilmiştir. "
         f"Bunların {stats['negative']} adedi negatif içerik, {stats['high_risk']} adedi yüksek riskli gelişme olarak sınıflandırılmıştır. "
         f"Tarama kapsamında {stats['osb_fire']} organize sanayi bölgesi yangını, {stats['investment']} yatırım/kapasite gelişmesi, "
-        f"{stats['defence']} savunma sanayii bağlantılı içerik ve {stats['cyber']} siber güvenlik bağlantılı içerik tespit edilmiştir."
+        f"{stats['defence']} savunma sanayii bağlantılı içerik ve {stats['cyber']} siber güvenlik bağlantılı içerik belirlenmiştir."
     )
 
     paras=[intro]
     if not top.empty:
         paras.append(
-            "Günün açık kaynak görünümünde risk seviyesi, negatif etki, kaynak teyidi ve olayın güncelliği birlikte dikkate alındığında "
-            "öne çıkan gelişmeler aşağıdaki şekilde değerlendirilmektedir."
+            "Günün genel görünümünde öne çıkan gelişmeler; güncellik, risk düzeyi, kaynak teyidi ve sanayi-teknoloji alanına muhtemel etkileri "
+            "birlikte dikkate alınarak aşağıda özetlenmiştir."
         )
         for i,(_,r) in enumerate(top.iterrows(),1):
             title=_clean_note_text(r.get('Başlık',''))
             source=_clean_note_text(r.get('Kaynak','Açık Kaynak'))
             when=_clean_note_text(r.get('Tarih',''))
             content=_clean_note_text(r.get('İçerik_Özeti',''))
-            sentences=_detail_sentences(content,title)
-            detail=_join_sentences_naturally(sentences[:5]) if sentences else content
-            p=f"{i}. sırada {when} tarihinde {source} tarafından yayımlanan “{title}” başlıklı gelişme öne çıkmaktadır."
-            if detail:
-                p+=" "+detail
+
+            # Başlığı tekrar etmek yerine içerikten anlamlı cümleleri seç.
+            sents=_detail_sentences(content,title)
+            useful=[]
+            seen=set()
+            for s in sents:
+                s=_clean_note_text(s)
+                key=norm(s)
+                if not s or len(s)<35 or key in seen:
+                    continue
+                seen.add(key)
+                useful.append(s)
+                if len(useful)>=4:
+                    break
+
+            detail=_join_sentences_naturally(useful) if useful else content[:700].strip()
             risk=int(r.get('Risk_Skoru',0) or 0)
+            status=_clean_note_text(r.get('Risk_Durumu',''))
+            category=_clean_note_text(r.get('Kategori',''))
+
+            p=f"{i}. {when} tarihinde {source} kaynaklı gelişmede, {detail}" if detail else f"{i}. {when} tarihinde {source} kaynaklı “{title}” başlıklı gelişme öne çıkmıştır."
+            if p and p[-1] not in '.!?':
+                p+='.'
+            if category:
+                p+=f" Gelişme sistemde {category} başlığı altında izlenmektedir."
             if risk:
-                p+=f" Gelişmenin sistem risk puanı {risk}/100 olarak hesaplanmıştır."
+                p+=f" Risk puanı {risk}/100"
+                if status:
+                    p+=f" ve risk durumu {status}"
+                p+=" olarak değerlendirilmiştir."
             paras.append(p)
 
-    paras.append(
-        "Genel görünüm itibarıyla, yüksek riskli ve negatif gelişmeler ile kritik üretim altyapısını etkileyebilecek olayların "
-        "takibinin sürdürülmesi; özellikle yeni resmî açıklamalar, olayların üretim ve tedarik zincirine etkileri ile farklı "
-        "açık kaynaklardan gelecek teyitlerin izlenmesi önem taşımaktadır."
-    )
+    # Günlük tabloya dair kısa analitik kapanış.
+    emphasis=[]
+    if stats['high_risk']:
+        emphasis.append(f"{stats['high_risk']} yüksek riskli gelişmenin")
+    if stats['negative']:
+        emphasis.append(f"{stats['negative']} negatif içeriğin")
+    if stats['investment']:
+        emphasis.append(f"{stats['investment']} yatırım/kapasite gelişmesinin")
+    if stats['defence']:
+        emphasis.append(f"{stats['defence']} savunma sanayii gelişmesinin")
+    if stats['cyber']:
+        emphasis.append(f"{stats['cyber']} siber güvenlik gelişmesinin")
+
+    if emphasis:
+        focus=', '.join(emphasis[:-1]) + ((' ve '+emphasis[-1]) if len(emphasis)>1 else emphasis[0])
+        conclusion=(
+            f"Günlük görünümde özellikle {focus} takip edilmesi gereken başlıklar arasında bulunduğu değerlendirilmektedir. "
+            "Yeni resmî açıklamalar, üretim ve tedarik zincirine olası etkiler ile farklı açık kaynaklardan gelecek teyitlerin izlenmesi önem taşımaktadır."
+        )
+    else:
+        conclusion=(
+            "Günlük görünümde belirgin bir yüksek risk yoğunlaşması görülmemekle birlikte, yeni resmî açıklamalar ile üretim, yatırım, "
+            "tedarik zinciri ve teknoloji alanındaki gelişmelerin izlenmesinin sürdürülmesi önem taşımaktadır."
+        )
+    paras.append(conclusion)
     return '\n\n'.join(paras),top,stats
 
 
@@ -2992,7 +3034,6 @@ if run:
         f'(Turkey OR Turkish) (Baykar OR ASELSAN OR TUSAŞ OR ROKETSAN OR HAVELSAN OR KAAN OR drone OR missile) timespan:{when}'
     ],'global'))
     all_rows=[]; stat={'Ham sonuç':0,'Zaman dışı':0,'Konu dışı':0,'Yunan dışı':0,'Kaynak dışı':0,'Sonuç':0,'Olay':0}
-    placeholder=st.empty()
     live_alarm_box=st.empty()
     status_box=st.status('🔎 Tarama başlıyor...',expanded=True)
 
@@ -3047,44 +3088,8 @@ if run:
     all_rows=dedupe(_merge_batch(primary_raw,primary_mode))
     stat['Sonuç']=len(all_rows)
 
-    if all_rows:
-        pv=pd.DataFrame(all_rows)
-        pv['Tarih_dt']=pd.to_datetime(pv['Tarih_dt'],utc=True,errors='coerce')
-        pv=pv.sort_values(['Tarih_dt','Domain'],ascending=[False,True],na_position='last')
-        fast=pv[['Tarih','Kaynak_Grubu','Kaynak','Başlık','İçerik_Özeti','Duygu','Risk_Skoru','Risk_Durumu','URL']].head(100).copy()
-        fast['İçerik_Özeti']=fast['İçerik_Özeti'].astype(str).str.slice(0,260)
-        # İlk ekrandaki hızlı haber akışında da seçim kutusu olsun.
-        # Böylece kullanıcı daha aşağıdaki kronolojik bölüme inmeden doğrudan haber seçebilir.
-        fast_view=fast.copy()
-        if 'Seç' not in fast_view.columns:
-            fast_view.insert(0,'Seç',False)
-
-        edited_fast=placeholder.data_editor(
-            fast_view,
-            column_config={
-                'Seç':st.column_config.CheckboxColumn('Seç'),
-                'URL':st.column_config.LinkColumn('Haber Linki'),
-                'İçerik_Özeti':st.column_config.TextColumn('Kısa İçerik',width='large'),
-                'Risk_Skoru':st.column_config.NumberColumn('Risk',format='%d/100')
-            },
-            disabled=[c for c in fast_view.columns if c!='Seç'],
-            hide_index=True,use_container_width=True,height=440,
-            key=f'fast_preview_{st.session_state.get("scan_time","running")}'
-        )
-
-        # İlk ekrandaki seçimleri ana tarama kayıtlarına işle.
-        if not edited_fast.empty and 'Seç' in edited_fast.columns:
-            selected_fast_urls=set(
-                edited_fast.loc[edited_fast['Seç']==True,'URL'].astype(str).tolist()
-            )
-            selected_fast_titles=set(
-                edited_fast.loc[edited_fast['Seç']==True,'Başlık'].astype(str).map(title_key).tolist()
-            )
-            for rr in all_rows:
-                u=str(rr.get('URL','') or '')
-                tk=title_key(str(rr.get('Başlık','') or ''))
-                if u in selected_fast_urls or tk in selected_fast_titles:
-                    rr['Seç']=True
+    # V44: Hızlı İlk Bakış kaldırıldı.
+    # Tarama sonuçları doğrudan aşağıdaki ana Görünüm ekranında (Kronolojik/Negatif/Yüksek Risk vb.) açılır.
 
     # 2) Negatif + Yunan + sosyal + global sorgularını TEK HAVUZDA paralel çalıştır.
     supplemental=batches[1:]
@@ -3138,24 +3143,18 @@ if run:
         # Kritik sanayi yangın/patlama anlık alarmı yukarıdaki özel blokta aynen devam eder.
         stat['Sonuç']=len(all_rows)
 
-    # 3) Analitik katman yalnızca bir kez ve artık hızlı ters indeks ile.
+    # 3) Analitik katman — V44 performans düzenlemesi.
+    # V43'teki her haber sayfasını tek tek indiren tam-metin negatif analizi kaldırıldı.
+    # V42'deki hızlı ve bağlam duyarlı Başlık + RSS İçerik/Özet sınıflandırması kullanılır.
     if all_rows:
         status_box.write('🧩 Hızlı olay analizi hazırlanıyor...')
         all_rows=enrich_rows(all_rows)
         stat['Olay']=len({r.get('Olay_ID') for r in all_rows})
-
-        # V43: negatiflik yalnız başlık/RSS özetiyle bırakılmaz.
-        # Her haberin gerçek sayfasındaki tam içerik mümkünse paralel alınır ve
-        # Başlık + TAM HABER METNİ üzerinden nihai sınıflandırma yapılır.
-        status_box.write(f'🧠 Negatif/risk analizi — {len(all_rows)} haberin tam içeriği paralel okunuyor...')
-        all_rows,deep_neg_stats=_deep_negative_reclassify(all_rows,max_workers=14)
-        stat['Tam metin negatif analizi']=deep_neg_stats['tam_metin']
-        stat['Kısa içerik fallback']=deep_neg_stats['kisa_icerik']
     else:
         stat['Olay']=0
 
-    # Nihai alarm listesi yalnızca tam içerik analizinden sonra oluşturulur.
-    # Böylece olumlu bir haberin kısa başlık/snippet nedeniyle yanlış alarm vermesi azaltılır.
+    # Nihai alarm listesi mevcut hızlı sınıflandırmadan oluşturulur.
+    # Kritik sanayi yangın/patlama alarmı aynen korunur.
     live_alerts=[]
     alerted_keys=set()
     final_toast_count=0
@@ -3163,7 +3162,6 @@ if run:
         critical_label=critical_industrial_incident(ar.get('Başlık',''),ar.get('İçerik_Özeti',''))
         is_negative=(ar.get('Duygu')=='Negatif')
         is_high=(ar.get('Risk_Durumu')=='Yüksek Risk' or int(ar.get('Risk_Skoru',0) or 0)>=70)
-
         if critical_label or is_negative or is_high:
             if _register_alert(ar):
                 if instant_alerts and not critical_label and final_toast_count < MAX_TOASTS_PER_SCAN:
@@ -3175,8 +3173,7 @@ if run:
 
     if live_alerts:
         live_alarm_box.warning(
-            f'🔔 Tam içerik analizi sonrası {len(live_alerts)} negatif/riskli içerik yakalandı. '
-            f'Son: {live_alerts[0]["Başlık"][:100]}'
+            f'🔔 {len(live_alerts)} negatif/riskli içerik yakalandı. Son: {live_alerts[0]["Başlık"][:100]}'
         )
 
     status_box.update(
@@ -3316,6 +3313,86 @@ else:
                     removed=_clear_important_basket()
                     st.success(f'{removed} kayıt silindi.')
 
+        st.markdown('---')
+        st.subheader('🗂️ Açık Kaynak Tarama Çalışması Sepeti')
+        st.caption('14:00 açık kaynak tarama raporuna girecek haberleri gün boyunca ayrı bir sepette biriktirin.')
+
+        osint_selected_now=df[df.get('Seç',False)==True] if 'Seç' in df.columns else pd.DataFrame()
+        osint_selected_sections=_collect_section_selected_from_main_df(df)
+
+        o1,o2=st.columns(2)
+        with o1:
+            if st.button('➕ KRONOLOJİDE SEÇİLİ HABERLERİ AKT SEPETİNE EKLE',use_container_width=True):
+                if osint_selected_now.empty:
+                    st.warning('Önce kronolojik görünümden haber seçin ve seçimleri kaydedin.')
+                else:
+                    added=_add_rows_to_osint_basket(osint_selected_now.to_dict('records'))
+                    st.success(f'{added} haber AKT sepetine eklendi.')
+        with o2:
+            if st.button('➕ BÖLÜMLERDE İŞARETLEDİKLERİMİ AKT SEPETİNE EKLE',use_container_width=True):
+                if osint_selected_sections.empty:
+                    st.warning('Önce herhangi bir bölümde seçim yapın.')
+                else:
+                    added=_add_rows_to_osint_basket(osint_selected_sections.to_dict('records'))
+                    st.success(f'{added} haber AKT sepetine eklendi.')
+
+        osint_basket=_load_osint_basket()
+        if osint_basket.empty:
+            st.info('Açık kaynak tarama çalışması sepeti boş.')
+        else:
+            osint_view=osint_basket[['id','news_time','source','category','title','risk_score','risk_status','url']].copy()
+            osint_view.insert(0,'Sil',False)
+            with st.form('osint_basket_form',clear_on_submit=False):
+                edited_osint=st.data_editor(
+                    osint_view,
+                    column_config={
+                        'Sil':st.column_config.CheckboxColumn('Sil'),
+                        'url':st.column_config.LinkColumn('Haber Linki'),
+                        'risk_score':st.column_config.NumberColumn('Risk',format='%d/100')
+                    },
+                    disabled=[c for c in osint_view.columns if c!='Sil'],
+                    hide_index=True,use_container_width=True,height=min(430,80+36*len(osint_view))
+                )
+                remove_osint=st.form_submit_button('🗑️ İŞARETLENENLERİ AKT SEPETİNDEN ÇIKAR',use_container_width=True)
+            if remove_osint:
+                ids=edited_osint.loc[edited_osint['Sil']==True,'id'].tolist()
+                removed=_remove_osint_basket_ids(ids)
+                st.success(f'{removed} kayıt AKT sepetinden çıkarıldı.')
+
+            osint_rows=[]
+            for _,r in osint_basket.iterrows():
+                osint_rows.append({
+                    'Tarih':r.get('news_time',''),
+                    'Kaynak':r.get('source',''),
+                    'Başlık':r.get('title',''),
+                    'İçerik_Özeti':r.get('summary',''),
+                    'URL':r.get('url',''),
+                    'Kategori':r.get('category',''),
+                    'Risk_Skoru':r.get('risk_score',0),
+                    'Risk_Durumu':r.get('risk_status',''),
+                    'Yayıncı':r.get('source',''),
+                    'Yayıncı_URL':''
+                })
+
+            ob1,ob2=st.columns(2)
+            with ob1:
+                if st.button('📝 AKT SEPETİNDEN WORD HAZIRLA',use_container_width=True):
+                    with st.spinner('AKT sepetindeki haberler rapora hazırlanıyor...'):
+                        st.session_state.docx_bytes=make_docx(osint_rows)
+                if st.session_state.get('docx_bytes'):
+                    st.download_button(
+                        '⬇️ AKT SEPETİNDEN AÇIK KAYNAK RAPORU / WORD',
+                        st.session_state.docx_bytes,
+                        file_name=f'Sanayi_Teknoloji_Acik_Kaynak_Sepet_{date.today()}.docx',
+                        mime='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                        use_container_width=True
+                    )
+            with ob2:
+                if st.button('🧹 AKT SEPETİNİ TAMAMEN TEMİZLE',use_container_width=True):
+                    removed=_clear_osint_basket()
+                    st.success(f'{removed} kayıt silindi.')
+
+
         # ---------------------------------------------------------
         # V33 — BİLGİ NOTU ADAYLARI
         # ---------------------------------------------------------
@@ -3388,12 +3465,17 @@ else:
                     height=min(420,42+35*len(alert_view))
                 )
 
-        # Kritik sanayi olayları için özel kalıcı alarm bölümü
+        # Kritik sanayi olayları için SABİT bölüm.
+        # Her zaman görünür; olay varsa içerik dolar, yoksa boş durum gösterilir.
+        st.subheader('🚨 Kritik Sanayi Olayları — OSB / OSB Dışı Yangın ve Patlama')
+        st.caption('OSB ve OSB dışındaki fabrika, tesis ve sanayi alanlarında tespit edilen yangın/patlama olayları burada sürekli izlenir.')
+
         critical_mask=df.apply(
             lambda r:bool(critical_industrial_incident(r.get('Başlık',''),r.get('İçerik_Özeti',''))),
             axis=1
         )
         critical_events=df[critical_mask].copy().sort_values('Tarih_dt',ascending=False)
+
         if not critical_events.empty:
             critical_events['Kritik_Olay']=critical_events.apply(
                 lambda r:critical_industrial_incident(r.get('Başlık',''),r.get('İçerik_Özeti','')) or '',
@@ -3406,6 +3488,8 @@ else:
                 ['Tarih','Kritik_Olay','Kaynak','Başlık','Risk_Skoru','URL'],
                 height=min(340,70+36*len(critical_events))
             )
+        else:
+            st.info('Bu tarama döneminde OSB / OSB dışı sanayi tesisi yangını veya patlaması tespit edilmedi.')
 
         # Alarm bandı
         alarms=df[(df.Risk_Skoru>=70) | (df.Duygu=='Negatif')].sort_values(['Risk_Skoru','Tarih_dt'],ascending=[False,False])
@@ -3533,84 +3617,6 @@ else:
                     height=550
                 )
 
-        st.markdown('---')
-        st.subheader('🗂️ Açık Kaynak Tarama Çalışması Sepeti')
-        st.caption('14:00 açık kaynak tarama raporuna girecek haberleri gün boyunca ayrı bir sepette biriktirin.')
-
-        osint_selected_now=df[df.get('Seç',False)==True] if 'Seç' in df.columns else pd.DataFrame()
-        osint_selected_sections=_collect_section_selected_from_main_df(df)
-
-        o1,o2=st.columns(2)
-        with o1:
-            if st.button('➕ KRONOLOJİDE SEÇİLİ HABERLERİ AKT SEPETİNE EKLE',use_container_width=True):
-                if osint_selected_now.empty:
-                    st.warning('Önce kronolojik görünümden haber seçin ve seçimleri kaydedin.')
-                else:
-                    added=_add_rows_to_osint_basket(osint_selected_now.to_dict('records'))
-                    st.success(f'{added} haber AKT sepetine eklendi.')
-        with o2:
-            if st.button('➕ BÖLÜMLERDE İŞARETLEDİKLERİMİ AKT SEPETİNE EKLE',use_container_width=True):
-                if osint_selected_sections.empty:
-                    st.warning('Önce herhangi bir bölümde seçim yapın.')
-                else:
-                    added=_add_rows_to_osint_basket(osint_selected_sections.to_dict('records'))
-                    st.success(f'{added} haber AKT sepetine eklendi.')
-
-        osint_basket=_load_osint_basket()
-        if osint_basket.empty:
-            st.info('Açık kaynak tarama çalışması sepeti boş.')
-        else:
-            osint_view=osint_basket[['id','news_time','source','category','title','risk_score','risk_status','url']].copy()
-            osint_view.insert(0,'Sil',False)
-            with st.form('osint_basket_form',clear_on_submit=False):
-                edited_osint=st.data_editor(
-                    osint_view,
-                    column_config={
-                        'Sil':st.column_config.CheckboxColumn('Sil'),
-                        'url':st.column_config.LinkColumn('Haber Linki'),
-                        'risk_score':st.column_config.NumberColumn('Risk',format='%d/100')
-                    },
-                    disabled=[c for c in osint_view.columns if c!='Sil'],
-                    hide_index=True,use_container_width=True,height=min(430,80+36*len(osint_view))
-                )
-                remove_osint=st.form_submit_button('🗑️ İŞARETLENENLERİ AKT SEPETİNDEN ÇIKAR',use_container_width=True)
-            if remove_osint:
-                ids=edited_osint.loc[edited_osint['Sil']==True,'id'].tolist()
-                removed=_remove_osint_basket_ids(ids)
-                st.success(f'{removed} kayıt AKT sepetinden çıkarıldı.')
-
-            osint_rows=[]
-            for _,r in osint_basket.iterrows():
-                osint_rows.append({
-                    'Tarih':r.get('news_time',''),
-                    'Kaynak':r.get('source',''),
-                    'Başlık':r.get('title',''),
-                    'İçerik_Özeti':r.get('summary',''),
-                    'URL':r.get('url',''),
-                    'Kategori':r.get('category',''),
-                    'Risk_Skoru':r.get('risk_score',0),
-                    'Risk_Durumu':r.get('risk_status',''),
-                    'Yayıncı':r.get('source',''),
-                    'Yayıncı_URL':''
-                })
-
-            ob1,ob2=st.columns(2)
-            with ob1:
-                if st.button('📝 AKT SEPETİNDEN WORD HAZIRLA',use_container_width=True):
-                    with st.spinner('AKT sepetindeki haberler rapora hazırlanıyor...'):
-                        st.session_state.docx_bytes=make_docx(osint_rows)
-                if st.session_state.get('docx_bytes'):
-                    st.download_button(
-                        '⬇️ AKT SEPETİNDEN AÇIK KAYNAK RAPORU / WORD',
-                        st.session_state.docx_bytes,
-                        file_name=f'Sanayi_Teknoloji_Acik_Kaynak_Sepet_{date.today()}.docx',
-                        mime='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-                        use_container_width=True
-                    )
-            with ob2:
-                if st.button('🧹 AKT SEPETİNİ TAMAMEN TEMİZLE',use_container_width=True):
-                    removed=_clear_osint_basket()
-                    st.success(f'{removed} kayıt silindi.')
 
         st.markdown('---')
         st.subheader('📊 Bugün Yayımlanan Önemli Veriler')
