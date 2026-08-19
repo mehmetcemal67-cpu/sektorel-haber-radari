@@ -4696,42 +4696,6 @@ else:
             )
 
         st.markdown('---')
-        st.subheader('📝 Takip Edilecek Açık Hususlar')
-        st.caption(
-            'Önemli olaylar için henüz izlenmesi/teyit edilmesi gereken başlıkları analist kontrol listesi olarak üretir. '
-            'Bu ifadeler kesin eksiklik iddiası değil, takip önerisidir.'
-        )
-        open_issues=_v58_open_issues_table(df,20)
-        if open_issues.empty:
-            st.info('Bu taramada takip listesi oluşturulabilecek olay bulunamadı.')
-        else:
-            _section_select_table(
-                'v58_open_issues',
-                open_issues,
-                ['Tarih','Başlık','Aşama','Takip_Edilecek_Açık_Hususlar',
-                 'Risk_Skoru','Doğrulama','URL'],
-                height=min(700,110+48*len(open_issues))
-            )
-
-        st.markdown('---')
-        st.subheader('🧾 Teyit / Çelişki Matrisi')
-        st.caption(
-            'Olayları Tek Kaynak, Çoklu Kaynak, Resmî Teyitli veya Çelişkili Bilgi olarak ayırır. '
-            'Çelişki tespiti mevcut başlık/özetlerdeki sayı ve temel olgu farklılıklarına dayanır; ek ağ isteği yapılmaz.'
-        )
-        verification_matrix=_v58_verification_matrix(df,25)
-        if verification_matrix.empty:
-            st.info('Bu taramada teyit matrisi oluşturulabilecek olay bulunamadı.')
-        else:
-            _section_select_table(
-                'v58_verification_matrix',
-                verification_matrix,
-                ['Tarih','Başlık','Teyit_Durumu','Teyit_Açıklaması',
-                 'Kaynak_Sayısı','Haber_Sayısı','Risk_Skoru','URL'],
-                height=min(700,100+42*len(verification_matrix))
-            )
-
-        st.markdown('---')
         st.subheader('🔎 Resmî Açıklama – Medya Karşılaştırması')
         st.caption(
             'Bu alan sabittir. Aynı taramadaki medya haberlerini resmî/birincil kaynak açıklamalarıyla '
