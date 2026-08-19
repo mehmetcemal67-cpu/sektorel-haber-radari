@@ -1157,6 +1157,263 @@ def make_v54_top10_summary_docx(df,value10,text=None):
     return bio.getvalue()
 
 
+
+# -----------------------------
+# V58 — ANALİTİK TAKİP ÜÇLÜSÜ
+# 1) Olay Yaşam Döngüsü
+# 2) Takip Edilecek Açık Hususlar
+# 3) Teyit / Çelişki Matrisi
+# Ek web isteği yapmaz; mevcut tarama sonuçlarını kullanır.
+# -----------------------------
+
+V58_RESOLUTION_TERMS=[
+    'kontrol altına alındı','söndürüldü','sona erdi','tamamlandı','çözüldü',
+    'giderildi','yeniden başladı','üretim yeniden başladı','faaliyet yeniden başladı',
+    'normalleşti','normal seyrine döndü','tahliye sona erdi','arıza giderildi',
+    'erişim sağlandı','sistem yeniden devreye alındı'
+]
+
+V58_ESCALATION_TERMS=[
+    'arttı','büyüdü','genişledi','yayılıyor','devam ediyor','sürüyor',
+    'üretim durdu','faaliyet durdu','tahliye','ikinci patlama','yeni patlama',
+    'can kaybı','yaralı sayısı','hasar arttı','soruşturma başlatıldı',
+    'acil durum','kriz','kesinti sürüyor'
+]
+
+def _v58_event_groups(df):
+    if df is None or df.empty or 'Olay_ID' not in df.columns:
+        return {}
+    groups={}
+    for oid,g in df.groupby('Olay_ID',dropna=False):
+        groups[str(oid)]=g.sort_values('Tarih_dt',ascending=True).copy()
+    return groups
+
+def _v58_event_stage(g):
+    """Olayın mevcut taramadaki izlerine göre yaşam döngüsü aşaması."""
+    if g is None or g.empty:
+        return 'İlk Sinyal'
+
+    text=norm(' '.join(
+        (g['Başlık'].fillna('').astype(str)+' '+g['İçerik_Özeti'].fillna('').astype(str)).tolist()
+    ))
+    source_count=max(1,g['Domain'].astype(str).replace('',pd.NA).dropna().nunique()) if 'Domain' in g.columns else 1
+    news_count=len(g)
+    official=any(_is_official_radar_row(r) for _,r in g.iterrows())
+
+    if any(x in text for x in V58_RESOLUTION_TERMS):
+        return '✅ Sonuçlandı'
+    if official:
+        return '🟢 Teyit Edildi'
+    if source_count>=2 or news_count>=3 or any(x in text for x in V58_ESCALATION_TERMS):
+        return '🟠 Gelişiyor'
+    return '🔵 İlk Sinyal'
+
+def _v58_stage_reason(g,stage):
+    source_count=max(1,g['Domain'].astype(str).replace('',pd.NA).dropna().nunique()) if 'Domain' in g.columns else 1
+    news_count=len(g)
+    official=any(_is_official_radar_row(r) for _,r in g.iterrows())
+    text=norm(' '.join(
+        (g['Başlık'].fillna('').astype(str)+' '+g['İçerik_Özeti'].fillna('').astype(str)).tolist()
+    ))
+    reasons=[]
+    if official: reasons.append('resmî/birincil açıklama mevcut')
+    if source_count>=2: reasons.append(f'{source_count} farklı kaynak')
+    if news_count>=3: reasons.append(f'{news_count} haber kaydı')
+    if any(x in text for x in V58_RESOLUTION_TERMS): reasons.append('sonuç/normalleşme ifadesi')
+    elif any(x in text for x in V58_ESCALATION_TERMS): reasons.append('devam/etki artışı sinyali')
+    if not reasons: reasons.append('tek/erken kaynak sinyali')
+    return ' • '.join(reasons)
+
+def _v58_event_lifecycle_table(df,limit=25):
+    cols=['Tarih','Aşama','Başlık','Kategori','Kaynak_Sayısı','Haber_Sayısı',
+          'Doğrulama','Risk_Skoru','Aşama_Gerekçesi','URL']
+    groups=_v58_event_groups(df)
+    rows=[]
+    for oid,g in groups.items():
+        latest=g.sort_values('Tarih_dt',ascending=False).iloc[0]
+        stage=_v58_event_stage(g)
+        source_count=max(1,g['Domain'].astype(str).replace('',pd.NA).dropna().nunique()) if 'Domain' in g.columns else 1
+        rows.append({
+            'Tarih':latest.get('Tarih',''),
+            'Aşama':stage,
+            'Başlık':latest.get('Başlık',''),
+            'Kategori':latest.get('Kategori',''),
+            'Kaynak_Sayısı':source_count,
+            'Haber_Sayısı':len(g),
+            'Doğrulama':latest.get('Doğrulama',''),
+            'Risk_Skoru':int(pd.to_numeric(g['Risk_Skoru'],errors='coerce').fillna(0).max()) if 'Risk_Skoru' in g.columns else 0,
+            'Aşama_Gerekçesi':_v58_stage_reason(g,stage),
+            'URL':latest.get('URL',''),
+            '_stage_rank':{'🟠 Gelişiyor':4,'🟢 Teyit Edildi':3,'🔵 İlk Sinyal':2,'✅ Sonuçlandı':1}.get(stage,0),
+            '_dt':pd.to_datetime(latest.get('Tarih_dt'),utc=True,errors='coerce')
+        })
+    if not rows:
+        return pd.DataFrame(columns=cols)
+    out=pd.DataFrame(rows).sort_values(['_stage_rank','Risk_Skoru','_dt'],ascending=[False,False,False])
+    return out.head(limit).drop(columns=['_stage_rank','_dt'],errors='ignore')
+
+def _v58_open_questions_for_group(g):
+    """
+    'Bilinmiyor' iddiası üretmez; mevcut içerikte ayrıca teyit/izleme gerektiren
+    alanları analist kontrol listesi olarak önerir.
+    """
+    text=norm(' '.join(
+        (g['Başlık'].fillna('').astype(str)+' '+g['İçerik_Özeti'].fillna('').astype(str)).tolist()
+    ))
+    qs=[]
+
+    if any(x in text for x in ['yangın','patlama','infilak','kaza']):
+        qs += [
+            'Olayın kesin nedeni ve teknik inceleme sonucu',
+            'Can kaybı/yaralı ve maddi hasarın resmî bilançosu',
+            'Üretim/faaliyet sürekliliğine etkisi ve normale dönüş takvimi'
+        ]
+    if any(x in text for x in ['siber','veri sızıntısı','veri ihlali','fidye','güvenlik açığı']):
+        qs += [
+            'Etkilenen sistem/veri kapsamının kesinleştirilmesi',
+            'İhlalin kaynağı ve alınan düzeltici tedbirler',
+            'Operasyonel hizmetlere etkisinin sürüp sürmediği'
+        ]
+    if any(x in text for x in ['yatırım','fabrika kurulacak','tesis kurulacak','teşvik']):
+        qs += [
+            'Yatırım tutarı, kapasitesi ve finansman yapısının teyidi',
+            'Yatırım/üretime geçiş takvimi',
+            'İstihdam ve yerli tedarik etkisinin netleşmesi'
+        ]
+    if any(x in text for x in ['ihracat','sözleşme','anlaşma','sipariş','teslimat','savunma']):
+        qs += [
+            'Sözleşme/anlaşmanın kapsamı ve parasal büyüklüğü',
+            'Teslimat/uygulama takvimi',
+            'Karşı taraf veya resmî makam teyidi'
+        ]
+    if any(x in text for x in ['üretim düştü','daralma','geriledi','azaldı','maliyet baskısı','rekabet gücü']):
+        qs += [
+            'Olumsuz eğilimin geçici mi yapısal mı olduğunun izlenmesi',
+            'Bir sonraki resmî veri setinde eğilimin devam edip etmediği',
+            'Sektör/şirket bazında üretim, ihracat ve istihdam etkisi'
+        ]
+
+    official=any(_is_official_radar_row(r) for _,r in g.iterrows())
+    source_count=max(1,g['Domain'].astype(str).replace('',pd.NA).dropna().nunique()) if 'Domain' in g.columns else 1
+    if not official:
+        qs.append('Resmî/birincil kaynak açıklaması')
+    if source_count<2:
+        qs.append('İkinci bağımsız kaynaktan teyit')
+
+    if not qs:
+        qs=[
+            'Gelişmenin kapsamının yeni açıklamalarla netleşmesi',
+            'Resmî/birincil kaynak teyidi',
+            'Sanayi/teknoloji alanındaki somut etkisinin izlenmesi'
+        ]
+
+    # Sıralı tekilleştirme, en fazla 4 açık husus.
+    out=[]
+    seen=set()
+    for q in qs:
+        k=norm(q)
+        if k in seen: continue
+        seen.add(k); out.append(q)
+        if len(out)>=4: break
+    return out
+
+def _v58_open_issues_table(df,limit=20):
+    cols=['Tarih','Başlık','Aşama','Takip_Edilecek_Açık_Hususlar','Risk_Skoru','Doğrulama','URL']
+    groups=_v58_event_groups(df)
+    rows=[]
+    for oid,g in groups.items():
+        latest=g.sort_values('Tarih_dt',ascending=False).iloc[0]
+        stage=_v58_event_stage(g)
+        # Sonuçlanan olaylar açık hususlar listesinin altında kalsın; aktif olaylar öne çıksın.
+        qs=_v58_open_questions_for_group(g)
+        risk=int(pd.to_numeric(g['Risk_Skoru'],errors='coerce').fillna(0).max()) if 'Risk_Skoru' in g.columns else 0
+        rows.append({
+            'Tarih':latest.get('Tarih',''),
+            'Başlık':latest.get('Başlık',''),
+            'Aşama':stage,
+            'Takip_Edilecek_Açık_Hususlar':' • '.join(qs),
+            'Risk_Skoru':risk,
+            'Doğrulama':latest.get('Doğrulama',''),
+            'URL':latest.get('URL',''),
+            '_active':0 if stage=='✅ Sonuçlandı' else 1,
+            '_dt':pd.to_datetime(latest.get('Tarih_dt'),utc=True,errors='coerce')
+        })
+    if not rows:
+        return pd.DataFrame(columns=cols)
+    out=pd.DataFrame(rows).sort_values(['_active','Risk_Skoru','_dt'],ascending=[False,False,False])
+    return out.head(limit).drop(columns=['_active','_dt'],errors='ignore')
+
+def _v58_numeric_claims(g):
+    """Kaynak bazında başlık+özetten sayısal iddiaları çıkarır."""
+    claims=[]
+    pat=re.compile(r'(?:%\s*)?\b\d+(?:[.,]\d+)?\b(?:\s*%|\s*(?:milyon|milyar|bin|adet|kişi|yaralı|ölü|mw|gw|ton|tl|dolar|euro|avro))?',re.I)
+    for _,r in g.iterrows():
+        txt=f"{r.get('Başlık','')} {r.get('İçerik_Özeti','')}"
+        nums={x.strip() for x in pat.findall(txt) if x.strip()}
+        claims.append((str(r.get('Kaynak','')),nums))
+    return claims
+
+def _v58_conflict_status(g):
+    source_count=max(1,g['Domain'].astype(str).replace('',pd.NA).dropna().nunique()) if 'Domain' in g.columns else 1
+    official=any(_is_official_radar_row(r) for _,r in g.iterrows())
+    claims=_v58_numeric_claims(g)
+
+    nonempty=[nums for _,nums in claims if nums]
+    numeric_conflict=False
+    if len(nonempty)>=2:
+        # Birden fazla kaynağın sayısal kümeleri tamamen ayrışıyorsa uyar.
+        for i in range(len(nonempty)):
+            for j in range(i+1,len(nonempty)):
+                if nonempty[i] and nonempty[j] and nonempty[i].isdisjoint(nonempty[j]):
+                    numeric_conflict=True
+                    break
+            if numeric_conflict: break
+
+    text=norm(' '.join(
+        (g['Başlık'].fillna('').astype(str)+' '+g['İçerik_Özeti'].fillna('').astype(str)).tolist()
+    ))
+    verbal_conflict=(
+        ('can kaybı yok' in text and ('can kaybı' in text.replace('can kaybı yok','') or 'hayatını kaybetti' in text))
+        or ('yaralı yok' in text and 'yaralandı' in text)
+        or ('üretim durdu' in text and ('üretim devam ediyor' in text or 'üretim sürüyor' in text))
+    )
+
+    if numeric_conflict or verbal_conflict:
+        return '🔴 Çelişkili Bilgi','Kaynaklar arasında sayı/olgu farklılığı tespit edildi; manuel teyit önerilir.'
+    if official:
+        return '🟢 Resmî Teyitli','Resmî/birincil kaynak mevcut.'
+    if source_count>=2:
+        return '🟢 Çoklu Kaynak','En az iki farklı kaynak aynı olayı destekliyor.'
+    return '🟡 Tek Kaynak','İkinci bağımsız veya resmî teyit henüz görünmüyor.'
+
+def _v58_verification_matrix(df,limit=25):
+    cols=['Tarih','Başlık','Teyit_Durumu','Teyit_Açıklaması','Kaynak_Sayısı',
+          'Haber_Sayısı','Risk_Skoru','URL']
+    groups=_v58_event_groups(df)
+    rows=[]
+    rank={'🔴 Çelişkili Bilgi':4,'🟡 Tek Kaynak':3,'🟢 Çoklu Kaynak':2,'🟢 Resmî Teyitli':1}
+    for oid,g in groups.items():
+        latest=g.sort_values('Tarih_dt',ascending=False).iloc[0]
+        status,reason=_v58_conflict_status(g)
+        source_count=max(1,g['Domain'].astype(str).replace('',pd.NA).dropna().nunique()) if 'Domain' in g.columns else 1
+        risk=int(pd.to_numeric(g['Risk_Skoru'],errors='coerce').fillna(0).max()) if 'Risk_Skoru' in g.columns else 0
+        rows.append({
+            'Tarih':latest.get('Tarih',''),
+            'Başlık':latest.get('Başlık',''),
+            'Teyit_Durumu':status,
+            'Teyit_Açıklaması':reason,
+            'Kaynak_Sayısı':source_count,
+            'Haber_Sayısı':len(g),
+            'Risk_Skoru':risk,
+            'URL':latest.get('URL',''),
+            '_rank':rank.get(status,0),
+            '_dt':pd.to_datetime(latest.get('Tarih_dt'),utc=True,errors='coerce')
+        })
+    if not rows:
+        return pd.DataFrame(columns=cols)
+    out=pd.DataFrame(rows).sort_values(['_rank','Risk_Skoru','_dt'],ascending=[False,False,False])
+    return out.head(limit).drop(columns=['_rank','_dt'],errors='ignore')
+
 # -----------------------------
 # V51 — RESMÎ AÇIKLAMA / MEDYA KARŞILAŞTIRMASI
 # -----------------------------
@@ -4419,6 +4676,60 @@ else:
                         use_container_width=True,
                         key='v54_top10_summary_download'
                     )
+
+        st.markdown('---')
+        st.subheader('🧭 Olay Yaşam Döngüsü')
+        st.caption(
+            'Aynı olayın mevcut taramadaki gelişim aşamasını otomatik gösterir: '
+            'İlk Sinyal → Gelişiyor → Teyit Edildi → Sonuçlandı. Bu alan sabittir.'
+        )
+        lifecycle=_v58_event_lifecycle_table(df,25)
+        if lifecycle.empty:
+            st.info('Bu taramada yaşam döngüsü oluşturulabilecek olay bulunamadı.')
+        else:
+            _section_select_table(
+                'v58_event_lifecycle',
+                lifecycle,
+                ['Tarih','Aşama','Başlık','Kategori','Kaynak_Sayısı','Haber_Sayısı',
+                 'Doğrulama','Risk_Skoru','Aşama_Gerekçesi','URL'],
+                height=min(700,100+40*len(lifecycle))
+            )
+
+        st.markdown('---')
+        st.subheader('📝 Takip Edilecek Açık Hususlar')
+        st.caption(
+            'Önemli olaylar için henüz izlenmesi/teyit edilmesi gereken başlıkları analist kontrol listesi olarak üretir. '
+            'Bu ifadeler kesin eksiklik iddiası değil, takip önerisidir.'
+        )
+        open_issues=_v58_open_issues_table(df,20)
+        if open_issues.empty:
+            st.info('Bu taramada takip listesi oluşturulabilecek olay bulunamadı.')
+        else:
+            _section_select_table(
+                'v58_open_issues',
+                open_issues,
+                ['Tarih','Başlık','Aşama','Takip_Edilecek_Açık_Hususlar',
+                 'Risk_Skoru','Doğrulama','URL'],
+                height=min(700,110+48*len(open_issues))
+            )
+
+        st.markdown('---')
+        st.subheader('🧾 Teyit / Çelişki Matrisi')
+        st.caption(
+            'Olayları Tek Kaynak, Çoklu Kaynak, Resmî Teyitli veya Çelişkili Bilgi olarak ayırır. '
+            'Çelişki tespiti mevcut başlık/özetlerdeki sayı ve temel olgu farklılıklarına dayanır; ek ağ isteği yapılmaz.'
+        )
+        verification_matrix=_v58_verification_matrix(df,25)
+        if verification_matrix.empty:
+            st.info('Bu taramada teyit matrisi oluşturulabilecek olay bulunamadı.')
+        else:
+            _section_select_table(
+                'v58_verification_matrix',
+                verification_matrix,
+                ['Tarih','Başlık','Teyit_Durumu','Teyit_Açıklaması',
+                 'Kaynak_Sayısı','Haber_Sayısı','Risk_Skoru','URL'],
+                height=min(700,100+42*len(verification_matrix))
+            )
 
         st.markdown('---')
         st.subheader('🔎 Resmî Açıklama – Medya Karşılaştırması')
