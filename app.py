@@ -3713,7 +3713,7 @@ def _collect_section_selected_from_main_df(df):
 # -----------------------------
 # UI
 # -----------------------------
-st.title('🛡️ Sanayi & Teknoloji Açık Kaynak / Negatif Haber Radarı')
+st.title('🛡️ T.C. Sanayi ve Teknoloji Bakanlığı Açık Kaynak Tarama Merkezi')
 st.caption('Hızlı ilk bakış · olay kümeleri · risk/negatif ayrımı · Türk medya önceliği · Yunan/Türk savunma · kaynak güvenilirliği · trend · alarm · seçilen haberlerden DOCX')
 with st.sidebar:
     st.header('⚙️ Tarama Ayarları')
