@@ -2251,6 +2251,12 @@ def _init_history_db():
                     UNIQUE(url,title)
                 )
             """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS app_visits(
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    visited_at TEXT NOT NULL
+                )
+            """)
             conn.commit()
         return True
     except Exception:
@@ -3967,6 +3973,213 @@ def _collect_section_selected_from_main_df(df):
     )
     return df[mask].copy()
 
+
+# -----------------------------
+# V60 — OTOMATİK GERİ DÖNÜŞ / ANOMALİ / GÜN SONU
+# -----------------------------
+def _v60_register_visit_once():
+    """
+    Yeni browser oturumunda bir kez çalışır.
+    Önceki giriş zamanını alır, mevcut girişi kaydeder.
+    Streamlit rerun'larında baseline değişmez.
+    """
+    if st.session_state.get('_v60_visit_initialized',False):
+        return st.session_state.get('_v60_previous_visit')
+
+    previous=None
+    now=datetime.now().astimezone()
+    if _init_history_db():
+        try:
+            with _history_connect() as conn:
+                row=conn.execute(
+                    "SELECT visited_at FROM app_visits ORDER BY visited_at DESC LIMIT 1"
+                ).fetchone()
+                if row:
+                    previous=pd.to_datetime(row[0],utc=True,errors='coerce')
+                conn.execute(
+                    "INSERT INTO app_visits(visited_at) VALUES(?)",
+                    (now.isoformat(),)
+                )
+                conn.commit()
+        except Exception:
+            previous=None
+
+    st.session_state['_v60_visit_initialized']=True
+    st.session_state['_v60_previous_visit']=previous
+    st.session_state['_v60_this_visit']=now
+    return previous
+
+def _v60_auto_catchup(previous_visit,user_query=''):
+    """
+    Kullanıcı yeniden giriş yaptığında manuel buton gerektirmeden,
+    son girişten bu yana gelişmeleri hafif bir sorgu setiyle kontrol eder.
+    Tam tarama değildir; yalnızca dönüş brifingi içindir.
+    """
+    if previous_visit is None or pd.isna(previous_visit):
+        return [],None
+
+    now_utc=datetime.now(timezone.utc)
+    prev_utc=previous_visit.to_pydatetime() if hasattr(previous_visit,'to_pydatetime') else previous_visit
+    if prev_utc.tzinfo is None:
+        prev_utc=prev_utc.replace(tzinfo=timezone.utc)
+    else:
+        prev_utc=prev_utc.astimezone(timezone.utc)
+
+    delta_h=max(0.25,(now_utc-prev_utc).total_seconds()/3600)
+    # Google/RSS tarafında geniş pencere kullanılır; kesin filtre aşağıda previous_visit ile yapılır.
+    when=period_window(max(3,delta_h))
+
+    queries=[
+        f'Türkiye (sanayi OR teknoloji OR üretim OR fabrika OR tesis OR yatırım OR OSB) when:{when}',
+        f'Türkiye (savunma OR ASELSAN OR TUSAŞ OR ROKETSAN OR HAVELSAN OR Baykar OR otomotiv OR TOGG) when:{when}',
+        f'Türkiye ("yapay zeka" OR "yarı iletken" OR çip OR siber OR Ar-Ge OR TÜBİTAK OR KOSGEB) when:{when}',
+    ]
+    queries += build_negative_queries(when)
+    queries += build_official_radar_queries(when)
+
+    raw=[]
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(7,len(queries))) as ex:
+        futs=[ex.submit(rss,q) for q in queries]
+        for f in concurrent.futures.as_completed(futs):
+            try:
+                raw.extend(f.result() or [])
+            except Exception:
+                pass
+
+    rows,_=normalize_rows(raw,prev_utc,'turkish',user_query)
+    rows=dedupe(rows)
+    if rows:
+        rows=enrich_rows(rows)
+    return rows,delta_h
+
+def _v60_now_to_know_table(rows,n=5):
+    if not rows:
+        return pd.DataFrame()
+    df=pd.DataFrame(rows)
+    if df.empty:
+        return df
+    value=_v52_event_value_table(df,max(n,10))
+    if value.empty:
+        return value
+    return value.head(n).copy()
+
+def _v60_anomaly_radar(df,current_hours,lookback_days=14):
+    """
+    Mevcut taramadaki kategori olay hızını, geçmiş günlerin son taramalarındaki
+    saatlik olay hızıyla karşılaştırır. Ek web isteği yoktur.
+    """
+    cols=['Kategori','Şimdi','Beklenen','Normalin_Katı','Durum']
+    if df is None or df.empty or not _init_history_db():
+        return pd.DataFrame(columns=cols)
+
+    try:
+        cutoff=(datetime.now().astimezone()-timedelta(days=lookback_days)).isoformat()
+        with _history_connect() as conn:
+            hist=pd.read_sql_query("""
+                SELECT s.scan_id,s.scanned_at,s.period_hours,e.category
+                FROM scans s
+                JOIN event_snapshots e ON e.scan_id=s.scan_id
+                WHERE s.scanned_at>=?
+                ORDER BY s.scanned_at DESC
+            """,conn,params=(cutoff,))
+    except Exception:
+        return pd.DataFrame(columns=cols)
+
+    if hist.empty:
+        return pd.DataFrame(columns=cols)
+
+    hist['day']=hist['scanned_at'].astype(str).str.slice(0,10)
+    # Aynı gün çok tarama varsa yalnız o günün en son taraması baseline olur.
+    last_scan_per_day=(
+        hist[['day','scan_id','scanned_at']]
+        .drop_duplicates()
+        .sort_values('scanned_at')
+        .groupby('day',as_index=False)
+        .tail(1)[['day','scan_id']]
+    )
+    hist=hist.merge(last_scan_per_day,on=['day','scan_id'],how='inner')
+    if hist['day'].nunique()<2:
+        return pd.DataFrame(columns=cols)
+
+    scan_hours=hist[['scan_id','period_hours']].drop_duplicates().set_index('scan_id')['period_hours'].to_dict()
+    hc=hist.groupby(['scan_id','category']).size().reset_index(name='events')
+    hc['rate']=hc.apply(
+        lambda r:r['events']/max(1,float(scan_hours.get(r['scan_id'],24) or 24)),axis=1
+    )
+    baseline=hc.groupby('category')['rate'].agg(['mean','std','count']).reset_index()
+
+    cur=df.groupby('Kategori')['Olay_ID'].nunique() if 'Olay_ID' in df.columns else df.groupby('Kategori').size()
+    rows=[]
+    for cat,current in cur.items():
+        b=baseline[baseline['category']==cat]
+        if b.empty:
+            continue
+        mean_rate=float(b.iloc[0]['mean'] or 0)
+        expected=max(0.1,mean_rate*max(1,float(current_hours)))
+        ratio=float(current)/expected if expected else 0
+        # Hem göreli hem mutlak fark arıyoruz; küçük bazlarda sahte alarmı azaltır.
+        if current>=3 and ratio>=1.8 and (current-expected)>=2:
+            level='🔴 Çok Olağandışı' if ratio>=3 else '🟠 Olağandışı'
+            rows.append({
+                'Kategori':cat,
+                'Şimdi':int(current),
+                'Beklenen':round(expected,1),
+                'Normalin_Katı':round(ratio,1),
+                'Durum':level
+            })
+
+    if not rows:
+        return pd.DataFrame(columns=cols)
+    return pd.DataFrame(rows).sort_values(['Normalin_Katı','Şimdi'],ascending=[False,False])
+
+def _v60_day_end_performance(df=None):
+    """Bugünün operasyonel üretimini yerel geçmiş/sepet kayıtlarından özetler."""
+    today=datetime.now().astimezone().date().isoformat()
+    result={
+        'Taramalar':0,'Benzersiz Olay':0,'Negatif':0,'Yüksek Risk':0,
+        'Önemli Sepete Eklenen':0,'AKT Sepete Eklenen':0,'Kritik Sanayi':0
+    }
+    if _init_history_db():
+        try:
+            with _history_connect() as conn:
+                result['Taramalar']=int(conn.execute(
+                    "SELECT COUNT(*) FROM scans WHERE substr(scanned_at,1,10)=?",(today,)
+                ).fetchone()[0] or 0)
+
+                q="""SELECT COUNT(DISTINCT e.title)
+                     FROM event_snapshots e JOIN scans s ON e.scan_id=s.scan_id
+                     WHERE substr(s.scanned_at,1,10)=?"""
+                result['Benzersiz Olay']=int(conn.execute(q,(today,)).fetchone()[0] or 0)
+
+                qn="""SELECT COUNT(DISTINCT e.title)
+                      FROM event_snapshots e JOIN scans s ON e.scan_id=s.scan_id
+                      WHERE substr(s.scanned_at,1,10)=? AND e.sentiment='Negatif'"""
+                result['Negatif']=int(conn.execute(qn,(today,)).fetchone()[0] or 0)
+
+                qh="""SELECT COUNT(DISTINCT e.title)
+                      FROM event_snapshots e JOIN scans s ON e.scan_id=s.scan_id
+                      WHERE substr(s.scanned_at,1,10)=? AND e.risk_status='Yüksek Risk'"""
+                result['Yüksek Risk']=int(conn.execute(qh,(today,)).fetchone()[0] or 0)
+
+                result['Önemli Sepete Eklenen']=int(conn.execute(
+                    "SELECT COUNT(*) FROM important_basket WHERE substr(added_at,1,10)=?",(today,)
+                ).fetchone()[0] or 0)
+                result['AKT Sepete Eklenen']=int(conn.execute(
+                    "SELECT COUNT(*) FROM osint_report_basket WHERE substr(added_at,1,10)=?",(today,)
+                ).fetchone()[0] or 0)
+        except Exception:
+            pass
+
+    if df is not None and not df.empty:
+        try:
+            result['Kritik Sanayi']=int(df.apply(
+                lambda r:bool(critical_industrial_incident(r.get('Başlık',''),r.get('İçerik_Özeti',''))),
+                axis=1
+            ).sum())
+        except Exception:
+            pass
+    return result
+
 # -----------------------------
 # UI
 # -----------------------------
@@ -3998,6 +4211,23 @@ if 'current_scan_id' not in st.session_state: st.session_state.current_scan_id=N
 if 'history_status' not in st.session_state: st.session_state.history_status=_init_history_db()
 if 'basket_docx_bytes' not in st.session_state: st.session_state.basket_docx_bytes=None
 if 'section_selections' not in st.session_state: st.session_state.section_selections={}
+
+# V60: Yeni browser oturumunda önceki giriş zamanı otomatik belirlenir.
+_v60_previous_visit=_v60_register_visit_once()
+if '_v60_catchup_done' not in st.session_state:
+    st.session_state['_v60_catchup_done']=False
+if '_v60_catchup_rows' not in st.session_state:
+    st.session_state['_v60_catchup_rows']=[]
+if '_v60_catchup_hours' not in st.session_state:
+    st.session_state['_v60_catchup_hours']=None
+
+if not st.session_state['_v60_catchup_done']:
+    st.session_state['_v60_catchup_done']=True
+    if _v60_previous_visit is not None and not pd.isna(_v60_previous_visit):
+        with st.spinner('⏱️ Son girişinizden bu yana gelişmeler otomatik kontrol ediliyor...'):
+            _catch_rows,_catch_hours=_v60_auto_catchup(_v60_previous_visit,query)
+            st.session_state['_v60_catchup_rows']=_catch_rows
+            st.session_state['_v60_catchup_hours']=_catch_hours
 
 
 if run:
@@ -4175,6 +4405,38 @@ if run:
     )
 
 
+# V60 — ŞU AN BİLMEN GEREKENLER: manuel çalışmaz, yeni oturumda otomatik hazırlanır.
+st.subheader('⚡ Şu An Bilmen Gerekenler')
+_prev=st.session_state.get('_v60_previous_visit')
+_catch_rows=st.session_state.get('_v60_catchup_rows') or []
+_catch_hours=st.session_state.get('_v60_catchup_hours')
+
+if _prev is None or pd.isna(_prev):
+    st.info('İlk giriş kaydı oluşturuldu. Bir sonraki girişinizde bu alan son girişinizden sonraki gelişmeleri otomatik gösterecek.')
+else:
+    try:
+        _prev_local=pd.to_datetime(_prev,utc=True).tz_convert(datetime.now().astimezone().tzinfo)
+        st.caption(f'Son giriş: {_prev_local.strftime("%d.%m.%Y %H:%M")} — bu tarihten sonraki gelişmeler otomatik kontrol edildi.')
+    except Exception:
+        pass
+
+    _now5=_v60_now_to_know_table(_catch_rows,5)
+    if _now5.empty:
+        st.success('Son girişinizden bu yana öncelikli yeni bir gelişme tespit edilmedi.')
+    else:
+        st.warning(f'Son girişinizden bu yana dikkat gerektiren {_now5.shape[0]} gelişme öne çıkıyor.')
+        st.dataframe(
+            _now5[['Sıra','Değer_Skoru','Tarih','Gelişme','Neden_Değerli','Kaynak_Sayısı','Risk','URL']],
+            column_config={
+                'Değer_Skoru':st.column_config.ProgressColumn('Değer Skoru',min_value=0,max_value=100,format='%d/100'),
+                'Risk':st.column_config.NumberColumn('Risk',format='%d/100'),
+                'URL':st.column_config.LinkColumn('Haber Linki')
+            },
+            hide_index=True,use_container_width=True,height=min(420,90+55*len(_now5))
+        )
+
+st.markdown('---')
+
 rows=st.session_state.rows
 if rows is None:
     st.info('👋 Hazır. Tarama başlamaz. Zaman aralığını seçip **TARAMAYI BAŞLAT / YENİLE** düğmesine basın.')
@@ -4193,7 +4455,21 @@ else:
         total=len(df); negc=int((df.Duygu=='Negatif').sum()); riskc=int((df.Risk_Durumu=='Yüksek Risk').sum()); trc=int(df.Kaynak_Grubu.astype(str).str.startswith('🇹🇷').sum()); grc=int(df.Kaynak_Grubu.astype(str).str.startswith('🇬🇷').sum()); events=df['Olay_ID'].nunique()
         a,b,c,d,e,f=st.columns(6); a.metric('Toplam',total); b.metric('Olay',events); c.metric('Negatif',negc); d.metric('Yüksek Risk',riskc); e.metric('🇹🇷 Türk',trc); f.metric('🇬🇷 Yunan',grc)
 
+        st.subheader('📈 Olağandışı Hareketlilik Radarı')
+        st.caption('Mevcut taramadaki kategori yoğunluğunu son 14 gündeki benzer taramaların saatlik olay hızıyla karşılaştırır.')
+        anomaly_df=_v60_anomaly_radar(df,hours,14)
+        if anomaly_df.empty:
+            st.info('Şu anda geçmiş normale göre belirgin olağandışı kategori yoğunluğu tespit edilmedi veya karşılaştırma için yeterli geçmiş veri yok.')
+        else:
+            st.dataframe(
+                anomaly_df,
+                column_config={
+                    'Normalin_Katı':st.column_config.NumberColumn('Normalin Katı',format='%.1fx')
+                },
+                hide_index=True,use_container_width=True,height=min(360,80+42*len(anomaly_df))
+            )
 
+        st.markdown('---')
 
         # ---------------------------------------------------------
         # V34 — VARDİYA BAŞLANGIÇ ÖZETİ
@@ -4727,6 +5003,27 @@ else:
                 ['Tarih','Kaynak','Sunum_Başlığı','2_Cümle_Özet','Kritik_Sayı','Risk_Skoru','URL'],
                 height=min(520,90+70*len(presentation_view))
             )
+
+        st.markdown('---')
+        st.subheader('📋 Gün Sonu Performans Özeti')
+        st.caption('Bugün sistemde oluşan tarama ve çalışma çıktılarının operasyonel özeti.')
+        _perf=_v60_day_end_performance(df)
+        p1,p2,p3,p4,p5,p6,p7=st.columns(7)
+        p1.metric('Tarama',_perf['Taramalar'])
+        p2.metric('Benzersiz Olay',_perf['Benzersiz Olay'])
+        p3.metric('Negatif',_perf['Negatif'])
+        p4.metric('Yüksek Risk',_perf['Yüksek Risk'])
+        p5.metric('Önemli Sepet',_perf['Önemli Sepete Eklenen'])
+        p6.metric('AKT Sepet',_perf['AKT Sepete Eklenen'])
+        p7.metric('Kritik Sanayi',_perf['Kritik Sanayi'])
+
+        st.write(
+            f"Bugün {_perf['Taramalar']} tarama gerçekleştirilmiş; geçmiş kayıtlarında "
+            f"{_perf['Benzersiz Olay']} benzersiz olay, {_perf['Negatif']} negatif ve "
+            f"{_perf['Yüksek Risk']} yüksek riskli gelişme kaydedilmiştir. "
+            f"{_perf['Önemli Sepete Eklenen']} içerik önemli gelişmeler sepetine, "
+            f"{_perf['AKT Sepete Eklenen']} içerik açık kaynak tarama sepetine eklenmiştir."
+        )
 
         st.markdown('---'); st.subheader('📝 Seçilen haberlerden çıktı üret')
         # Form gönderildiyse session_state güncellenmiştir; aksi halde mevcut kayıtlı seçimleri kullan.
