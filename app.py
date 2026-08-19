@@ -20,6 +20,46 @@ from docx.oxml.ns import qn
 
 st.set_page_config(page_title='Sanayi & Teknoloji OSINT Radarı', page_icon='🛡️', layout='wide')
 
+# ============================================================
+# V55 — ŞİFRE KORUMASI
+# V54 STABLE işlevlerine dokunmaz; yalnızca uygulama girişini korur.
+# Streamlit Secrets:
+# APP_PASSWORD = "guclu-sifreniz"
+# ============================================================
+def _v55_password_gate():
+    try:
+        expected = str(st.secrets["APP_PASSWORD"])
+    except Exception:
+        st.error(
+            "🔐 Uygulama şifresi tanımlanmamış. "
+            "Streamlit App Settings → Secrets bölümüne APP_PASSWORD ekleyin."
+        )
+        st.stop()
+
+    if st.session_state.get("_v55_authenticated", False):
+        return
+
+    st.title("🔐 Sanayi ve Teknoloji OSINT Radar")
+    st.caption("Devam etmek için uygulama şifresini girin.")
+
+    with st.form("_v55_login_form", clear_on_submit=False):
+        entered = st.text_input("Şifre", type="password")
+        submitted = st.form_submit_button("Giriş Yap", use_container_width=True)
+
+    if submitted:
+        import hmac
+        if hmac.compare_digest(str(entered), expected):
+            st.session_state["_v55_authenticated"] = True
+            st.rerun()
+        else:
+            st.error("Şifre hatalı.")
+
+    st.stop()
+
+_v55_password_gate()
+
+
+
 HEADERS={'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/151 Safari/537.36'}
 
 # -----------------------------
