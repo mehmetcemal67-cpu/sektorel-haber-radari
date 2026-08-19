@@ -3591,7 +3591,7 @@ def make_docx(rows):
     return bio.getvalue()
 
 def _section_select_table(section_key, data, columns, height=420):
-    """Her haber bölümünde kutucuk gösterir; seçilenler doğrudan iki sepete eklenebilir."""
+    """Her haber bölümünde kutucuk gösterir; seçilenler sepete eklenebilir veya doğrudan bilgi notuna dönüştürülebilir."""
     if data is None or data.empty:
         return pd.DataFrame()
 
@@ -3650,21 +3650,47 @@ def _section_select_table(section_key, data, columns, height=420):
         else:
             main_selected=pd.DataFrame()
 
-        a1,a2=st.columns(2)
+        # V56: Kullanıcı bulunduğu bölümden ayrılmadan üç işlemi de yapabilir.
+        a1,a2,a3=st.columns(3)
         with a1:
-            if st.button('📌 Seçilenleri Önemli Gelişmeler Sepetine Ekle',key=f'imp_{section_key}',use_container_width=True):
+            if st.button('📌 Önemli Gelişmelere Ekle',key=f'imp_{section_key}',use_container_width=True):
                 if main_selected.empty:
                     st.warning('Seçilen haber ana tarama kayıtlarıyla eşleştirilemedi.')
                 else:
                     n=_add_rows_to_important_basket(main_selected.to_dict('records'))
                     st.success(f'{n} haber önemli gelişmeler sepetine eklendi.')
         with a2:
-            if st.button('🗂️ Seçilenleri Açık Kaynak Tarama Sepetine Ekle',key=f'akt_{section_key}',use_container_width=True):
+            if st.button('🗂️ Açık Kaynak Sepetine Ekle',key=f'akt_{section_key}',use_container_width=True):
                 if main_selected.empty:
                     st.warning('Seçilen haber ana tarama kayıtlarıyla eşleştirilemedi.')
                 else:
                     n=_add_rows_to_osint_basket(main_selected.to_dict('records'))
                     st.success(f'{n} haber açık kaynak tarama sepetine eklendi.')
+        with a3:
+            if st.button('📌 BİLGİ NOTU HAZIRLA / WORD',key=f'note_{section_key}',use_container_width=True):
+                if main_selected.empty:
+                    st.warning('Seçilen haber ana tarama kayıtlarıyla eşleştirilemedi.')
+                else:
+                    with st.spinner(f'{len(main_selected)} seçili haberin tam metni okunuyor ve ayrıntılı bilgi notu hazırlanıyor...'):
+                        try:
+                            st.session_state[f'section_note_bytes_{section_key}']=make_analyst_docx(
+                                main_selected,
+                                title='SANAYİ & TEKNOLOJİ BİLGİ NOTU'
+                            )
+                        except Exception as e:
+                            st.session_state[f'section_note_bytes_{section_key}']=None
+                            st.error(f'Bilgi notu hazırlanamadı: {e}')
+
+        section_note_bytes=st.session_state.get(f'section_note_bytes_{section_key}')
+        if section_note_bytes:
+            st.download_button(
+                '⬇️ Hazırlanan Bilgi Notunu İndir',
+                data=section_note_bytes,
+                file_name=f'Sanayi_Teknoloji_Bilgi_Notu_{section_key}_{date.today()}.docx',
+                mime='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                use_container_width=True,
+                key=f'note_download_{section_key}'
+            )
 
     return selected
 
