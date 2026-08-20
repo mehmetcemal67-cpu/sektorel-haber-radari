@@ -2896,29 +2896,74 @@ def _daily_summary_stats(df):
 
 
 def _daily_top_events(df, n=5):
-    """Risk + negatiflik + kaynak teyidi + güncellik ile günün önemli olaylarını seçer."""
+    """
+    V62: Sabah ilk bakılacak gelişmeleri seçer.
+    Negatiflik tek başına belirleyici değildir. Stratejik sanayi-teknoloji ilgisi,
+    ekonomik/kurumsal etki, resmî teyit, çoklu kaynak, yenilik ve risk birlikte puanlanır.
+    """
     if df.empty:
         return df.copy()
 
     x=df.copy()
     x['Tarih_dt']=pd.to_datetime(x.get('Tarih_dt'),utc=True,errors='coerce')
+    strategic_terms=[
+        'yatırım','üretim','ihracat','ithalat','kapasite','fabrika','tesis','osb',
+        'savunma','tusaş','aselsan','roketsan','havelsan','baykar','kaan',
+        'yapay zeka','yapay zekâ','çip','yarı iletken','siber','teknoloji',
+        'arge','ar-ge','tübitak','kosgeb','patent','togg','otomotiv','enerji',
+        'kritik mineral','uzay','uydu','teknofest','sanayi üretimi'
+    ]
+    high_value_terms=[
+        'milyar','milyon','rekor','anlaşma','sözleşme','yatırım','teşvik',
+        'ihracat','üretim','kapasite','lansman','ilk kez','yeni tesis',
+        'stratejik','program','eylem planı','resmi gazete','resmî gazete'
+    ]
+    low_relevance_terms=[
+        'trafik kazası','magazin','spor','dualarla anıldı','hayatını kaybeden muhabir'
+    ]
 
     def importance(r):
-        score=int(r.get('Risk_Skoru',0) or 0)
-        if r.get('Duygu')=='Negatif': score+=15
-        if r.get('Risk_Durumu')=='Yüksek Risk': score+=25
-        if is_osb_fire(r.get('Başlık',''),r.get('İçerik_Özeti','')): score+=35
+        text=norm(f"{r.get('Başlık','')} {r.get('İçerik_Özeti','')} {r.get('Kategori','')}")
+        score=0
+
+        # Sanayi-teknoloji alanına doğrudan ilgi en güçlü ölçüt.
+        score += min(sum(1 for k in strategic_terms if k in text)*8,40)
+        score += min(sum(1 for k in high_value_terms if k in text)*5,20)
+
+        cat=norm(r.get('Kategori',''))
+        if any(k in cat for k in ['savunma','sanayi','üretim','dijital','yapay zeka','yapay zekâ',
+                                  'otomotiv','uzay','enerji','teknoloji']):
+            score+=18
+
+        # Risk önemlidir ama negatiflik listeyi ele geçirmez.
+        risk=int(r.get('Risk_Skoru',0) or 0)
+        score+=min(risk//4,20)
+        if r.get('Risk_Durumu')=='Yüksek Risk':
+            score+=12
+        if r.get('Duygu')=='Negatif':
+            score+=5
+
+        if critical_industrial_incident(r.get('Başlık',''),r.get('İçerik_Özeti','')):
+            score+=25
+
         try:
-            score+=min(int(r.get('Olay_Kaynak_Sayisi',0) or 0)*4,20)
+            score+=min(int(r.get('Olay_Kaynak_Sayisi',0) or 0)*5,20)
         except Exception:
             pass
-        if 'resmî' in norm(r.get('Doğrulama','')) or 'çoklu kaynak' in norm(r.get('Doğrulama','')):
-            score+=12
+
+        verification=norm(r.get('Doğrulama',''))
+        if 'resmi' in verification or 'resmî' in verification or 'birincil' in verification:
+            score+=22
+        elif 'çoklu kaynak' in verification or 'coklu kaynak' in verification:
+            score+=14
+
+        if any(k in text for k in low_relevance_terms):
+            score-=30
+
         return score
 
     x['_Önem']=x.apply(importance,axis=1)
 
-    # Aynı olayın beş kez listeye girmesini engelle.
     if 'Olay_ID' in x.columns:
         x=x.sort_values(['_Önem','Tarih_dt'],ascending=[False,False],na_position='last')
         x=x.drop_duplicates(subset=['Olay_ID'],keep='first')
@@ -4541,6 +4586,199 @@ else:
         # Tarama tamamlandığında ilk bölüm doğrudan Kronolojik / Negatif / Yüksek Risk vb. ana haber görünümüdür.
         # Performans: Streamlit tabs içindeki TÜM içerikleri arka planda çalıştırır.
         # Bu nedenle tek seferde yalnızca seçilen görünümü üretiriz.
+        st.subheader('🌅 Vardiya Başlangıç Özeti')
+        st.caption('Sabah ilk analitik bakış: yalnızca negatif haberleri değil; sanayi ve teknoloji açısından en önemli, stratejik, etkili, teyitli ve dikkat gerektiren gelişmeleri öne çıkarır.')
+        shift_stats,shift_top,shift_baseline_label=_shift_start_summary(
+            df,
+            st.session_state.get('current_scan_id')
+        )
+        if shift_stats:
+            st.caption(shift_stats.get('baseline_label',''))
+            s1,s2,s3,s4,s5,s6=st.columns(6)
+            s1.metric('Son devirden beri yeni haber',shift_stats['new_news'])
+            s2.metric('Yeni önemli olay',shift_stats['new_important_events'])
+            s3.metric('Yüksek riskli gelişme',shift_stats['high_risk'])
+            s4.metric('Risk artışı',shift_stats['risk_up'])
+            s5.metric('Teyit güçlenmesi',shift_stats['verify_up'])
+            s6.metric('OSB olayı',shift_stats['osb'])
+
+            st.markdown('**Sabah ilk bakılması gereken 5 gelişme**')
+            if shift_top.empty:
+                st.info('Öne çıkan gelişme bulunamadı.')
+            else:
+                _section_select_table(
+                    'shift_top',
+                    shift_top,
+                    ['Tarih','Kaynak','Kategori','Başlık','Risk_Skoru','Risk_Durumu','Doğrulama','URL'],
+                    height=min(330,70+45*len(shift_top))
+                )
+
+        c_shift1,c_shift2=st.columns([2,1])
+        with c_shift1:
+            st.caption('Devir noktası, bir sonraki vardiya başlangıç özetinin başlangıç zamanını belirler.')
+        with c_shift2:
+            if st.button('📍 ŞİMDİYİ DEVİR NOKTASI OLARAK KAYDET',use_container_width=True):
+                if _mark_shift_handover(st.session_state.get('current_scan_id'),'Manuel devir noktası'):
+                    st.success('Devir noktası kaydedildi.')
+                else:
+                    st.error('Devir noktası kaydedilemedi.')
+
+        # ---------------------------------------------------------
+        # V33 — DÜNDEN BERİ NE DEĞİŞTİ?
+        # ---------------------------------------------------------
+        st.subheader('🆕 Dünden Beri Ne Değişti?')
+        changes,previous_scan_id,previous_scan_time=_compare_since_previous(
+            df,
+            st.session_state.get('current_scan_id')
+        )
+        if previous_scan_id is None:
+            st.info(
+                'Henüz karşılaştırılabilecek eski tarama bulunmuyor. '
+                'Bu tarama yerel geçmişe kaydedildi; sonraki taramalarda yeni olaylar ve değişiklikler otomatik gösterilecek.'
+            )
+        else:
+            if previous_scan_time:
+                st.caption(f'Karşılaştırılan önceki tarama: {previous_scan_time}')
+            if changes.empty:
+                st.success('Önceki taramaya göre anlamlı yeni olay, risk artışı, teyit artışı veya içerik güncellemesi tespit edilmedi.')
+            else:
+                new_n=int(changes['Değişim'].astype(str).str.contains('YENİ OLAY').sum())
+                upd_n=int(changes['Değişim'].astype(str).str.contains('YENİ BİLGİ').sum())
+                risk_n=int(changes['Değişim'].astype(str).str.contains('RİSK ARTTI').sum())
+                ver_n=int(changes['Değişim'].astype(str).str.contains('TEYİT').sum())
+                q1,q2,q3,q4=st.columns(4)
+                q1.metric('Yeni Olay',new_n)
+                q2.metric('Yeni Bilgi',upd_n)
+                q3.metric('Risk Artışı',risk_n)
+                q4.metric('Teyit Güçlendi',ver_n)
+                changes_view=changes.head(25).copy()
+                _section_select_table(
+                    'changes',
+                    changes_view,
+                    ['Değişim','Başlık','Kaynak','Kategori','Risk','Önceki Risk','Kaynak Sayısı','Açıklama','URL'],
+                    height=min(560,70+35*min(len(changes_view),25))
+                )
+
+        # Son taramada anlık yakalanan bildirimlerin kalıcı özeti
+        recent_alerts=st.session_state.get('last_scan_alerts',[])
+        if recent_alerts:
+            with st.expander(f'🔔 Son taramada yakalanan yeni negatif/riskli içerikler ({len(recent_alerts)})',False):
+                alert_df=pd.DataFrame(recent_alerts)
+                alert_view=alert_df.copy()
+                if 'Risk' in alert_view.columns and 'Risk_Skoru' not in alert_view.columns:
+                    alert_view['Risk_Skoru']=alert_view['Risk']
+                _section_select_table(
+                    'recent_alerts',
+                    alert_view,
+                    ['Tarih','Seviye','Kaynak','Başlık','Risk_Skoru','URL'],
+                    height=min(420,42+35*len(alert_view))
+                )
+
+        # Alarm bandı
+        alarms=df[(df.Risk_Skoru>=70) | (df.Duygu=='Negatif')].sort_values(['Risk_Skoru','Tarih_dt'],ascending=[False,False])
+        if not alarms.empty:
+            st.subheader('🚨 Yeni / Öncelikli Alarmlar')
+            alarm_view=alarms.head(10).copy()
+            _section_select_table(
+                'priority_alarms',
+                alarm_view,
+                ['Tarih','Kaynak','Kategori','Başlık','Risk_Skoru','Risk_Gerekçesi','Doğrulama','URL'],
+                height=min(470,70+38*len(alarm_view))
+            )
+
+        # Kritik sanayi olayları için SABİT bölüm.
+        # Her zaman görünür; olay varsa içerik dolar, yoksa boş durum gösterilir.
+        st.subheader('🚨 Kritik Sanayi Olayları — OSB / OSB Dışı Yangın ve Patlama')
+        st.caption('OSB ve OSB dışındaki fabrika, tesis ve sanayi alanlarında tespit edilen yangın/patlama olayları burada sürekli izlenir.')
+
+        critical_mask=df.apply(
+            lambda r:bool(critical_industrial_incident(r.get('Başlık',''),r.get('İçerik_Özeti',''))),
+            axis=1
+        )
+        critical_events=df[critical_mask].copy().sort_values('Tarih_dt',ascending=False)
+
+        if not critical_events.empty:
+            critical_events['Kritik_Olay']=critical_events.apply(
+                lambda r:critical_industrial_incident(r.get('Başlık',''),r.get('İçerik_Özeti','')) or '',
+                axis=1
+            )
+            st.error(f'🚨 **KRİTİK SANAYİ OLAYI ALARMI — {len(critical_events)} içerik tespit edildi**')
+            _section_select_table(
+                'critical_industrial_events',
+                critical_events,
+                ['Tarih','Kritik_Olay','Kaynak','Başlık','Risk_Skoru','URL'],
+                height=min(340,70+36*len(critical_events))
+            )
+        else:
+            st.info('Bu tarama döneminde OSB / OSB dışı sanayi tesisi yangını veya patlaması tespit edilmedi.')
+
+        st.markdown('---')
+        st.subheader('🏆 Günün En Değerli 10 Gelişmesi')
+        st.caption(
+            'Aynı olaya ait haberlar tek gelişmede birleştirilir. Değer Skoru; önem/risk, farklı kaynak sayısı, '
+            'resmî teyit, güncellik, stratejik sanayi-teknoloji önemi, negatif/eleştirel etki ve haber yoğunluğunu birlikte değerlendirir. '
+            'Kaynak gerçek okunma/tıklanma verisi sağlıyorsa ileride ayrıca eklenebilir; mevcut sistem erişilemeyen okunma sayılarını tahmin etmez.'
+        )
+        value10=_v52_event_value_table(df,10)
+        if value10.empty:
+            st.info('Bu taramada sıralanabilecek gelişme bulunamadı.')
+        else:
+            _section_select_table(
+                'daily_top10_value',
+                value10,
+                ['Sıra','Değer_Skoru','Tarih','Gelişme','Neden_Değerli',
+                 'Kaynak_Sayısı','Haber_Sayısı','Resmî_Teyit','Risk','URL'],
+                height=min(680,105+55*len(value10))
+            )
+
+            if st.button('📊 BUGÜNÜN DURUM ÖZETİNİ OLUŞTUR',use_container_width=True,key='v54_top10_summary_btn'):
+                with st.spinner('Yalnızca en değerli 10 gelişmenin haber içerikleri okunuyor ve özetleniyor...'):
+                    summary_text=_v54_deep_top10_summary(df,value10,45)
+                    st.session_state.daily_summary_text=summary_text
+                    st.session_state.daily_summary_bytes=make_v54_top10_summary_docx(df,value10,summary_text)
+
+            if st.session_state.get('daily_summary_text'):
+                st.text_area(
+                    'Bugünün Durum Özeti — En Değerli 10 Gelişme',
+                    st.session_state.daily_summary_text,
+                    height=520,
+                    key='v54_daily_summary_preview'
+                )
+                st.caption(
+                    'Özet yalnızca yukarıdaki 10 gelişmenin haber içeriğini anlatır; değer skoru, kaynak sayısı ve '
+                    'sıralama gerekçeleri metne eklenmez. Toplam çıktı 45 satırı geçmez.'
+                )
+                if st.session_state.get('daily_summary_bytes'):
+                    st.download_button(
+                        '⬇️ BUGÜNÜN DURUM ÖZETİNİ WORD OLARAK İNDİR',
+                        data=st.session_state.daily_summary_bytes,
+                        file_name=f'bugunun_durum_ozeti_top10_{datetime.now().strftime("%Y%m%d_%H%M")}.docx',
+                        mime='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                        use_container_width=True,
+                        key='v54_top10_summary_download'
+                    )
+
+        # V33 — BİLGİ NOTU ADAYLARI
+        # ---------------------------------------------------------
+        st.subheader('🎯 Bilgi Notu Adayları')
+        st.caption('Mevcut taramadaki olayları risk, teyit, kaynak sayısı, stratejik önem ve yenilik açısından puanlar.')
+        candidate_count=st.slider('Gösterilecek aday sayısı',5,15,10,1,key='candidate_count')
+        candidates=_information_note_candidates(
+            df,
+            st.session_state.get('current_scan_id'),
+            candidate_count
+        )
+        if candidates.empty:
+            st.info('Bu taramada bilgi notu adayı oluşturulamadı.')
+        else:
+            _section_select_table(
+                'candidates',
+                candidates,
+                ['Aday Puanı','Başlık','Kaynak','Kategori','Risk','Kaynak Sayısı','Doğrulama','Değişim','Neden Bilgi Notu?','URL'],
+                height=min(470,65+36*len(candidates))
+            )
+
+        # ---------------------------------------------------------
         view=st.radio(
             'Görünüm',
             ['📰 Kronolojik','⚠️ Negatif','🚨 Yüksek Risk','🇹🇷 Türk','🇬🇷 Yunan','🧩 Olaylar','📈 Trend / Analiz','⭐ Takip Listesi'],
@@ -4656,43 +4894,6 @@ else:
 
 
 
-        st.subheader('🌅 Vardiya Başlangıç Özeti')
-        shift_stats,shift_top,shift_baseline_label=_shift_start_summary(
-            df,
-            st.session_state.get('current_scan_id')
-        )
-        if shift_stats:
-            st.caption(shift_stats.get('baseline_label',''))
-            s1,s2,s3,s4,s5,s6=st.columns(6)
-            s1.metric('Son devirden beri yeni haber',shift_stats['new_news'])
-            s2.metric('Yeni önemli olay',shift_stats['new_important_events'])
-            s3.metric('Yüksek riskli gelişme',shift_stats['high_risk'])
-            s4.metric('Risk artışı',shift_stats['risk_up'])
-            s5.metric('Teyit güçlenmesi',shift_stats['verify_up'])
-            s6.metric('OSB olayı',shift_stats['osb'])
-
-            st.markdown('**Sabah ilk bakılması gereken 5 gelişme**')
-            if shift_top.empty:
-                st.info('Öne çıkan gelişme bulunamadı.')
-            else:
-                _section_select_table(
-                    'shift_top',
-                    shift_top,
-                    ['Tarih','Kaynak','Kategori','Başlık','Risk_Skoru','Risk_Durumu','Doğrulama','URL'],
-                    height=min(330,70+45*len(shift_top))
-                )
-
-        c_shift1,c_shift2=st.columns([2,1])
-        with c_shift1:
-            st.caption('Devir noktası, bir sonraki vardiya başlangıç özetinin başlangıç zamanını belirler.')
-        with c_shift2:
-            if st.button('📍 ŞİMDİYİ DEVİR NOKTASI OLARAK KAYDET',use_container_width=True):
-                if _mark_shift_handover(st.session_state.get('current_scan_id'),'Manuel devir noktası'):
-                    st.success('Devir noktası kaydedildi.')
-                else:
-                    st.error('Devir noktası kaydedilemedi.')
-
-        # ---------------------------------------------------------
         # V34 — ÖNEMLİ GELİŞMELER SEPETİ
         # ---------------------------------------------------------
         st.subheader('📌 24 Saatlik Önemli Gelişmeler Sepeti')
@@ -4833,115 +5034,6 @@ else:
 
 
         # ---------------------------------------------------------
-        # V33 — BİLGİ NOTU ADAYLARI
-        # ---------------------------------------------------------
-        st.subheader('🎯 Bilgi Notu Adayları')
-        st.caption('Mevcut taramadaki olayları risk, teyit, kaynak sayısı, stratejik önem ve yenilik açısından puanlar.')
-        candidate_count=st.slider('Gösterilecek aday sayısı',5,15,10,1,key='candidate_count')
-        candidates=_information_note_candidates(
-            df,
-            st.session_state.get('current_scan_id'),
-            candidate_count
-        )
-        if candidates.empty:
-            st.info('Bu taramada bilgi notu adayı oluşturulamadı.')
-        else:
-            _section_select_table(
-                'candidates',
-                candidates,
-                ['Aday Puanı','Başlık','Kaynak','Kategori','Risk','Kaynak Sayısı','Doğrulama','Değişim','Neden Bilgi Notu?','URL'],
-                height=min(470,65+36*len(candidates))
-            )
-
-        # ---------------------------------------------------------
-        # V33 — DÜNDEN BERİ NE DEĞİŞTİ?
-        # ---------------------------------------------------------
-        st.subheader('🆕 Dünden Beri Ne Değişti?')
-        changes,previous_scan_id,previous_scan_time=_compare_since_previous(
-            df,
-            st.session_state.get('current_scan_id')
-        )
-        if previous_scan_id is None:
-            st.info(
-                'Henüz karşılaştırılabilecek eski tarama bulunmuyor. '
-                'Bu tarama yerel geçmişe kaydedildi; sonraki taramalarda yeni olaylar ve değişiklikler otomatik gösterilecek.'
-            )
-        else:
-            if previous_scan_time:
-                st.caption(f'Karşılaştırılan önceki tarama: {previous_scan_time}')
-            if changes.empty:
-                st.success('Önceki taramaya göre anlamlı yeni olay, risk artışı, teyit artışı veya içerik güncellemesi tespit edilmedi.')
-            else:
-                new_n=int(changes['Değişim'].astype(str).str.contains('YENİ OLAY').sum())
-                upd_n=int(changes['Değişim'].astype(str).str.contains('YENİ BİLGİ').sum())
-                risk_n=int(changes['Değişim'].astype(str).str.contains('RİSK ARTTI').sum())
-                ver_n=int(changes['Değişim'].astype(str).str.contains('TEYİT').sum())
-                q1,q2,q3,q4=st.columns(4)
-                q1.metric('Yeni Olay',new_n)
-                q2.metric('Yeni Bilgi',upd_n)
-                q3.metric('Risk Artışı',risk_n)
-                q4.metric('Teyit Güçlendi',ver_n)
-                changes_view=changes.head(25).copy()
-                _section_select_table(
-                    'changes',
-                    changes_view,
-                    ['Değişim','Başlık','Kaynak','Kategori','Risk','Önceki Risk','Kaynak Sayısı','Açıklama','URL'],
-                    height=min(560,70+35*min(len(changes_view),25))
-                )
-
-        # Son taramada anlık yakalanan bildirimlerin kalıcı özeti
-        recent_alerts=st.session_state.get('last_scan_alerts',[])
-        if recent_alerts:
-            with st.expander(f'🔔 Son taramada yakalanan yeni negatif/riskli içerikler ({len(recent_alerts)})',False):
-                alert_df=pd.DataFrame(recent_alerts)
-                alert_view=alert_df.copy()
-                if 'Risk' in alert_view.columns and 'Risk_Skoru' not in alert_view.columns:
-                    alert_view['Risk_Skoru']=alert_view['Risk']
-                _section_select_table(
-                    'recent_alerts',
-                    alert_view,
-                    ['Tarih','Seviye','Kaynak','Başlık','Risk_Skoru','URL'],
-                    height=min(420,42+35*len(alert_view))
-                )
-
-        # Kritik sanayi olayları için SABİT bölüm.
-        # Her zaman görünür; olay varsa içerik dolar, yoksa boş durum gösterilir.
-        st.subheader('🚨 Kritik Sanayi Olayları — OSB / OSB Dışı Yangın ve Patlama')
-        st.caption('OSB ve OSB dışındaki fabrika, tesis ve sanayi alanlarında tespit edilen yangın/patlama olayları burada sürekli izlenir.')
-
-        critical_mask=df.apply(
-            lambda r:bool(critical_industrial_incident(r.get('Başlık',''),r.get('İçerik_Özeti',''))),
-            axis=1
-        )
-        critical_events=df[critical_mask].copy().sort_values('Tarih_dt',ascending=False)
-
-        if not critical_events.empty:
-            critical_events['Kritik_Olay']=critical_events.apply(
-                lambda r:critical_industrial_incident(r.get('Başlık',''),r.get('İçerik_Özeti','')) or '',
-                axis=1
-            )
-            st.error(f'🚨 **KRİTİK SANAYİ OLAYI ALARMI — {len(critical_events)} içerik tespit edildi**')
-            _section_select_table(
-                'critical_industrial_events',
-                critical_events,
-                ['Tarih','Kritik_Olay','Kaynak','Başlık','Risk_Skoru','URL'],
-                height=min(340,70+36*len(critical_events))
-            )
-        else:
-            st.info('Bu tarama döneminde OSB / OSB dışı sanayi tesisi yangını veya patlaması tespit edilmedi.')
-
-        # Alarm bandı
-        alarms=df[(df.Risk_Skoru>=70) | (df.Duygu=='Negatif')].sort_values(['Risk_Skoru','Tarih_dt'],ascending=[False,False])
-        if not alarms.empty:
-            st.subheader('🚨 Yeni / Öncelikli Alarmlar')
-            alarm_view=alarms.head(10).copy()
-            _section_select_table(
-                'priority_alarms',
-                alarm_view,
-                ['Tarih','Kaynak','Kategori','Başlık','Risk_Skoru','Risk_Gerekçesi','Doğrulama','URL'],
-                height=min(470,70+38*len(alarm_view))
-            )
-
         st.markdown('---')
         st.subheader('📊 Bugün Yayımlanan Önemli Veriler')
         st.caption('Sanayi üretimi, kapasite kullanımı, ihracat, otomotiv, savunma ihracatı, enerji, yatırım teşvikleri ve Ar-Ge/teknoloji verilerini öne çıkarır.')
@@ -4971,50 +5063,22 @@ else:
             )
 
         st.markdown('---')
-        st.subheader('🏆 Günün En Değerli 10 Gelişmesi')
+        st.subheader('🔎 Resmî Açıklama – Medya Karşılaştırması')
         st.caption(
-            'Aynı olaya ait haberlar tek gelişmede birleştirilir. Değer Skoru; önem/risk, farklı kaynak sayısı, '
-            'resmî teyit, güncellik, stratejik sanayi-teknoloji önemi, negatif/eleştirel etki ve haber yoğunluğunu birlikte değerlendirir. '
-            'Kaynak gerçek okunma/tıklanma verisi sağlıyorsa ileride ayrıca eklenebilir; mevcut sistem erişilemeyen okunma sayılarını tahmin etmez.'
+            'Bu alan sabittir. Aynı taramadaki medya haberlerini resmî/birincil kaynak açıklamalarıyla '
+            'otomatik eşleştirir; olayın medya anlatımı ile resmî açıklaması arasındaki belirgin farkları gösterir.'
         )
-        value10=_v52_event_value_table(df,10)
-        if value10.empty:
-            st.info('Bu taramada sıralanabilecek gelişme bulunamadı.')
+        official_media_cmp=_official_media_comparison(df)
+        if official_media_cmp.empty:
+            st.info('Bu taramada medya haberiyle eşleşen resmî/birincil açıklama bulunamadı.')
         else:
             _section_select_table(
-                'daily_top10_value',
-                value10,
-                ['Sıra','Değer_Skoru','Tarih','Gelişme','Neden_Değerli',
-                 'Kaynak_Sayısı','Haber_Sayısı','Resmî_Teyit','Risk','URL'],
-                height=min(680,105+55*len(value10))
+                'official_media_comparison',
+                official_media_cmp.head(25),
+                ['Tarih','Medya_Kaynağı','Medya_Haberi','Resmî_Kaynak','Resmî_Açıklama',
+                 'Karşılaştırma','Eşleşme','Medya_URL','Resmî_URL'],
+                height=min(650,110+54*min(len(official_media_cmp),25))
             )
-
-            if st.button('📊 BUGÜNÜN DURUM ÖZETİNİ OLUŞTUR',use_container_width=True,key='v54_top10_summary_btn'):
-                with st.spinner('Yalnızca en değerli 10 gelişmenin haber içerikleri okunuyor ve özetleniyor...'):
-                    summary_text=_v54_deep_top10_summary(df,value10,45)
-                    st.session_state.daily_summary_text=summary_text
-                    st.session_state.daily_summary_bytes=make_v54_top10_summary_docx(df,value10,summary_text)
-
-            if st.session_state.get('daily_summary_text'):
-                st.text_area(
-                    'Bugünün Durum Özeti — En Değerli 10 Gelişme',
-                    st.session_state.daily_summary_text,
-                    height=520,
-                    key='v54_daily_summary_preview'
-                )
-                st.caption(
-                    'Özet yalnızca yukarıdaki 10 gelişmenin haber içeriğini anlatır; değer skoru, kaynak sayısı ve '
-                    'sıralama gerekçeleri metne eklenmez. Toplam çıktı 45 satırı geçmez.'
-                )
-                if st.session_state.get('daily_summary_bytes'):
-                    st.download_button(
-                        '⬇️ BUGÜNÜN DURUM ÖZETİNİ WORD OLARAK İNDİR',
-                        data=st.session_state.daily_summary_bytes,
-                        file_name=f'bugunun_durum_ozeti_top10_{datetime.now().strftime("%Y%m%d_%H%M")}.docx',
-                        mime='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-                        use_container_width=True,
-                        key='v54_top10_summary_download'
-                    )
 
         st.markdown('---')
         st.subheader('🧭 Olay Yaşam Döngüsü')
@@ -5032,24 +5096,6 @@ else:
                 ['Tarih','Aşama','Başlık','Kategori','Kaynak_Sayısı','Haber_Sayısı',
                  'Doğrulama','Risk_Skoru','Aşama_Gerekçesi','URL'],
                 height=min(700,100+40*len(lifecycle))
-            )
-
-        st.markdown('---')
-        st.subheader('🔎 Resmî Açıklama – Medya Karşılaştırması')
-        st.caption(
-            'Bu alan sabittir. Aynı taramadaki medya haberlerini resmî/birincil kaynak açıklamalarıyla '
-            'otomatik eşleştirir; olayın medya anlatımı ile resmî açıklaması arasındaki belirgin farkları gösterir.'
-        )
-        official_media_cmp=_official_media_comparison(df)
-        if official_media_cmp.empty:
-            st.info('Bu taramada medya haberiyle eşleşen resmî/birincil açıklama bulunamadı.')
-        else:
-            _section_select_table(
-                'official_media_comparison',
-                official_media_cmp.head(25),
-                ['Tarih','Medya_Kaynağı','Medya_Haberi','Resmî_Kaynak','Resmî_Açıklama',
-                 'Karşılaştırma','Eşleşme','Medya_URL','Resmî_URL'],
-                height=min(650,110+54*min(len(official_media_cmp),25))
             )
 
         st.markdown('---')
