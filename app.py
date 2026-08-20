@@ -4251,6 +4251,158 @@ def _v63_load_tomorrow():
     except Exception:
         return pd.DataFrame()
 
+
+# -----------------------------
+# V68 — ANALİST KOMUTA MERKEZİ / SONRAKİ EN İYİ İŞLEM
+# -----------------------------
+def _v68_analyst_command_center(df,limit=8):
+    """
+    V69 Analist Komuta Merkezi:
+    - 09:00–17:30 Bilgi Notu: veri/istatistik, resmî açıklama, ürün/teknoloji tanıtımı vb.
+    - 09:00–17:30 AKT: negatif, eleştirel, yapısal eleştiri, propaganda/dezenformasyon niteliği taşıyan olumsuz içerikler.
+    - 17:30 sonrası: yalnız kritik/acil gelişmeler.
+    - Sunum: resmî veri/istatistik, resmî açıklama veya resmî teyitli bilgi.
+    """
+    cols=['Öncelik','Önerilen_İşlem','Tarih','Başlık','Neden','Durum','Değer_Skoru','Risk_Skoru','URL']
+    if df is None or df.empty:
+        return pd.DataFrame(columns=cols), 'Veri Yok', ''
+
+    try:
+        from zoneinfo import ZoneInfo
+        now_tr=datetime.now(ZoneInfo('Europe/Istanbul'))
+    except Exception:
+        now_tr=datetime.now().astimezone()
+    hour=now_tr.hour + now_tr.minute/60
+
+    if 9 <= hour < 14:
+        phase='09:00–14:00 | Bilgi notu • AKT hazırlığı • sunum/veri kontrolü'
+        phase_hint='Bilgi notunda resmî/veri odaklı içerikler; AKT’de negatif-eleştirel içerikler; sunumda ise resmî ve teyitli bilgiler önceliklendirilmektedir.'
+    elif 14 <= hour < 17.5:
+        phase='14:00–17:30 | Bilgi notu • sunum • önemli gelişmeleri zenginleştirme'
+        phase_hint='Yeni resmî veri/açıklamalar bilgi notu ve sunum için; negatif-eleştirel içerikler AKT takibi için değerlendirilmektedir.'
+    else:
+        phase='17:30 sonrası | Kritik takip modu'
+        phase_hint='Rutin bilgi notu ve sunum önerileri durdurulmakta; yalnızca kritik/acil gelişmeler öne çıkarılmaktadır.'
+
+    value=_v52_event_value_table(df,max(40,limit*5))
+    if value.empty:
+        return pd.DataFrame(columns=cols),phase,phase_hint
+
+    imp,akt,notes=_v63_status_sets()
+    actions=[]
+
+    data_terms=[
+        'istatistik','veri','oran','endeks','sanayi üretimi','kapasite kullanım',
+        'ihracat','ithalat','ciro','istihdam','işsizlik','büyüme','yatırım teşvik',
+        'arge','ar-ge','patent','başvuru','milyar','milyon','yüzde','%'
+    ]
+    product_terms=[
+        'ürün tanıt','tanıtıldı','tanıttı','yeni ürün','yeni teknoloji','prototip',
+        'seri üretim','ilk teslimat','envantere','platform','sistem geliştir',
+        'füze','uydu','çip','yarı iletken','yapay zeka','yapay zekâ'
+    ]
+    propaganda_terms=[
+        'propaganda','dezenformasyon','manipülasyon','iddia','suçlama','eleştiri',
+        'eleştirel','tepki','kriz','başarısız','skandal','zarar','kayıp','çöküş',
+        'iflas','işten çıkar','üretim durdu','üretimi durdur','gecikme','yaptırım',
+        'ambargo','boykot','bağımlılık','risk','tehdit'
+    ]
+
+    for _,v in value.iterrows():
+        row=_v53_find_event_row(df,v)
+        if row is None:
+            continue
+
+        title=str(row.get('Başlık','') or v.get('Gelişme',''))
+        url=str(row.get('URL','') or v.get('URL','')).strip()
+        key=url or title_key(title)
+        score=int(v.get('Değer_Skoru',0) or 0)
+        risk=int(row.get('Risk_Skoru',v.get('Risk',0)) or 0)
+        text=norm(f"{title} {row.get('İçerik_Özeti','')} {row.get('Kategori','')} {row.get('Doğrulama','')}")
+        critical=bool(critical_industrial_incident(title,row.get('İçerik_Özeti','')))
+        official=_is_official_radar_row(row)
+        verification=norm(row.get('Doğrulama',''))
+        officially_verified=official or any(x in verification for x in ['resmi','resmî','birincil','teyit'])
+        negative=(str(row.get('Duygu',''))=='Negatif' or
+                  str(row.get('Risk_Durumu',''))=='Yüksek Risk' or
+                  any(x in text for x in propaganda_terms))
+        data_stat=any(x in text for x in data_terms)
+        product_intro=any(x in text for x in product_terms)
+        multi=int(v.get('Kaynak_Sayısı',0) or 0)>=2
+
+        badges=[]
+        if key in imp: badges.append('📌 Önemli Gelişmelerde')
+        if key in akt: badges.append('📁 AKT’de')
+        if key in notes: badges.append('📝 Bilgi Notu Hazırlandı')
+        status=' • '.join(badges) if badges else 'Henüz işleme alınmadı'
+
+        proposals=[]
+
+        # 17:30 sonrası: yalnız kritik gelişme.
+        if hour >= 17.5 or hour < 9:
+            if critical or risk>=75 or score>=88:
+                why=[]
+                if critical: why.append('kritik sanayi olayı')
+                if risk>=75: why.append('çok yüksek risk')
+                if score>=88: why.append('çok yüksek analitik değer')
+                if officially_verified: why.append('resmî/teyitli bilgi')
+                proposals.append((120+risk,'🚨 KRİTİK GELİŞME — ACİL DEĞERLENDİR',why))
+        else:
+            # Bilgi Notu: veri/istatistik, resmî açıklama, ürün/teknoloji tanıtımı.
+            if key not in notes and (data_stat or official or product_intro):
+                why=[]
+                if data_stat: why.append('veri/istatistiki bilgi')
+                if official: why.append('resmî açıklama/birincil kaynak')
+                if product_intro: why.append('ürün/teknoloji tanıtımı veya somut teknolojik gelişme')
+                if multi: why.append(f"{int(v.get('Kaynak_Sayısı',0) or 0)} farklı kaynak")
+                proposals.append((105+score,'📝 Bilgi Notu Değerlendir',why))
+
+            # AKT: negatif, eleştirel, propaganda/dezenformasyon/olumsuz içerik.
+            if key not in akt and negative:
+                why=[]
+                if str(row.get('Duygu',''))=='Negatif': why.append('negatif/olumsuz içerik')
+                if any(x in text for x in ['eleştiri','eleştirel','tepki','suçlama']): why.append('eleştirel dil/yapısal eleştiri')
+                if any(x in text for x in ['propaganda','dezenformasyon','manipülasyon','iddia']): why.append('propaganda/manipülasyon iddiası veya niteliği')
+                if risk>=55: why.append('dikkat gerektiren risk/etki')
+                proposals.append((100+score+risk//5,'📁 AKT Sepetine Almayı Değerlendir',why))
+
+            # Sunum: yalnız resmî veri/istatistik veya resmî/teyitli bilgi.
+            if (data_stat and officially_verified) or official or (officially_verified and score>=55):
+                why=[]
+                if data_stat: why.append('resmî/teyitli veri veya istatistik')
+                if official: why.append('resmî açıklama')
+                elif officially_verified: why.append('resmî teyitli bilgi')
+                proposals.append((85+score,'🖥️ Sunuma Eklemeyi Değerlendir',why))
+
+            # Mevcut önemli gelişme yeni kaynaklarla zenginleşmişse ayrıca hatırlat.
+            if key in imp and multi:
+                proposals.append((78+score,'🔄 Önemli Gelişmeyi Zenginleştir',
+                                  ['önemli gelişme sepetinde','yeni/çoklu kaynak desteği mevcut']))
+
+        for priority,action,reason in proposals:
+            actions.append({
+                'Öncelik':priority,
+                'Önerilen_İşlem':action,
+                'Tarih':row.get('Tarih',''),
+                'Başlık':title,
+                'Neden':' • '.join(dict.fromkeys(reason)) if reason else 'analist değerlendirmesi önerilmektedir',
+                'Durum':status,
+                'Değer_Skoru':score,
+                'Risk_Skoru':risk,
+                'URL':url
+            })
+
+    if not actions:
+        return pd.DataFrame(columns=cols),phase,phase_hint
+
+    out=pd.DataFrame(actions)
+    # Aynı haber aynı işlem için yalnız bir kez gösterilsin.
+    out=out.sort_values(['Öncelik','Değer_Skoru','Risk_Skoru'],ascending=[False,False,False])
+    out=out.drop_duplicates(subset=['Önerilen_İşlem','URL','Başlık'],keep='first').head(limit).reset_index(drop=True)
+    out['Öncelik']=range(1,len(out)+1)
+    return out[cols],phase,phase_hint
+
+
 def _section_select_table(section_key, data, columns, height=420):
     """Her haber bölümünde kutucuk gösterir; seçilenler sepete eklenebilir veya doğrudan bilgi notuna dönüştürülebilir."""
     if data is None or data.empty:
@@ -4918,6 +5070,51 @@ else:
                 use_container_width=True,
                 key='v61_know_note_download'
             )
+
+st.markdown('---')
+
+# ============================================================
+# V68 — ANALİST KOMUTA MERKEZİ
+# ============================================================
+st.subheader('🎛️ Analist Komuta Merkezi')
+st.caption(
+    'Bu alan çalışma saatine ve içeriğin niteliğine göre işlem önermektedir: Bilgi Notu için veri/istatistik, '
+    'resmî açıklama ve ürün/teknoloji gelişmeleri; AKT için negatif/eleştirel/olumsuz veya propaganda niteliğindeki '
+    'içerikler; sunum için resmî veri, resmî açıklama ve teyitli bilgiler esas alınmaktadır.'
+)
+
+_cmd_rows=st.session_state.get('rows')
+if _cmd_rows:
+    _cmd_df=pd.DataFrame(_cmd_rows)
+    if not _cmd_df.empty and 'Tarih_dt' in _cmd_df.columns:
+        _cmd_df['Tarih_dt']=pd.to_datetime(_cmd_df['Tarih_dt'],utc=True,errors='coerce')
+
+    _cmd,_phase,_phase_hint=_v68_analyst_command_center(_cmd_df,8)
+
+    cphase1,cphase2=st.columns([1,2])
+    with cphase1:
+        st.info(f'**Çalışma Fazı**\n\n{_phase}')
+    with cphase2:
+        st.info(f'**Sistem Önceliği**\n\n{_phase_hint}')
+
+    if _cmd.empty:
+        st.success('Şu anda ayrıca işlem önerilecek yüksek öncelikli bir gelişme bulunmamaktadır.')
+    else:
+        st.markdown(f'**Şimdi yapılması önerilen {len(_cmd)} işlem**')
+        _cmd_for_select=_cmd.copy()
+        _section_select_table(
+            'v68_command_center',
+            _cmd_for_select,
+            ['Öncelik','Önerilen_İşlem','Tarih','Başlık','Neden','Durum',
+             'Değer_Skoru','Risk_Skoru','URL'],
+            height=min(620,105+58*len(_cmd_for_select))
+        )
+        st.caption(
+            'Öneriler karar yerine geçmemektedir. Haberi seçerek doğrudan Önemli Gelişmeler, AKT veya '
+            'Bilgi Notu işlemlerini aynı bölümden uygulayabilirsiniz.'
+        )
+else:
+    st.info('İlk ana tarama tamamlandığında Analist Komuta Merkezi otomatik olarak işlem önerileri oluşturacaktır.')
 
 st.markdown('---')
 
