@@ -2114,56 +2114,91 @@ def _compose_prose_note(df):
     return '\n\n'.join(blocks), enriched
 
 def make_analyst_docx(df, title='BİLGİ NOTU'):
+    """V65: STB resmî yazım dili; Özet -> Gelişme -> Sonuç ve Değerlendirme -> Arz olunur."""
     doc=Document()
     sec=doc.sections[0]
     sec.top_margin=Cm(2); sec.bottom_margin=Cm(2)
     sec.left_margin=Cm(2.5); sec.right_margin=Cm(2.5)
-
     styles=doc.styles
-    styles['Normal'].font.name='Times New Roman'
-    styles['Normal'].font.size=Pt(11)
+    styles['Normal'].font.name='Times New Roman'; styles['Normal'].font.size=Pt(12)
+    styles['Normal']._element.rPr.rFonts.set(qn('w:eastAsia'),'Times New Roman')
 
-    p=doc.add_paragraph()
-    p.alignment=WD_ALIGN_PARAGRAPH.CENTER
+    p=doc.add_paragraph(); p.alignment=WD_ALIGN_PARAGRAPH.CENTER
     r=p.add_run(title); r.bold=True; r.font.size=Pt(14)
+    p=doc.add_paragraph(); p.add_run('Tarih: ').bold=True
+    p.add_run(datetime.now().astimezone().strftime('%d.%m.%Y'))
 
-    p=doc.add_paragraph()
-    p.add_run('Tarih/Saat: ').bold=True
-    p.add_run(datetime.now().astimezone().strftime('%d.%m.%Y %H:%M:%S'))
+    # Kaynak haber(ler) derinlemesine alınır; metin yalnızca kaynakta bulunan olgulara dayanır.
+    enriched=[]
+    x=df.copy() if df is not None else pd.DataFrame()
+    if 'Tarih_dt' in x.columns:
+        x['Tarih_dt']=pd.to_datetime(x['Tarih_dt'],utc=True,errors='coerce')
+        x=x.sort_values('Tarih_dt',ascending=True,na_position='last')
+    for _,rr in x.iterrows():
+        row=rr.to_dict(); enriched.append((row,article_detail(row)))
 
-    # Bilgi notu oluşturulurken seçili haberlerin gerçek sayfaları derinlemesine alınır.
-    note,enriched=_compose_prose_note(df)
-
-    # Kesintisiz düz yazı: ara başlık kullanılmaz.
-    for block in note.split('\n\n'):
-        if not block.strip(): continue
-        bp=doc.add_paragraph()
-        bp.alignment=WD_ALIGN_PARAGRAPH.JUSTIFY
-        bp.paragraph_format.first_line_indent=Cm(1.25)
-        bp.paragraph_format.line_spacing=1.15
-        bp.paragraph_format.space_after=Pt(8)
-        bp.add_run(block.strip())
-
-    # Kaynaklar; bilgi notunun anlatı akışından sonra.
-    doc.add_paragraph()
-    hp=doc.add_paragraph()
-    rr=hp.add_run('KAYNAKLAR'); rr.bold=True
-
-    for i,(row,detail) in enumerate(enriched,1):
+    all_sent=[]
+    for row,detail in enriched:
         title_text=_clean_note_text(detail.get('title') or row.get('Başlık',''))
-        source=_clean_note_text(detail.get('source') or row.get('Kaynak','Açık Kaynak'))
-        real_url=detail.get('canonical') or row.get('Yayıncı_URL') or row.get('URL','')
+        body=detail.get('text') or row.get('İçerik_Özeti') or title_text
+        ss=_akt_clean_sentences(title_text,body)
+        all_sent.extend(ss)
+    # Yakın tekrarları temizle.
+    uniq=[]; seen=[]
+    for sent in all_sent:
+        key=norm(sent)
+        toks=set(key.split())
+        if not key: continue
+        dup=False
+        for old in seen[-30:]:
+            inter=len(toks & old); union=len(toks | old)
+            if union and inter/union>=0.78: dup=True; break
+        if not dup: uniq.append(sent.strip()); seen.append(toks)
 
-        p=doc.add_paragraph()
-        p.paragraph_format.left_indent=Cm(.5)
-        p.add_run(f"{i}. {source} — {title_text}")
-        if real_url:
-            p.add_run(' — ')
-            _word_hyperlink(p,real_url,'Haber linki')
+    def add_section(head,text):
+        hp=doc.add_paragraph(); hr=hp.add_run(head); hr.bold=True
+        bp=doc.add_paragraph(); bp.alignment=WD_ALIGN_PARAGRAPH.JUSTIFY
+        bp.paragraph_format.first_line_indent=Cm(1.25); bp.paragraph_format.line_spacing=1.15
+        bp.paragraph_format.space_after=Pt(8); bp.add_run(text.strip())
 
-    bio=BytesIO()
-    doc.save(bio); bio.seek(0)
-    return bio.getvalue()
+    if uniq:
+        # 1) İlk paragraf: seçilen haberin kısa özeti.
+        intro_s=uniq[:2]
+        intro=_join_sentences_naturally(intro_s)
+        add_section('Özet', intro)
+
+        # 2) Gelişme: rakam, tarih, kurum, açıklama ve ayrıntıları haber akışına sadık biçimde koru.
+        detail_s=uniq[2:]
+        if not detail_s: detail_s=uniq
+        # Kaynağın tamamını makul uzunlukta kapsa; bilgi kaybı yaratacak salt puanlama yapma.
+        detail_text=_join_sentences_naturally(detail_s[:18])
+        add_section('Gelişme', detail_text)
+
+        # 3) Sonuç ve kısa değerlendirme: kaynaktaki son durum + temkinli analitik kapanış.
+        tail=_join_sentences_naturally(uniq[-3:])
+        concl=(f"Mevcut bilgiler çerçevesinde, {tail[0].lower()+tail[1:] if tail else 'gelişmenin mevcut seyri'} "
+               "hususları öne çıkmaktadır. Gelişmenin bundan sonraki seyri bakımından ilgili kurum ve kuruluşların "
+               "açıklamaları ile yeni resmî verilerin takip edilmesinin uygun olacağı değerlendirilmektedir.")
+        add_section('Sonuç ve Değerlendirme',concl)
+    else:
+        add_section('Özet','Seçilen habere ilişkin yeterli içerik alınamamıştır.')
+        add_section('Gelişme','Kaynak sayfasından ayrıntılı içerik temin edilememiştir.')
+        add_section('Sonuç ve Değerlendirme','Gelişmenin yeni açık kaynak ve resmî açıklamalar çerçevesinde takip edilmesinin uygun olacağı değerlendirilmektedir.')
+
+    endp=doc.add_paragraph(); endp.paragraph_format.space_before=Pt(8); endp.add_run('Arz olunur.')
+
+    # Kaynak bağlantıları en sonda, anlatıdan ayrı ve sade biçimde.
+    if enriched:
+        kp=doc.add_paragraph(); kr=kp.add_run('Kaynak: '); kr.bold=True
+        for i,(row,detail) in enumerate(enriched):
+            source=_clean_note_text(detail.get('source') or row.get('Kaynak','Açık Kaynak'))
+            url=detail.get('canonical') or row.get('Yayıncı_URL') or row.get('URL','')
+            if i: kp.add_run('; ')
+            kp.add_run(source)
+            if url:
+                kp.add_run(' ('); _word_hyperlink(kp,url,'Haber linki'); kp.add_run(')')
+
+    bio=BytesIO(); doc.save(bio); bio.seek(0); return bio.getvalue()
 
 
 
@@ -2836,44 +2871,37 @@ def _clear_important_basket():
         return 0
 
 def make_important_basket_docx(basket_df):
-    doc=Document()
-    sec=doc.sections[0]
-    sec.top_margin=Cm(2); sec.bottom_margin=Cm(2)
-    sec.left_margin=Cm(2.5); sec.right_margin=Cm(2.5)
-    doc.styles['Normal'].font.name='Times New Roman'
-    doc.styles['Normal'].font.size=Pt(11)
+    """V65: Kullanıcının STB Önemli Gelişmeler Notu örneğinin resmî, kısa paragraf yapısı."""
+    doc=Document(); sec=doc.sections[0]
+    sec.top_margin=Cm(2); sec.bottom_margin=Cm(2); sec.left_margin=Cm(2.5); sec.right_margin=Cm(2.5)
+    doc.styles['Normal'].font.name='Times New Roman'; doc.styles['Normal'].font.size=Pt(12)
+    doc.styles['Normal']._element.rPr.rFonts.set(qn('w:eastAsia'),'Times New Roman')
 
-    p=doc.add_paragraph()
-    p.alignment=WD_ALIGN_PARAGRAPH.CENTER
-    r=p.add_run('24 SAATLİK ÖNEMLİ GELİŞMELER')
-    r.bold=True; r.font.size=Pt(14)
-
-    p=doc.add_paragraph()
-    p.alignment=WD_ALIGN_PARAGRAPH.CENTER
-    p.add_run(datetime.now().astimezone().strftime('%d.%m.%Y %H:%M'))
+    now=datetime.now().astimezone()
+    p=doc.add_paragraph(); p.alignment=WD_ALIGN_PARAGRAPH.CENTER
+    r=p.add_run(now.strftime('%d/%m/%Y')); r.bold=True
+    p=doc.add_paragraph(); p.add_run('Konu: ').bold=True; p.add_run('STB Temsilciliği Önemli Gelişmeler Notu')
 
     if basket_df is None or basket_df.empty:
-        doc.add_paragraph('Sepette kayıtlı önemli gelişme bulunmamaktadır.')
+        doc.add_paragraph('Kayıtlı önemli gelişme bulunmamaktadır.')
     else:
-        for i,(_,r) in enumerate(basket_df.iterrows(),1):
-            p=doc.add_paragraph()
-            p.alignment=WD_ALIGN_PARAGRAPH.JUSTIFY
-            p.paragraph_format.first_line_indent=Cm(.75)
-            run=p.add_run(f"{i}. {r.get('news_time','')} tarihinde {r.get('source','Açık Kaynak')} tarafından yayımlanan “{r.get('title','')}” başlıklı gelişme")
-            run.bold=False
-            summary=_clean_note_text(r.get('summary',''))
-            if summary:
-                p.add_run(f"; {summary}")
-            if r.get('risk_score') is not None:
-                p.add_run(f" Risk puanı {int(r.get('risk_score') or 0)}/100 olarak hesaplanmıştır.")
-            if r.get('url'):
-                p.add_run(' (')
-                _word_hyperlink(p,r.get('url'),'Haber linki')
-                p.add_run(')')
+        for _,rr in basket_df.iterrows():
+            row={'Başlık':rr.get('title',''),'Kaynak':rr.get('source','Açık Kaynak'),'URL':rr.get('url',''),
+                 'Yayıncı_URL':rr.get('url',''),'İçerik_Özeti':rr.get('summary',''),'Tarih':rr.get('news_time','')}
+            detail=article_detail(row)
+            title_text=_clean_note_text(detail.get('title') or row['Başlık'])
+            body=detail.get('text') or row['İçerik_Özeti'] or title_text
+            summary=_akt_formal_summary(title_text,body,max_sentences=5,max_chars=1250)
+            source=_clean_note_text(detail.get('source') or row['Kaynak'] or 'STB')
+            p=doc.add_paragraph(); p.alignment=WD_ALIGN_PARAGRAPH.JUSTIFY
+            p.paragraph_format.first_line_indent=Cm(1.25); p.paragraph_format.space_after=Pt(8)
+            # Örnekte her gelişme bağımsız, kısa ve doğrudan resmî paragraftır; risk puanı/link gibi teknik alanlar yoktur.
+            txt=summary.strip().rstrip(' .;')
+            if txt: txt=txt[0].upper()+txt[1:]
+            p.add_run(txt + ' (STB).')
 
-    bio=BytesIO()
-    doc.save(bio); bio.seek(0)
-    return bio.getvalue()
+    endp=doc.add_paragraph(); endp.paragraph_format.space_before=Pt(8); endp.add_run('Arz olunur.')
+    bio=BytesIO(); doc.save(bio); bio.seek(0); return bio.getvalue()
 
 # -----------------------------
 # GÜNLÜK DURUM ÖZETİ — V32 EK MODÜL
@@ -5278,48 +5306,6 @@ else:
         st.markdown('---')
 
         st.markdown('---')
-        st.subheader('🌙 Yarına Takip Edilmesi Gereken Gelişmeler')
-        st.caption(
-            'Sonuçlanmamış, teyit/gelişim süreci devam eden ve ertesi vardiyada yeniden bakılması faydalı '
-            'olabilecek olayları önerir. Nihai seçim analiste aittir.'
-        )
-        _tomorrow=_v63_tomorrow_candidates(df,15)
-        if _tomorrow.empty:
-            st.info('Yarına özel takip önerisi oluşturulabilecek açık olay bulunamadı.')
-        else:
-            _tomorrow_show=_tomorrow.copy()
-            _tomorrow_show.insert(0,'Seç',False)
-            _ted=st.data_editor(
-                _tomorrow_show[['Seç','Tarih','Başlık','Aşama','Takip_Gerekçesi',
-                                'Kaynak_Sayısı','Risk_Skoru','URL']],
-                column_config={
-                    'Seç':st.column_config.CheckboxColumn('Seç'),
-                    'URL':st.column_config.LinkColumn('Haber Linki'),
-                    'Risk_Skoru':st.column_config.NumberColumn('Risk',format='%d/100')
-                },
-                disabled=['Tarih','Başlık','Aşama','Takip_Gerekçesi','Kaynak_Sayısı','Risk_Skoru','URL'],
-                hide_index=True,use_container_width=True,
-                height=min(620,100+48*len(_tomorrow_show)),
-                key='v63_tomorrow_editor'
-            )
-            _tidx=_ted.index[_ted['Seç'].astype(bool)].tolist()
-            if st.button('🌙 Seçilenleri Yarına Takip Listesine Ekle',use_container_width=True,key='v63_add_tomorrow'):
-                if not _tidx:
-                    st.warning('Önce en az bir gelişmeyi seçin.')
-                else:
-                    _sel=_tomorrow.loc[_tidx].copy()
-                    _n=_v63_add_tomorrow(_sel.to_dict('records'))
-                    st.success(f'{_n} gelişme yarına takip listesine eklendi.')
-
-        _saved_tomorrow=_v63_load_tomorrow()
-        if not _saved_tomorrow.empty:
-            with st.expander(f'📌 Kaydedilmiş yarın takip listesi ({len(_saved_tomorrow)})'):
-                st.dataframe(
-                    _saved_tomorrow[['added_at','title','reason','url']],
-                    column_config={'url':st.column_config.LinkColumn('Haber Linki')},
-                    hide_index=True,use_container_width=True
-                )
-
         st.subheader('📋 Gün Sonu Performans Özeti')
         st.caption('Bugün sistemde oluşan tarama ve çalışma çıktılarının operasyonel özeti.')
         _perf=_v60_day_end_performance(df)
