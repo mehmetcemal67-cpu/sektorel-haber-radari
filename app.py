@@ -4425,15 +4425,94 @@ else:
         st.success('Son girişinizden bu yana öncelikli yeni bir gelişme tespit edilmedi.')
     else:
         st.warning(f'Son girişinizden bu yana dikkat gerektiren {_now5.shape[0]} gelişme öne çıkıyor.')
-        st.dataframe(
-            _now5[['Sıra','Değer_Skoru','Tarih','Gelişme','Neden_Değerli','Kaynak_Sayısı','Risk','URL']],
+
+        # V61: Bu bölümden doğrudan seçim/sepet/bilgi notu işlemleri yapılabilir.
+        _catch_df=pd.DataFrame(_catch_rows)
+        _know_rows=[]
+        for _,_v in _now5.iterrows():
+            _url=str(_v.get('URL','') or '')
+            _title=norm(_v.get('Gelişme',''))
+            _match=pd.DataFrame()
+            if not _catch_df.empty and _url and 'URL' in _catch_df.columns:
+                _match=_catch_df[_catch_df['URL'].astype(str)==_url]
+            if _match.empty and not _catch_df.empty and 'Başlık' in _catch_df.columns:
+                _match=_catch_df[_catch_df['Başlık'].astype(str).map(norm)==_title]
+            if not _match.empty:
+                _r=_match.iloc[0].to_dict()
+            else:
+                _r={
+                    'Tarih':_v.get('Tarih',''),'Başlık':_v.get('Gelişme',''),
+                    'URL':_v.get('URL',''),'Risk_Skoru':_v.get('Risk',0),
+                    'İçerik_Özeti':'','Kaynak':'','Kategori':''
+                }
+            _r['Değer_Skoru']=int(_v.get('Değer_Skoru',0) or 0)
+            _r['Neden_Değerli']=_v.get('Neden_Değerli','')
+            _r['Kaynak_Sayısı']=int(_v.get('Kaynak_Sayısı',0) or 0)
+            _know_rows.append(_r)
+
+        _know_select=pd.DataFrame(_know_rows)
+        if 'Seç' not in _know_select.columns:
+            _know_select.insert(0,'Seç',False)
+
+        _edited_know=st.data_editor(
+            _know_select[['Seç','Tarih','Başlık','İçerik_Özeti','Değer_Skoru',
+                          'Neden_Değerli','Kaynak_Sayısı','Risk_Skoru','URL']],
             column_config={
+                'Seç':st.column_config.CheckboxColumn('Seç'),
                 'Değer_Skoru':st.column_config.ProgressColumn('Değer Skoru',min_value=0,max_value=100,format='%d/100'),
-                'Risk':st.column_config.NumberColumn('Risk',format='%d/100'),
-                'URL':st.column_config.LinkColumn('Haber Linki')
+                'Risk_Skoru':st.column_config.NumberColumn('Risk',format='%d/100'),
+                'URL':st.column_config.LinkColumn('Haber Linki'),
+                'İçerik_Özeti':st.column_config.TextColumn('Kısa İçerik',width='large')
             },
-            hide_index=True,use_container_width=True,height=min(420,90+55*len(_now5))
+            disabled=['Tarih','Başlık','İçerik_Özeti','Değer_Skoru','Neden_Değerli',
+                      'Kaynak_Sayısı','Risk_Skoru','URL'],
+            hide_index=True,use_container_width=True,
+            height=min(480,100+62*len(_know_select)),
+            key='v61_now_to_know_editor'
         )
+
+        _selected_idx=_edited_know.index[_edited_know['Seç'].astype(bool)].tolist()
+        _selected_know=_know_select.loc[_selected_idx].copy() if _selected_idx else pd.DataFrame()
+
+        k1,k2,k3=st.columns(3)
+        with k1:
+            if st.button('📌 Önemli Gelişmelere Ekle',key='v61_know_imp',use_container_width=True):
+                if _selected_know.empty:
+                    st.warning('Önce en az bir gelişmeyi seçin.')
+                else:
+                    _n=_add_rows_to_important_basket(_selected_know.to_dict('records'))
+                    st.success(f'{_n} haber önemli gelişmeler sepetine eklendi.')
+        with k2:
+            if st.button('🗂️ Açık Kaynak Tarama Sepetine Ekle',key='v61_know_akt',use_container_width=True):
+                if _selected_know.empty:
+                    st.warning('Önce en az bir gelişmeyi seçin.')
+                else:
+                    _n=_add_rows_to_osint_basket(_selected_know.to_dict('records'))
+                    st.success(f'{_n} haber açık kaynak tarama sepetine eklendi.')
+        with k3:
+            if st.button('📌 DETAYLI BİLGİ NOTU OLUŞTUR / WORD',key='v61_know_note',use_container_width=True):
+                if _selected_know.empty:
+                    st.warning('Önce en az bir gelişmeyi seçin.')
+                else:
+                    with st.spinner(f'{len(_selected_know)} seçili gelişmenin ayrıntılı bilgi notu hazırlanıyor...'):
+                        try:
+                            st.session_state['v61_know_note_bytes']=make_analyst_docx(
+                                _selected_know,
+                                title='SANAYİ & TEKNOLOJİ BİLGİ NOTU'
+                            )
+                        except Exception as _e:
+                            st.session_state['v61_know_note_bytes']=None
+                            st.error(f'Bilgi notu hazırlanamadı: {_e}')
+
+        if st.session_state.get('v61_know_note_bytes'):
+            st.download_button(
+                '⬇️ Hazırlanan Bilgi Notunu İndir',
+                data=st.session_state['v61_know_note_bytes'],
+                file_name=f'Sanayi_Teknoloji_Bilgi_Notu_Su_An_Bilmen_Gerekenler_{date.today()}.docx',
+                mime='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                use_container_width=True,
+                key='v61_know_note_download'
+            )
 
 st.markdown('---')
 
@@ -4454,22 +4533,6 @@ else:
     else:
         total=len(df); negc=int((df.Duygu=='Negatif').sum()); riskc=int((df.Risk_Durumu=='Yüksek Risk').sum()); trc=int(df.Kaynak_Grubu.astype(str).str.startswith('🇹🇷').sum()); grc=int(df.Kaynak_Grubu.astype(str).str.startswith('🇬🇷').sum()); events=df['Olay_ID'].nunique()
         a,b,c,d,e,f=st.columns(6); a.metric('Toplam',total); b.metric('Olay',events); c.metric('Negatif',negc); d.metric('Yüksek Risk',riskc); e.metric('🇹🇷 Türk',trc); f.metric('🇬🇷 Yunan',grc)
-
-        st.subheader('📈 Olağandışı Hareketlilik Radarı')
-        st.caption('Mevcut taramadaki kategori yoğunluğunu son 14 gündeki benzer taramaların saatlik olay hızıyla karşılaştırır.')
-        anomaly_df=_v60_anomaly_radar(df,hours,14)
-        if anomaly_df.empty:
-            st.info('Şu anda geçmiş normale göre belirgin olağandışı kategori yoğunluğu tespit edilmedi veya karşılaştırma için yeterli geçmiş veri yok.')
-        else:
-            st.dataframe(
-                anomaly_df,
-                column_config={
-                    'Normalin_Katı':st.column_config.NumberColumn('Normalin Katı',format='%.1fx')
-                },
-                hide_index=True,use_container_width=True,height=min(360,80+42*len(anomaly_df))
-            )
-
-        st.markdown('---')
 
         # ---------------------------------------------------------
         # V34 — VARDİYA BAŞLANGIÇ ÖZETİ
