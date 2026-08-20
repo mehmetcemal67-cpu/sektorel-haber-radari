@@ -3829,79 +3829,71 @@ def _expanded_report_text(title, body):
 # -----------------------------
 def _v66_formalize_sentence_endings(text):
     """
-    Rapor metinlerinde gündelik/şimdiki zaman yüklemlerini kurumsal resmî dile yaklaştırır.
-    Haber başlıklarına uygulanmaz; yalnızca oluşturulan anlatı paragraflarında kullanılır.
+    V67: Önemli Gelişmeler ve Bilgi Notunda cümle sonlarındaki haber dili
+    (-yor/-dı) yerine kurumsal resmî dil (-maktadır/-miştir) kullanılır.
     """
     t=re.sub(r'\s+',' ',str(text or '')).strip()
     if not t:
         return t
 
-    # Cümle sonlarında en sık görülen yüklem dönüşümleri.
-    replacements=[
-        (r'\byapıldı\.$','yapılmıştır.'),
-        (r'\bgerçekleştirildi\.$','gerçekleştirilmiştir.'),
-        (r'\baçıklandı\.$','açıklanmıştır.'),
-        (r'\bduyuruldu\.$','duyurulmuştur.'),
-        (r'\byayımlandı\.$','yayımlanmıştır.'),
-        (r'\byayınlandı\.$','yayımlanmıştır.'),
-        (r'\bbaşladı\.$','başlamıştır.'),
-        (r'\btamamlandı\.$','tamamlanmıştır.'),
-        (r'\bsona erdi\.$','sona ermiştir.'),
-        (r'\barttı\.$','artmıştır.'),
-        (r'\bazaldı\.$','azalmıştır.'),
-        (r'\bdüştü\.$','düşmüştür.'),
-        (r'\byükseldi\.$','yükselmiştir.'),
-        (r'\bgeriledi\.$','gerilemiştir.'),
-        (r'\bulaştı\.$','ulaşmıştır.'),
-        (r'\bçıktı\.$','çıkmıştır.'),
-        (r'\bgeldi\.$','gelmiştir.'),
-        (r'\bverildi\.$','verilmiştir.'),
-        (r'\bbelirlendi\.$','belirlenmiştir.'),
-        (r'\bkaydedildi\.$','kaydedilmiştir.'),
-        (r'\btespit edildi\.$','tespit edilmiştir.'),
-        (r'\bildirildi\.$','bildirilmiştir.'),
-        (r'\bbelirtildi\.$','belirtilmiştir.'),
-        (r'\bifade edildi\.$','ifade edilmiştir.'),
-        (r'\bvurgulandı\.$','vurgulanmıştır.'),
-        (r'\bkararlaştırıldı\.$','kararlaştırılmıştır.'),
-        (r'\bonaylandı\.$','onaylanmıştır.'),
-        (r'\bimzalandı\.$','imzalanmıştır.'),
-        (r'\bkuruldu\.$','kurulmuştur.'),
-        (r'\bdevreye alındı\.$','devreye alınmıştır.'),
-        (r'\byürütülüyor\.$','yürütülmektedir.'),
-        (r'\bsürdürülüyor\.$','sürdürülmektedir.'),
-        (r'\bsürüyor\.$','sürmektedir.'),
-        (r'\bdevam ediyor\.$','devam etmektedir.'),
-        (r'\bgerçekleşiyor\.$','gerçekleşmektedir.'),
-        (r'\byapılıyor\.$','yapılmaktadır.'),
-        (r'\bplanlanıyor\.$','planlanmaktadır.'),
-        (r'\bbekleniyor\.$','beklenmektedir.'),
-        (r'\böngörülüyor\.$','öngörülmektedir.'),
-        (r'\bhedefleniyor\.$','hedeflenmektedir.'),
-        (r'\bçalışılıyor\.$','çalışılmaktadır.'),
-        (r'\bkullanılıyor\.$','kullanılmaktadır.'),
-        (r'\bgösteriyor\.$','göstermektedir.'),
-        (r'\bortaya koyuyor\.$','ortaya koymaktadır.'),
-        (r'\bişaret ediyor\.$','işaret etmektedir.'),
-        (r'\böne çıkıyor\.$','öne çıkmaktadır.'),
-        (r'\byer alıyor\.$','yer almaktadır.'),
+    exact=[
+        ('açıklıyor','açıklamaktadır'),('belirtiyor','belirtmektedir'),
+        ('bildiriyor','bildirmektedir'),('duyuruyor','duyurmaktadır'),
+        ('söylüyor','söylemektedir'),('ifade ediyor','ifade etmektedir'),
+        ('vurguluyor','vurgulamaktadır'),('gösteriyor','göstermektedir'),
+        ('işaret ediyor','işaret etmektedir'),('ortaya koyuyor','ortaya koymaktadır'),
+        ('öne çıkarıyor','öne çıkarmaktadır'),('öne çıkıyor','öne çıkmaktadır'),
+        ('yer alıyor','yer almaktadır'),('devam ediyor','devam etmektedir'),
+        ('sürüyor','sürmektedir'),('yürütülüyor','yürütülmektedir'),
+        ('sürdürülüyor','sürdürülmektedir'),('yapılıyor','yapılmaktadır'),
+        ('gerçekleştiriliyor','gerçekleştirilmektedir'),('kullanılıyor','kullanılmaktadır'),
+        ('sayılıyor','sayılmaktadır'),('belirtiliyor','belirtilmektedir'),
+        ('açıklanıyor','açıklanmaktadır'),('bildiriliyor','bildirilmektedir'),
+        ('duyuruluyor','duyurulmaktadır'),('değerlendiriliyor','değerlendirilmektedir'),
+        ('bekleniyor','beklenmektedir'),('planlanıyor','planlanmaktadır'),
+        ('hedefleniyor','hedeflenmektedir'),('öngörülüyor','öngörülmektedir'),
+        ('çalışılıyor','çalışılmaktadır'),('gerçekleşiyor','gerçekleşmektedir'),
+        ('sağlıyor','sağlamaktadır'),('oluşturuyor','oluşturmaktadır'),
+        ('taşıyor','taşımaktadır'),('sunuyor','sunmaktadır'),('koruyor','korumaktadır'),
+        ('dolduruyor','doldurmaktadır'),('geçiyor','geçmektedir'),
+        ('vuruyor','vurmaktadır'),('tamamlıyor','tamamlamaktadır'),
+        ('artıyor','artmaktadır'),('azalıyor','azalmaktadır'),
     ]
-
-    # Her cümleyi ayrı işleyerek yalnız yüklemi dönüştür.
+    past=[
+        ('yapıldı','yapılmıştır'),('gerçekleştirildi','gerçekleştirilmiştir'),
+        ('açıklandı','açıklanmıştır'),('duyuruldu','duyurulmuştur'),
+        ('yayımlandı','yayımlanmıştır'),('yayınlandı','yayımlanmıştır'),
+        ('başladı','başlamıştır'),('tamamlandı','tamamlanmıştır'),
+        ('sona erdi','sona ermiştir'),('arttı','artmıştır'),('azaldı','azalmıştır'),
+        ('düştü','düşmüştür'),('yükseldi','yükselmiştir'),('geriledi','gerilemiştir'),
+        ('ulaştı','ulaşmıştır'),('çıktı','çıkmıştır'),('geldi','gelmiştir'),
+        ('verildi','verilmiştir'),('belirlendi','belirlenmiştir'),
+        ('kaydedildi','kaydedilmiştir'),('tespit edildi','tespit edilmiştir'),
+        ('bildirildi','bildirilmiştir'),('belirtildi','belirtilmiştir'),
+        ('ifade edildi','ifade edilmiştir'),('vurgulandı','vurgulanmıştır'),
+        ('kararlaştırıldı','kararlaştırılmıştır'),('onaylandı','onaylanmıştır'),
+        ('imzalandı','imzalanmıştır'),('kuruldu','kurulmuştur'),
+        ('devreye alındı','devreye alınmıştır'),('duyurdu','duyurmuştur'),
+        ('açıkladı','açıklamıştır'),('belirtti','belirtmiştir'),
+        ('bildirdi','bildirmiştir'),('gösterdi','göstermiştir'),
+        ('sağladı','sağlamıştır'),('geçti','geçmiştir'),('vurdu','vurmuştur'),
+    ]
+    pairs=exact+past
     parts=re.split(r'(?<=[.!?])\s+',t)
     out=[]
     for s in parts:
         s=s.strip()
-        if not s:
-            continue
-        if s[-1] not in '.!?':
-            s+='.'
-        for pat,repl in replacements:
-            if re.search(pat,s,flags=re.I):
-                s=re.sub(pat,repl,s,flags=re.I)
+        if not s: continue
+        punct=s[-1] if s[-1] in '.!?' else '.'
+        core=s[:-1].rstrip() if s[-1] in '.!?' else s
+        low=core.lower()
+        for old,newv in sorted(pairs,key=lambda x:len(x[0]),reverse=True):
+            if low.endswith(old):
+                core=core[:-len(old)]+newv
                 break
-        out.append(s)
+        out.append(core.rstrip(' .;:')+punct)
     return ' '.join(out)
+
 
 def _v66_limit_important_paragraph(text,max_chars=520,max_sentences=3):
     """
@@ -3980,6 +3972,62 @@ def _akt_findings_intro(rows):
         "içeriğin detaylı özeti ve görseli aşağıda yer almaktadır."
     )
 
+
+def _v67_akt_reported_content(text):
+    """
+    AKT'de haber içeriğini dolaylı anlatı biçimine çevirir:
+    açıklıyor -> açıkladığı, duyurdu -> duyurduğu, belirtiyor -> belirttiği vb.
+    Son kapanış tek kez 'hususları ifade edilmektedir.' olur.
+    """
+    t=re.sub(r'\s+',' ',str(text or '')).strip().rstrip(' .;:')
+    if not t: return t
+
+    conv=[
+        ('ifade ediyor','ifade ettiği'),('ifade etti','ifade ettiği'),
+        ('açıklıyor','açıkladığı'),('açıkladı','açıkladığı'),
+        ('belirtiyor','belirttiği'),('belirtti','belirttiği'),
+        ('bildiriyor','bildirdiği'),('bildirdi','bildirdiği'),
+        ('duyuruyor','duyurduğu'),('duyurdu','duyurduğu'),
+        ('vurguluyor','vurguladığı'),('vurguladı','vurguladığı'),
+        ('gösteriyor','gösterdiği'),('gösterdi','gösterdiği'),
+        ('işaret ediyor','işaret ettiği'),('işaret etti','işaret ettiği'),
+        ('ortaya koyuyor','ortaya koyduğu'),('ortaya koydu','ortaya koyduğu'),
+        ('sağlıyor','sağladığı'),('sağladı','sağladığı'),
+        ('dolduruyor','doldurduğu'),('doldurdu','doldurduğu'),
+        ('yer alıyor','yer aldığı'),('yer aldı','yer aldığı'),
+        ('devam ediyor','devam ettiği'),('devam etti','devam ettiği'),
+        ('sürüyor','sürdüğü'),('sürdü','sürdüğü'),
+        ('tamamladı','tamamladığı'),('tamamlıyor','tamamladığı'),
+        ('vuruyor','vurduğu'),('vurdu','vurduğu'),
+        ('geçiyor','geçtiği'),('geçti','geçtiği'),
+        ('yapıldı','yapıldığı'),('gerçekleştirildi','gerçekleştirildiği'),
+        ('açıklandı','açıklandığı'),('duyuruldu','duyurulduğu'),
+        ('yayımlandı','yayımlandığı'),('başladı','başladığı'),
+        ('tamamlandı','tamamlandığı'),('ulaştı','ulaştığı'),
+        ('arttı','arttığı'),('azaldı','azaldığı'),
+        ('oldu','olduğu'),('oluyor','olduğu'),
+        ('sahiptir','sahip olduğu'),('dayanmaktadır','dayandığı'),
+        ('değişebilir','değişebileceği'),
+    ]
+
+    clauses=[x.strip(' ,;:.') for x in re.split(r'\s*;\s*',t) if x.strip()]
+    out=[]
+    for c in clauses:
+        low=c.lower()
+        changed=False
+        for old,newv in sorted(conv,key=lambda x:len(x[0]),reverse=True):
+            # Haber özetindeki yüklem çoğunlukla cümlecik sonundadır.
+            if low.endswith(old):
+                c=c[:-len(old)]+newv
+                changed=True
+                break
+        # Nokta ile birleşmiş kısa cümlelerde de son yüklemi dönüştür.
+        if not changed:
+            for old,newv in sorted(conv,key=lambda x:len(x[0]),reverse=True):
+                c=re.sub(r'\b'+re.escape(old)+r'(?=\s*$)',newv,c,flags=re.I)
+        out.append(c.rstrip(' .;:'))
+    return '; '.join(out)
+
 def make_docx(rows):
     """
     Kullanıcının ilettiği STB AKT örneğine yakın resmî format:
@@ -4027,7 +4075,7 @@ def make_docx(rows):
         title=(detail.get("title") or row.get("Başlık") or "").strip()
         source=_real_source(row,detail,real_url)
         body=detail.get("text") or row.get("İçerik_Özeti") or title
-        summary=_v66_formalize_sentence_endings(_akt_formal_summary(title,body))
+        summary=_v67_akt_reported_content(_akt_formal_summary(title,body))
 
         p=doc.add_paragraph()
         p.alignment=WD_ALIGN_PARAGRAPH.JUSTIFY
