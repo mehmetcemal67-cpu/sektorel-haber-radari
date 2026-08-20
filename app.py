@@ -4294,68 +4294,143 @@ def _v70_theme_for_text(text):
     theme=max(scores,key=scores.get)
     return theme,scores[theme]
 
-def _v70_strategic_signals(df,limit=6):
-    """
-    Tek haber yerine 30 günlük ve önceki 30 günlük kümeleri karşılaştırır.
-    Sinyal; hacim artışı + resmî kaynak + çoklu kaynak + risk/stratejik yoğunluk ile güçlenir.
-    """
-    cols=['Sinyal','Durum','Güven','Brifing','Son_30_Gün','Önceki_30_Gün',
-          'Değişim','Neden_Şimdi','Değerlendirme','İzlenecek_Göstergeler']
-    hist=_v70_signal_history_days(60)
-    frames=[]
-    if not hist.empty:
-        h=hist.copy()
-        h['_dt']=pd.to_datetime(h['scanned_at'],utc=True,errors='coerce')
-        h['_text']=h['title'].fillna('').astype(str)+' '+h['summary'].fillna('').astype(str)+' '+h['category'].fillna('').astype(str)
-        frames.append(h)
-    if df is not None and not df.empty:
-        cur=df.copy()
-        cur['_dt']=pd.to_datetime(cur.get('Tarih_dt'),utc=True,errors='coerce')
-        cur['_text']=cur.get('Başlık',pd.Series(index=cur.index,dtype=str)).fillna('').astype(str)+' '+cur.get('İçerik_Özeti',pd.Series(index=cur.index,dtype=str)).fillna('').astype(str)+' '+cur.get('Kategori',pd.Series(index=cur.index,dtype=str)).fillna('').astype(str)
-        cur['source']=cur.get('Kaynak','').astype(str) if isinstance(cur.get('Kaynak'),pd.Series) else ''
-        cur['verification']=cur.get('Doğrulama','').astype(str) if isinstance(cur.get('Doğrulama'),pd.Series) else ''
-        cur['risk_score']=pd.to_numeric(cur.get('Risk_Skoru',0),errors='coerce').fillna(0)
-        frames.append(cur[['_dt','_text','source','verification','risk_score']])
-    if not frames: return pd.DataFrame(columns=cols)
+def _v72_entity_names(text):
+    """Başlık/metinden tekrar izlenebilecek kurum/şirket/proje adaylarını çıkarır."""
+    raw=str(text or '')
+    known=[
+        'TÜBİTAK','TÜBİTAK SAGE','ASELSAN','TUSAŞ','ROKETSAN','HAVELSAN','BAYKAR',
+        'TEI','STM','TÜRKSAT','TÜBİTAK BİLGEM','KOSGEB','TÜRKPATENT','TSE',
+        'Sanayi ve Teknoloji Bakanlığı','Savunma Sanayii Başkanlığı','SSB',
+        'TOGG','BOTAŞ','TAI','FORD OTOSAN','TOFAŞ','ARÇELİK','VESTEL'
+    ]
+    out=[]
+    nt=norm(raw)
+    for x in known:
+        if norm(x) in nt: out.append(x)
+    # Büyük harfli marka/kurum/proje adlarını da aday olarak yakala.
+    for x in re.findall(r'\b[A-ZÇĞİÖŞÜ][A-ZÇĞİÖŞÜ0-9\-]{2,}(?:\s+[A-ZÇĞİÖŞÜ][A-ZÇĞİÖŞÜ0-9\-]{2,}){0,2}\b',raw):
+        if x not in {'TÜRKİYE','ABD','AB','OSB','AR GE'} and len(x)<=45:
+            out.append(x.strip())
+    return list(dict.fromkeys(out))[:8]
 
-    allx=pd.concat([x[['_dt','_text','source','verification','risk_score']] for x in frames],ignore_index=True)
-    allx=allx.dropna(subset=['_dt']).drop_duplicates(subset=['_dt','_text'])
+def _v72_event_type(text):
+    """Küçük olayın zincirdeki anlamını sınıflandırır."""
+    t=norm(text)
+    rules=[
+        ('🏢 Kuruluş / yapılanma',['şirket kur','kuruldu','kuruluş','yeni şirket','ortak girişim']),
+        ('👨‍💻 İnsan kaynağı',['mühendis ilan','iş ilan','personel al','istihdam','mühendis arıyor','kariyer']),
+        ('🧪 Ar-Ge / çağrı',['tübitak çağrı','çağrıya kat','proje çağrı','arge projes','ar-ge projes','hibe program']),
+        ('🏗️ Yatırım / tesis',['yatırım','yeni tesis','fabrika','kapasite artır','üretim hattı','teşvik belgesi']),
+        ('🤝 İş birliği / ortaklık',['iş birliği','işbirliği','mutabakat','ortaklık','protokol','konsorsiyum']),
+        ('📜 İhale / sözleşme',['ihale','sözleşme','sipariş','anlaşma imz']),
+        ('🧩 Ürün / prototip',['prototip','yeni ürün','tanıttı','tanıtıldı','ilk kez','test edildi','test atışı']),
+        ('🏭 Üretim / teslimat',['seri üretim','üretime başladı','teslimat','envantere girdi','üretim başladı']),
+        ('🌍 İhracat / dış pazar',['ihracat','ihraç','yurt dışı','yurtdışı','dış pazar','ülkeye teslim']),
+        ('🏛️ Resmî teyit / açıklama',['bakanlık açıklad','resmi açıkl','resmî açıkl','ssb açıklad','tübitak açıklad','duyurdu']),
+        ('💰 Finansman / destek',['yatırım aldı','finansman','fon','hibe','destek program','kredi']),
+        ('📈 Veri / performans',['istatistik','veri','ciro','büyüme','yüzde','%','milyon','milyar'])
+    ]
+    for label,terms in rules:
+        if any(x in t for x in terms): return label
+    return '📰 Diğer gelişme'
+
+def _v72_chain_signals(df,limit=6,lookback_days=120):
+    """
+    V72 Stratejik Sinyal:
+    Haber hacmine BAKMAZ. Aynı şirket/kurum/proje etrafındaki farklı zamanlı,
+    farklı nitelikte küçük olayları zincirler.
+    Örn: kuruluş -> mühendis alımı -> TÜBİTAK çağrısı -> yatırım -> prototip.
+    """
+    cols=['Varlık','Sinyal','Güven','Brifing','İlk_Gelişme','Son_Gelişme',
+          'Zincir','Neden_Şimdi','Değerlendirme','İzlenecek_Göstergeler']
+    hist=_v70_signal_history_days(max(120,lookback_days))
+    events=[]
+
+    if not hist.empty:
+        for _,r in hist.iterrows():
+            dt=pd.to_datetime(r.get('scanned_at'),utc=True,errors='coerce')
+            text=f"{r.get('title','')} {r.get('summary','')}"
+            for ent in _v72_entity_names(text):
+                events.append({
+                    'entity':ent,'dt':dt,'title':str(r.get('title','')),
+                    'text':text,'etype':_v72_event_type(text),
+                    'source':str(r.get('source','')),'verification':str(r.get('verification',''))
+                })
+
+    if df is not None and not df.empty:
+        for _,r in df.iterrows():
+            dt=pd.to_datetime(r.get('Tarih_dt'),utc=True,errors='coerce')
+            text=f"{r.get('Başlık','')} {r.get('İçerik_Özeti','')}"
+            for ent in _v72_entity_names(text):
+                events.append({
+                    'entity':ent,'dt':dt,'title':str(r.get('Başlık','')),
+                    'text':text,'etype':_v72_event_type(text),
+                    'source':str(r.get('Kaynak','')),'verification':str(r.get('Doğrulama',''))
+                })
+
+    if not events: return pd.DataFrame(columns=cols)
+    ev=pd.DataFrame(events).dropna(subset=['dt'])
+    ev=ev.drop_duplicates(subset=['entity','title','etype'])
     now=pd.Timestamp.now(tz='UTC')
+    ev=ev[ev['dt']>=now-pd.Timedelta(days=lookback_days)]
+
     rows=[]
-    for theme,terms in V70_SIGNAL_THEMES.items():
-        mask=allx['_text'].map(lambda z:any(norm(k) in norm(z) for k in terms))
-        g=allx[mask].copy()
-        if g.empty: continue
-        recent=g[g['_dt']>=now-pd.Timedelta(days=30)]
-        prior=g[(g['_dt']<now-pd.Timedelta(days=30)) & (g['_dt']>=now-pd.Timedelta(days=60))]
-        a=len(recent); b=len(prior)
-        if a<3: continue
-        change=((a-b)/max(1,b))*100
-        official=int(recent['verification'].fillna('').astype(str).map(norm).str.contains('resmi|resmî|birincil').sum())
-        highrisk=int((pd.to_numeric(recent['risk_score'],errors='coerce').fillna(0)>=55).sum())
-        sources=recent['source'].fillna('').astype(str).nunique()
-        strength=min(100, a*4 + max(0,change)*0.18 + official*8 + min(sources,6)*4 + highrisk*3)
-        if strength<45 and change<50: continue
-        if strength>=78: status='🟢 Güçlenen stratejik sinyal'; confidence='Yüksek'
-        elif strength>=60: status='🔵 Gelişen stratejik sinyal'; confidence='Orta-Yüksek'
-        else: status='🟡 Erken sinyal'; confidence='Orta'
-        briefing='🔴 Şimdi Bildir' if strength>=88 else ('🟠 Sabah Brifingine Al' if strength>=68 else '🟡 İzlemeye Devam Et')
-        why=f'Son 30 günde {a} ilişkili gelişme tespit edilmiş; önceki 30 günlük dönemde {b} gelişme görülmüştür.'
-        if change>0: why+=f' Hareketlilik yaklaşık %{change:.0f} artmıştır.'
-        if official: why+=f' {official} resmî/birincil kaynak sinyali bulunmaktadır.'
-        assessment=(
-            f'{theme} alanında birbirinden bağımsız gelişmelerin aynı yönde yoğunlaşması nedeniyle '
-            f'hareketliliğin münferit haber akışının ötesinde bir eğilime dönüşebileceğine ilişkin göstergelerin güçlendiği değerlendirilmektedir.'
+    for ent,g in ev.groupby('entity'):
+        g=g.sort_values('dt')
+        # Aynı haberin tekrar görülmesi sinyal değildir; farklı olay türleri gerekir.
+        types=list(dict.fromkeys(g['etype'].tolist()))
+        meaningful=[x for x in types if x!='📰 Diğer gelişme']
+        if len(g)<2 or len(meaningful)<2: continue
+
+        first=g.iloc[0]; last=g.iloc[-1]
+        gap=(last['dt']-first['dt']).days
+        # Zincir gerçekten zaman içinde oluşmalı; aynı günkü haber çoğalması yeterli değildir.
+        distinct_days=g['dt'].dt.date.nunique()
+        if distinct_days<2: continue
+
+        official=sum(
+            1 for _,r in g.iterrows()
+            if any(x in norm(r.get('verification','')) for x in ['resmi','resmî','birincil','teyit'])
         )
-        indicators='Yeni resmî açıklamalar; yatırım/kapasite kararları; sözleşme ve teslimatlar; ihracat/veri açıklamaları; personel ve tedarik hareketleri'
+        chain=[]
+        for _,r in g.tail(6).iterrows():
+            chain.append(f"{r['dt'].strftime('%d.%m.%Y')} — {r['etype']}: {r['title']}")
+        chain_text='  →  '.join(chain)
+
+        strength=min(100, 35 + len(meaningful)*12 + min(distinct_days,5)*5 + min(official,3)*6)
+        confidence='Yüksek' if strength>=82 else ('Orta-Yüksek' if strength>=65 else 'Orta')
+        briefing='🟠 Sabah Brifingine Al' if strength>=78 else '🟡 İzlemeye Devam Et'
+
+        # Son olay, önceki küçük olayların anlamını değiştiriyorsa bunu açıkça anlat.
+        previous=g.iloc[-2]
+        why=(
+            f"{ent} hakkında {previous['dt'].strftime('%d.%m.%Y')} tarihinde “{previous['title']}” gelişmesi görülmüştür. "
+            f"{last['dt'].strftime('%d.%m.%Y')} tarihinde ise “{last['title']}” gelişmesi tespit edilmiştir. "
+            f"Son gelişme, önceki olaydan bağımsız değerlendirilmek yerine aynı varlığın ilerleyen faaliyet zincirinin yeni halkası olarak izlenmektedir."
+        )
+        assessment=(
+            f"{ent} bakımından {', '.join(meaningful[:5])} aşamalarının farklı tarihlerde art arda görülmesi, "
+            f"tekil haberlerden ziyade faaliyetlerin somutlaşmasına ilişkin bir gelişim çizgisi bulunduğuna işaret etmektedir. "
+            f"Bu tespit haber sayısındaki artışa değil, olayların birbirini tamamlayan niteliğine dayanmaktadır."
+        )
+        indicators='Yeni personel ilanları; TÜBİTAK/KOSGEB/SSB çağrı ve destekleri; yatırım/teşvik kararları; sözleşmeler; prototip/test; üretim ve teslimat; ihracat'
         rows.append({
-            '_strength':strength,'Sinyal':theme,'Durum':status,'Güven':confidence,'Brifing':briefing,
-            'Son_30_Gün':a,'Önceki_30_Gün':b,'Değişim':f'%{change:+.0f}',
-            'Neden_Şimdi':why,'Değerlendirme':assessment,'İzlenecek_Göstergeler':indicators
+            '_strength':strength,'Varlık':ent,
+            'Sinyal':f"{meaningful[0]} → {meaningful[-1]}",
+            'Güven':confidence,'Brifing':briefing,
+            'İlk_Gelişme':first['dt'].strftime('%d.%m.%Y'),
+            'Son_Gelişme':last['dt'].strftime('%d.%m.%Y'),
+            'Zincir':chain_text,'Neden_Şimdi':why,
+            'Değerlendirme':assessment,'İzlenecek_Göstergeler':indicators
         })
+
     if not rows: return pd.DataFrame(columns=cols)
     out=pd.DataFrame(rows).sort_values('_strength',ascending=False).head(limit)
     return out.drop(columns=['_strength'])[cols]
+
+# Geriye dönük UI uyumluluğu: eski fonksiyon adı artık olay-zinciri motorunu çağırır.
+def _v70_strategic_signals(df,limit=6):
+    return _v72_chain_signals(df,limit=limit,lookback_days=120)
 
 
 def _v71_proactive_brief_candidates(df,limit=5):
@@ -5337,27 +5412,39 @@ else:
 
 
         # ---------------------------------------------------------
-        # V70 — STRATEJİK SİNYAL MOTORU
+        # V72 — STRATEJİK SİNYAL / OLAY ZİNCİRİ MOTORU
         # ---------------------------------------------------------
-        st.subheader('🧠 Stratejik Sinyal Motoru — Henüz Haber Olmamış Şey')
+        st.subheader('🧠 Stratejik Sinyal Motoru — Olay Zinciri')
         st.caption(
-            'Tek tek haberleri değil, son 60 günlük tarama hafızasındaki gelişmelerin birlikte ne anlattığını analiz etmektedir. '
-            'Son 30 gün ile önceki 30 günü karşılaştırarak güçlenen eğilimleri ve erken sinyalleri göstermektedir.'
+            'Bu alan haber sayısındaki artışı sinyal kabul etmemektedir. Aynı şirket, kurum veya proje hakkında '
+            'farklı günlerde ortaya çıkan küçük gelişmeleri birbirine bağlamaktadır: kuruluş → personel alımı → '
+            'Ar-Ge/çağrı → yatırım → prototip → üretim → ihracat gibi.'
         )
-        _signals=_v70_strategic_signals(df,6)
+        _signals=_v72_chain_signals(df,6,120)
         if _signals.empty:
-            st.info('Henüz güçlü bir stratejik sinyal oluşmamıştır. Tarama geçmişi biriktikçe bu alan daha anlamlı hâle gelecektir.')
+            st.info(
+                'Henüz birbirini tamamlayan en az iki farklı tarihli ve iki farklı nitelikte gelişmeden oluşan '
+                'bir olay zinciri tespit edilmemiştir. Tarama hafızası biriktikçe sistem aynı şirket/projeleri geriye dönük eşleştirecektir.'
+            )
         else:
             for _si,_sr in _signals.iterrows():
-                with st.expander(f"{_sr['Durum']} | {_sr['Sinyal']} | {_sr['Brifing']}",expanded=(_si==0)):
-                    a1,a2,a3,a4=st.columns(4)
-                    a1.metric('Son 30 gün',_sr['Son_30_Gün'])
-                    a2.metric('Önceki 30 gün',_sr['Önceki_30_Gün'])
-                    a3.metric('Değişim',_sr['Değişim'])
-                    a4.metric('Güven',_sr['Güven'])
-                    st.markdown(f"**Neden şimdi?** {_sr['Neden_Şimdi']}")
+                with st.expander(
+                    f"{_sr['Brifing']} | {_sr['Varlık']} | {_sr['Sinyal']} | Güven: {_sr['Güven']}",
+                    expanded=(_si==0)
+                ):
+                    c1,c2,c3=st.columns(3)
+                    c1.metric('İlk gelişme',_sr['İlk_Gelişme'])
+                    c2.metric('Son gelişme',_sr['Son_Gelişme'])
+                    c3.metric('Güven',_sr['Güven'])
+                    st.markdown('**🔗 Olay zinciri**')
+                    st.write(_sr['Zincir'])
+                    st.markdown(f"**Neden şimdi bildirilmektedir?** {_sr['Neden_Şimdi']}")
                     st.markdown(f"**Analitik değerlendirme:** {_sr['Değerlendirme']}")
-                    st.markdown(f"**İzlenecek göstergeler:** {_sr['İzlenecek_Göstergeler']}")
+                    st.markdown(f"**Bundan sonra izlenecek göstergeler:** {_sr['İzlenecek_Göstergeler']}")
+            st.caption(
+                'Önemli: Aynı konuda 1.000 haber çıkması tek başına stratejik sinyal oluşturmamaktadır. '
+                'Sinyal için aynı varlık etrafında zaman içinde birbirini tamamlayan farklı olay türleri aranır.'
+            )
 
         # ---------------------------------------------------------
         # V71 — PROAKTİF AMİR BRİFİNGİ
