@@ -2257,6 +2257,27 @@ def _init_history_db():
                     visited_at TEXT NOT NULL
                 )
             """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS note_history(
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    created_at TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    url TEXT,
+                    UNIQUE(url,title)
+                )
+            """)
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS tomorrow_followup(
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    added_at TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    source TEXT,
+                    url TEXT,
+                    category TEXT,
+                    reason TEXT,
+                    UNIQUE(url,title)
+                )
+            """)
             conn.commit()
         return True
     except Exception:
@@ -3898,12 +3919,132 @@ def make_docx(rows):
     bio.seek(0)
     return bio.getvalue()
 
+
+# -----------------------------
+# V63 — İŞ AKIŞI HAFIZASI / İKİNCİ GÖZ / YARINA TAKİP
+# -----------------------------
+def _v63_mark_notes(rows):
+    if rows is None or len(rows)==0 or not _init_history_db():
+        return
+    try:
+        with _history_connect() as conn:
+            for row in rows:
+                title=str(row.get('Başlık','') or '').strip()
+                if not title: continue
+                conn.execute(
+                    "INSERT OR IGNORE INTO note_history(created_at,title,url) VALUES(?,?,?)",
+                    (datetime.now().astimezone().isoformat(),title,str(row.get('URL','') or '').strip())
+                )
+            conn.commit()
+    except Exception:
+        pass
+
+def _v63_status_sets():
+    imp=set(); akt=set(); notes=set()
+    if not _init_history_db(): return imp,akt,notes
+    try:
+        with _history_connect() as conn:
+            for table,target in [('important_basket',imp),('osint_report_basket',akt),('note_history',notes)]:
+                rows=conn.execute(f"SELECT title,url FROM {table}").fetchall()
+                for title,url in rows:
+                    target.add(str(url).strip() if str(url or '').strip() else title_key(str(title or '')))
+    except Exception:
+        pass
+    return imp,akt,notes
+
+def _v63_add_status_badges(df):
+    if df is None or df.empty: return df
+    out=df.copy()
+    imp,akt,notes=_v63_status_sets()
+    def badge(r):
+        k=str(r.get('URL','')).strip() or title_key(str(r.get('Başlık','')))
+        b=[]
+        if k in imp: b.append('📌 Önemli Gelişmelerde')
+        if k in akt: b.append('📁 AKT’de')
+        if k in notes: b.append('📝 Bilgi Notu Hazırlandı')
+        return ' • '.join(b) if b else '—'
+    out['Durum']=out.apply(badge,axis=1)
+    return out
+
+def _v63_missed_candidates(df,limit=12):
+    """Yüksek değerli fakat iki sepette de olmayan olayları ikinci göz olarak gösterir."""
+    if df is None or df.empty: return pd.DataFrame()
+    value=_v52_event_value_table(df,max(30,limit*2))
+    if value.empty: return value
+    imp,akt,notes=_v63_status_sets()
+    rows=[]
+    for _,v in value.iterrows():
+        url=str(v.get('URL','') or '').strip()
+        key=url or title_key(str(v.get('Gelişme','')))
+        if key in imp or key in akt: continue
+        # İkinci göz eşiği: güçlü değer skoru veya belirgin risk.
+        if int(v.get('Değer_Skoru',0) or 0)<55 and int(v.get('Risk',0) or 0)<60:
+            continue
+        rows.append(v.to_dict())
+        if len(rows)>=limit: break
+    return pd.DataFrame(rows)
+
+def _v63_tomorrow_candidates(df,limit=15):
+    """Sonuçlanmamış, stratejik/riskli ve takip değeri olan olayları yarın için önerir."""
+    if df is None or df.empty: return pd.DataFrame()
+    life=_v58_event_lifecycle_table(df,40)
+    if life.empty: return pd.DataFrame()
+    out=life[life['Aşama']!='✅ Sonuçlandı'].copy()
+    out=out[(pd.to_numeric(out['Risk_Skoru'],errors='coerce').fillna(0)>=35) |
+            (pd.to_numeric(out['Kaynak_Sayısı'],errors='coerce').fillna(0)>=2)]
+    if out.empty: return out
+    out['Takip_Gerekçesi']=out.apply(
+        lambda r:(
+            'Olay gelişiyor; yeni açıklama/sonuç bekleniyor.'
+            if 'Gelişiyor' in str(r.get('Aşama','')) else
+            'Teyit edildi; uygulama/sonuç etkisi izlenmeli.'
+            if 'Teyit' in str(r.get('Aşama','')) else
+            'İlk sinyal; ikinci kaynak veya resmî teyit izlenmeli.'
+        ),axis=1
+    )
+    return out.head(limit)
+
+def _v63_add_tomorrow(rows):
+    if rows is None or len(rows)==0 or not _init_history_db(): return 0
+    added=0
+    try:
+        with _history_connect() as conn:
+            for row in rows:
+                title=str(row.get('Başlık','') or '').strip()
+                if not title: continue
+                cur=conn.execute("""
+                    INSERT OR IGNORE INTO tomorrow_followup(
+                        added_at,title,source,url,category,reason
+                    ) VALUES(?,?,?,?,?,?)
+                """,(
+                    datetime.now().astimezone().isoformat(),title,
+                    str(row.get('Kaynak','') or ''),str(row.get('URL','') or ''),
+                    str(row.get('Kategori','') or ''),str(row.get('Takip_Gerekçesi','') or '')
+                ))
+                added+=int(bool(cur.rowcount))
+            conn.commit()
+    except Exception: pass
+    return added
+
+def _v63_load_tomorrow():
+    if not _init_history_db(): return pd.DataFrame()
+    try:
+        with _history_connect() as conn:
+            return pd.read_sql_query("SELECT * FROM tomorrow_followup ORDER BY added_at DESC",conn)
+    except Exception:
+        return pd.DataFrame()
+
 def _section_select_table(section_key, data, columns, height=420):
     """Her haber bölümünde kutucuk gösterir; seçilenler sepete eklenebilir veya doğrudan bilgi notuna dönüştürülebilir."""
     if data is None or data.empty:
         return pd.DataFrame()
 
-    tbl=data.copy()
+    tbl=_v63_add_status_badges(data.copy())
+    # Durum rozeti tüm ortak haber tablolarında başlığın yanında görünür.
+    if 'Durum' not in columns:
+        columns=list(columns)
+        insert_at=columns.index('Başlık')+1 if 'Başlık' in columns else 0
+        columns.insert(insert_at,'Durum')
     tbl['_row_key']=[
         str(r.get('URL','')) if str(r.get('URL','')).strip()
         else title_key(str(r.get('Başlık','')))
@@ -3985,6 +4126,7 @@ def _section_select_table(section_key, data, columns, height=420):
                                 main_selected,
                                 title='SANAYİ & TEKNOLOJİ BİLGİ NOTU'
                             )
+                            _v63_mark_notes(main_selected.to_dict('records'))
                         except Exception as e:
                             st.session_state[f'section_note_bytes_{section_key}']=None
                             st.error(f'Bilgi notu hazırlanamadı: {e}')
@@ -4545,6 +4687,7 @@ else:
                                 _selected_know,
                                 title='SANAYİ & TEKNOLOJİ BİLGİ NOTU'
                             )
+                            _v63_mark_notes(_selected_know.to_dict('records'))
                         except Exception as _e:
                             st.session_state['v61_know_note_bytes']=None
                             st.error(f'Bilgi notu hazırlanamadı: {_e}')
@@ -4779,6 +4922,25 @@ else:
             )
 
         # ---------------------------------------------------------
+
+        st.markdown('---')
+        st.subheader('👀 Kaçırıyor Olabilir Miyim? — İkinci Göz')
+        st.caption(
+            'Mevcut taramada yüksek değer/risk taşıdığı hâlde henüz Önemli Gelişmeler veya '
+            'Açık Kaynak Tarama sepetine alınmamış olayları otomatik gösterir.'
+        )
+        _missed=_v63_missed_candidates(df,12)
+        if _missed.empty:
+            st.success('Şu anda sepetler dışında kalan belirgin yüksek değerli bir gelişme görünmüyor.')
+        else:
+            st.warning(f'Henüz hiçbir sepete alınmamış {_missed.shape[0]} dikkat çekici gelişme var.')
+            _section_select_table(
+                'v63_missed',
+                _missed.rename(columns={'Gelişme':'Başlık'}),
+                ['Tarih','Başlık','Değer_Skoru','Neden_Değerli','Kaynak_Sayısı','Risk','URL'],
+                height=min(620,100+48*len(_missed))
+            )
+
         view=st.radio(
             'Görünüm',
             ['📰 Kronolojik','⚠️ Negatif','🚨 Yüksek Risk','🇹🇷 Türk','🇬🇷 Yunan','🧩 Olaylar','📈 Trend / Analiz','⭐ Takip Listesi'],
@@ -5114,6 +5276,50 @@ else:
             )
 
         st.markdown('---')
+
+        st.markdown('---')
+        st.subheader('🌙 Yarına Takip Edilmesi Gereken Gelişmeler')
+        st.caption(
+            'Sonuçlanmamış, teyit/gelişim süreci devam eden ve ertesi vardiyada yeniden bakılması faydalı '
+            'olabilecek olayları önerir. Nihai seçim analiste aittir.'
+        )
+        _tomorrow=_v63_tomorrow_candidates(df,15)
+        if _tomorrow.empty:
+            st.info('Yarına özel takip önerisi oluşturulabilecek açık olay bulunamadı.')
+        else:
+            _tomorrow_show=_tomorrow.copy()
+            _tomorrow_show.insert(0,'Seç',False)
+            _ted=st.data_editor(
+                _tomorrow_show[['Seç','Tarih','Başlık','Aşama','Takip_Gerekçesi',
+                                'Kaynak_Sayısı','Risk_Skoru','URL']],
+                column_config={
+                    'Seç':st.column_config.CheckboxColumn('Seç'),
+                    'URL':st.column_config.LinkColumn('Haber Linki'),
+                    'Risk_Skoru':st.column_config.NumberColumn('Risk',format='%d/100')
+                },
+                disabled=['Tarih','Başlık','Aşama','Takip_Gerekçesi','Kaynak_Sayısı','Risk_Skoru','URL'],
+                hide_index=True,use_container_width=True,
+                height=min(620,100+48*len(_tomorrow_show)),
+                key='v63_tomorrow_editor'
+            )
+            _tidx=_ted.index[_ted['Seç'].astype(bool)].tolist()
+            if st.button('🌙 Seçilenleri Yarına Takip Listesine Ekle',use_container_width=True,key='v63_add_tomorrow'):
+                if not _tidx:
+                    st.warning('Önce en az bir gelişmeyi seçin.')
+                else:
+                    _sel=_tomorrow.loc[_tidx].copy()
+                    _n=_v63_add_tomorrow(_sel.to_dict('records'))
+                    st.success(f'{_n} gelişme yarına takip listesine eklendi.')
+
+        _saved_tomorrow=_v63_load_tomorrow()
+        if not _saved_tomorrow.empty:
+            with st.expander(f'📌 Kaydedilmiş yarın takip listesi ({len(_saved_tomorrow)})'):
+                st.dataframe(
+                    _saved_tomorrow[['added_at','title','reason','url']],
+                    column_config={'url':st.column_config.LinkColumn('Haber Linki')},
+                    hide_index=True,use_container_width=True
+                )
+
         st.subheader('📋 Gün Sonu Performans Özeti')
         st.caption('Bugün sistemde oluşan tarama ve çalışma çıktılarının operasyonel özeti.')
         _perf=_v60_day_end_performance(df)
