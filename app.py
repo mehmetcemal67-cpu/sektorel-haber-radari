@@ -2114,7 +2114,13 @@ def _compose_prose_note(df):
     return '\n\n'.join(blocks), enriched
 
 def make_analyst_docx(df, title='BİLGİ NOTU'):
-    """V65: STB resmî yazım dili; Özet -> Gelişme -> Sonuç ve Değerlendirme -> Arz olunur."""
+    """
+    V66: Başlıksız üç aşamalı bilgi notu yapısı:
+    1) İlk paragraf kısa özet,
+    2) devam eden paragraf(lar) ayrıntı/rakam/istatistik/gelişme,
+    3) son paragraf sonuç ve kısa değerlendirme.
+    Metin daima 'Arz olunur.' ile tamamlanır.
+    """
     doc=Document()
     sec=doc.sections[0]
     sec.top_margin=Cm(2); sec.bottom_margin=Cm(2)
@@ -2128,68 +2134,94 @@ def make_analyst_docx(df, title='BİLGİ NOTU'):
     p=doc.add_paragraph(); p.add_run('Tarih: ').bold=True
     p.add_run(datetime.now().astimezone().strftime('%d.%m.%Y'))
 
-    # Kaynak haber(ler) derinlemesine alınır; metin yalnızca kaynakta bulunan olgulara dayanır.
     enriched=[]
     x=df.copy() if df is not None else pd.DataFrame()
     if 'Tarih_dt' in x.columns:
         x['Tarih_dt']=pd.to_datetime(x['Tarih_dt'],utc=True,errors='coerce')
         x=x.sort_values('Tarih_dt',ascending=True,na_position='last')
     for _,rr in x.iterrows():
-        row=rr.to_dict(); enriched.append((row,article_detail(row)))
+        row=rr.to_dict()
+        try:
+            detail=article_detail(row)
+        except Exception:
+            detail={}
+        enriched.append((row,detail))
 
     all_sent=[]
     for row,detail in enriched:
         title_text=_clean_note_text(detail.get('title') or row.get('Başlık',''))
         body=detail.get('text') or row.get('İçerik_Özeti') or title_text
-        ss=_akt_clean_sentences(title_text,body)
-        all_sent.extend(ss)
+        all_sent.extend(_akt_clean_sentences(title_text,body))
+
     # Yakın tekrarları temizle.
     uniq=[]; seen=[]
     for sent in all_sent:
+        sent=_clean_note_text(sent)
         key=norm(sent)
         toks=set(key.split())
         if not key: continue
         dup=False
-        for old in seen[-30:]:
-            inter=len(toks & old); union=len(toks | old)
-            if union and inter/union>=0.78: dup=True; break
-        if not dup: uniq.append(sent.strip()); seen.append(toks)
+        for old in seen[-35:]:
+            union=len(toks|old)
+            if union and len(toks&old)/union>=0.78:
+                dup=True; break
+        if not dup:
+            uniq.append(sent.strip()); seen.append(toks)
 
-    def add_section(head,text):
-        hp=doc.add_paragraph(); hr=hp.add_run(head); hr.bold=True
-        bp=doc.add_paragraph(); bp.alignment=WD_ALIGN_PARAGRAPH.JUSTIFY
-        bp.paragraph_format.first_line_indent=Cm(1.25); bp.paragraph_format.line_spacing=1.15
-        bp.paragraph_format.space_after=Pt(8); bp.add_run(text.strip())
+    def add_body(text):
+        bp=doc.add_paragraph()
+        bp.alignment=WD_ALIGN_PARAGRAPH.JUSTIFY
+        bp.paragraph_format.first_line_indent=Cm(1.25)
+        bp.paragraph_format.line_spacing=1.15
+        bp.paragraph_format.space_after=Pt(8)
+        bp.add_run(_v66_formalize_sentence_endings(text.strip()))
 
     if uniq:
-        # 1) İlk paragraf: seçilen haberin kısa özeti.
-        intro_s=uniq[:2]
-        intro=_join_sentences_naturally(intro_s)
-        add_section('Özet', intro)
+        # İlk paragraf: haberin kısa özeti. Başlık yazılmaz.
+        intro=_join_sentences_naturally(uniq[:2])
+        add_body(intro)
 
-        # 2) Gelişme: rakam, tarih, kurum, açıklama ve ayrıntıları haber akışına sadık biçimde koru.
+        # Gelişme bölümü: başlık kullanılmadan, ayrıntı/rakam/istatistikler korunarak devam eder.
         detail_s=uniq[2:]
-        if not detail_s: detail_s=uniq
-        # Kaynağın tamamını makul uzunlukta kapsa; bilgi kaybı yaratacak salt puanlama yapma.
-        detail_text=_join_sentences_naturally(detail_s[:18])
-        add_section('Gelişme', detail_text)
+        if not detail_s:
+            detail_s=uniq
 
-        # 3) Sonuç ve kısa değerlendirme: kaynaktaki son durum + temkinli analitik kapanış.
+        # Uzun haberlerde ayrıntıları iki paragraf halinde dağıtarak okunabilirliği koru.
+        detail_s=detail_s[:18]
+        if len(detail_s)<=9:
+            add_body(_join_sentences_naturally(detail_s))
+        else:
+            add_body(_join_sentences_naturally(detail_s[:9]))
+            add_body(_join_sentences_naturally(detail_s[9:18]))
+
+        # Son paragraf: sonuç + kısa/temkinli değerlendirme; ayrı başlık yoktur.
         tail=_join_sentences_naturally(uniq[-3:])
-        concl=(f"Mevcut bilgiler çerçevesinde, {tail[0].lower()+tail[1:] if tail else 'gelişmenin mevcut seyri'} "
-               "hususları öne çıkmaktadır. Gelişmenin bundan sonraki seyri bakımından ilgili kurum ve kuruluşların "
-               "açıklamaları ile yeni resmî verilerin takip edilmesinin uygun olacağı değerlendirilmektedir.")
-        add_section('Sonuç ve Değerlendirme',concl)
+        if tail:
+            conclusion=(
+                f"Mevcut bilgiler çerçevesinde, {tail[0].lower()+tail[1:]} "
+                "Gelişmenin sanayi ve teknoloji alanındaki muhtemel etkilerinin, ilgili kurum ve kuruluşların "
+                "yeni açıklamaları ile resmî veriler doğrultusunda takip edilmesinin uygun olacağı değerlendirilmektedir."
+            )
+        else:
+            conclusion=(
+                "Mevcut bilgiler çerçevesinde gelişmenin sanayi ve teknoloji alanındaki etkilerinin, ilgili kurum "
+                "ve kuruluşların yeni açıklamaları ile resmî veriler doğrultusunda takip edilmesinin uygun olacağı değerlendirilmektedir."
+            )
+        add_body(conclusion)
     else:
-        add_section('Özet','Seçilen habere ilişkin yeterli içerik alınamamıştır.')
-        add_section('Gelişme','Kaynak sayfasından ayrıntılı içerik temin edilememiştir.')
-        add_section('Sonuç ve Değerlendirme','Gelişmenin yeni açık kaynak ve resmî açıklamalar çerçevesinde takip edilmesinin uygun olacağı değerlendirilmektedir.')
+        add_body('Seçilen habere ilişkin ayrıntılı içerik temin edilememiştir.')
+        add_body(
+            'Gelişmenin yeni açık kaynak bilgileri ile ilgili kurum ve kuruluşların resmî açıklamaları '
+            'doğrultusunda takip edilmesinin uygun olacağı değerlendirilmektedir.'
+        )
 
-    endp=doc.add_paragraph(); endp.paragraph_format.space_before=Pt(8); endp.add_run('Arz olunur.')
+    endp=doc.add_paragraph()
+    endp.paragraph_format.space_before=Pt(8)
+    endp.add_run('Arz olunur.')
 
-    # Kaynak bağlantıları en sonda, anlatıdan ayrı ve sade biçimde.
     if enriched:
-        kp=doc.add_paragraph(); kr=kp.add_run('Kaynak: '); kr.bold=True
+        kp=doc.add_paragraph()
+        kr=kp.add_run('Kaynak: '); kr.bold=True
         for i,(row,detail) in enumerate(enriched):
             source=_clean_note_text(detail.get('source') or row.get('Kaynak','Açık Kaynak'))
             url=detail.get('canonical') or row.get('Yayıncı_URL') or row.get('URL','')
@@ -2198,8 +2230,9 @@ def make_analyst_docx(df, title='BİLGİ NOTU'):
             if url:
                 kp.add_run(' ('); _word_hyperlink(kp,url,'Haber linki'); kp.add_run(')')
 
-    bio=BytesIO(); doc.save(bio); bio.seek(0); return bio.getvalue()
-
+    bio=BytesIO()
+    doc.save(bio); bio.seek(0)
+    return bio.getvalue()
 
 
 # -----------------------------
@@ -2891,12 +2924,13 @@ def make_important_basket_docx(basket_df):
             detail=article_detail(row)
             title_text=_clean_note_text(detail.get('title') or row['Başlık'])
             body=detail.get('text') or row['İçerik_Özeti'] or title_text
-            summary=_akt_formal_summary(title_text,body,max_sentences=5,max_chars=1250)
+            summary=_akt_formal_summary(title_text,body,max_sentences=3,max_chars=650)
+            summary=_v66_limit_important_paragraph(summary,max_chars=520,max_sentences=3)
             source=_clean_note_text(detail.get('source') or row['Kaynak'] or 'STB')
             p=doc.add_paragraph(); p.alignment=WD_ALIGN_PARAGRAPH.JUSTIFY
             p.paragraph_format.first_line_indent=Cm(1.25); p.paragraph_format.space_after=Pt(8)
             # Örnekte her gelişme bağımsız, kısa ve doğrudan resmî paragraftır; risk puanı/link gibi teknik alanlar yoktur.
-            txt=summary.strip().rstrip(' .;')
+            txt=_v66_formalize_sentence_endings(summary).strip().rstrip(' .;')
             if txt: txt=txt[0].upper()+txt[1:]
             p.add_run(txt + ' (STB).')
 
@@ -3789,6 +3823,113 @@ def _expanded_report_text(title, body):
     # Geriye dönük uyumluluk: AKT artık ham tam metni değil, resmî ve tekrarsız özeti kullanır.
     return _akt_formal_summary(title,body)
 
+
+# -----------------------------
+# V66 — KURUMSAL RESMÎ DİL NORMALİZASYONU
+# -----------------------------
+def _v66_formalize_sentence_endings(text):
+    """
+    Rapor metinlerinde gündelik/şimdiki zaman yüklemlerini kurumsal resmî dile yaklaştırır.
+    Haber başlıklarına uygulanmaz; yalnızca oluşturulan anlatı paragraflarında kullanılır.
+    """
+    t=re.sub(r'\s+',' ',str(text or '')).strip()
+    if not t:
+        return t
+
+    # Cümle sonlarında en sık görülen yüklem dönüşümleri.
+    replacements=[
+        (r'\byapıldı\.$','yapılmıştır.'),
+        (r'\bgerçekleştirildi\.$','gerçekleştirilmiştir.'),
+        (r'\baçıklandı\.$','açıklanmıştır.'),
+        (r'\bduyuruldu\.$','duyurulmuştur.'),
+        (r'\byayımlandı\.$','yayımlanmıştır.'),
+        (r'\byayınlandı\.$','yayımlanmıştır.'),
+        (r'\bbaşladı\.$','başlamıştır.'),
+        (r'\btamamlandı\.$','tamamlanmıştır.'),
+        (r'\bsona erdi\.$','sona ermiştir.'),
+        (r'\barttı\.$','artmıştır.'),
+        (r'\bazaldı\.$','azalmıştır.'),
+        (r'\bdüştü\.$','düşmüştür.'),
+        (r'\byükseldi\.$','yükselmiştir.'),
+        (r'\bgeriledi\.$','gerilemiştir.'),
+        (r'\bulaştı\.$','ulaşmıştır.'),
+        (r'\bçıktı\.$','çıkmıştır.'),
+        (r'\bgeldi\.$','gelmiştir.'),
+        (r'\bverildi\.$','verilmiştir.'),
+        (r'\bbelirlendi\.$','belirlenmiştir.'),
+        (r'\bkaydedildi\.$','kaydedilmiştir.'),
+        (r'\btespit edildi\.$','tespit edilmiştir.'),
+        (r'\bildirildi\.$','bildirilmiştir.'),
+        (r'\bbelirtildi\.$','belirtilmiştir.'),
+        (r'\bifade edildi\.$','ifade edilmiştir.'),
+        (r'\bvurgulandı\.$','vurgulanmıştır.'),
+        (r'\bkararlaştırıldı\.$','kararlaştırılmıştır.'),
+        (r'\bonaylandı\.$','onaylanmıştır.'),
+        (r'\bimzalandı\.$','imzalanmıştır.'),
+        (r'\bkuruldu\.$','kurulmuştur.'),
+        (r'\bdevreye alındı\.$','devreye alınmıştır.'),
+        (r'\byürütülüyor\.$','yürütülmektedir.'),
+        (r'\bsürdürülüyor\.$','sürdürülmektedir.'),
+        (r'\bsürüyor\.$','sürmektedir.'),
+        (r'\bdevam ediyor\.$','devam etmektedir.'),
+        (r'\bgerçekleşiyor\.$','gerçekleşmektedir.'),
+        (r'\byapılıyor\.$','yapılmaktadır.'),
+        (r'\bplanlanıyor\.$','planlanmaktadır.'),
+        (r'\bbekleniyor\.$','beklenmektedir.'),
+        (r'\böngörülüyor\.$','öngörülmektedir.'),
+        (r'\bhedefleniyor\.$','hedeflenmektedir.'),
+        (r'\bçalışılıyor\.$','çalışılmaktadır.'),
+        (r'\bkullanılıyor\.$','kullanılmaktadır.'),
+        (r'\bgösteriyor\.$','göstermektedir.'),
+        (r'\bortaya koyuyor\.$','ortaya koymaktadır.'),
+        (r'\bişaret ediyor\.$','işaret etmektedir.'),
+        (r'\böne çıkıyor\.$','öne çıkmaktadır.'),
+        (r'\byer alıyor\.$','yer almaktadır.'),
+    ]
+
+    # Her cümleyi ayrı işleyerek yalnız yüklemi dönüştür.
+    parts=re.split(r'(?<=[.!?])\s+',t)
+    out=[]
+    for s in parts:
+        s=s.strip()
+        if not s:
+            continue
+        if s[-1] not in '.!?':
+            s+='.'
+        for pat,repl in replacements:
+            if re.search(pat,s,flags=re.I):
+                s=re.sub(pat,repl,s,flags=re.I)
+                break
+        out.append(s)
+    return ' '.join(out)
+
+def _v66_limit_important_paragraph(text,max_chars=520,max_sentences=3):
+    """
+    Önemli gelişmeler notunda her gelişmeyi Word üzerinde yaklaşık dört satırı
+    aşmayacak yoğunlukta tutar. Öncelik ilk bilgi taşıyan cümlelere verilir.
+    """
+    clean=_v66_formalize_sentence_endings(text)
+    sents=_sentence_chunks(clean)
+    chosen=[]
+    total=0
+    for s in sents:
+        s=s.strip()
+        if not s: continue
+        if total+len(s)>max_chars and chosen:
+            break
+        chosen.append(s)
+        total+=len(s)+1
+        if len(chosen)>=max_sentences:
+            break
+    result=' '.join(chosen).strip()
+    if len(result)>max_chars:
+        cut=result[:max_chars].rsplit(' ',1)[0].rstrip(' ,;:')
+        # Kurumsal kapanış; kesilmiş yarım yüklem bırakma.
+        if cut and cut[-1] not in '.!?':
+            cut+='.'
+        result=cut
+    return result
+
 def _akt_topic_labels(rows):
     joined=norm(' '.join(
         f"{r.get('Başlık','')} {r.get('İçerik_Özeti','')} {r.get('Kategori','')}"
@@ -3886,7 +4027,7 @@ def make_docx(rows):
         title=(detail.get("title") or row.get("Başlık") or "").strip()
         source=_real_source(row,detail,real_url)
         body=detail.get("text") or row.get("İçerik_Özeti") or title
-        summary=_akt_formal_summary(title,body)
+        summary=_v66_formalize_sentence_endings(_akt_formal_summary(title,body))
 
         p=doc.add_paragraph()
         p.alignment=WD_ALIGN_PARAGRAPH.JUSTIFY
