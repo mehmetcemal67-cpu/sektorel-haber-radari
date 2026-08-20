@@ -4357,6 +4357,66 @@ def _v70_strategic_signals(df,limit=6):
     out=pd.DataFrame(rows).sort_values('_strength',ascending=False).head(limit)
     return out.drop(columns=['_strength'])[cols]
 
+
+def _v71_proactive_brief_candidates(df,limit=5):
+    """
+    Analistin seçim yapmasını beklemeden 'amir sorabilir' denebilecek konuları seçer.
+    Öncelik: resmî açıklama/teyit, veri-istatistik, somut ürün-teknoloji gelişmesi,
+    yüksek değer ve çoklu kaynak. Sırf sansasyonel/popüler olması yeterli değildir.
+    """
+    if df is None or df.empty:
+        return []
+    value=_v52_event_value_table(df,max(30,limit*6))
+    if value.empty:
+        return []
+
+    data_terms=[
+        'istatistik','veri','oran','endeks','sanayi üretimi','kapasite kullanım',
+        'ihracat','ithalat','ciro','istihdam','işsizlik','büyüme','yatırım teşvik',
+        'arge','ar-ge','patent','başvuru','milyar','milyon','yüzde','%'
+    ]
+    product_terms=[
+        'ürün tanıt','tanıtıldı','tanıttı','yeni ürün','yeni teknoloji','prototip',
+        'seri üretim','ilk teslimat','envantere','platform','sistem geliştir',
+        'füze','uydu','çip','yarı iletken','yapay zeka','yapay zekâ'
+    ]
+    picked=[]
+    seen=set()
+    for _,v in value.iterrows():
+        row=_v53_find_event_row(df,v)
+        if row is None: continue
+        title=str(row.get('Başlık','') or v.get('Gelişme',''))
+        url=str(row.get('URL','') or v.get('URL','')).strip()
+        k=url or title_key(title)
+        if k in seen: continue
+        text=norm(f"{title} {row.get('İçerik_Özeti','')} {row.get('Kategori','')} {row.get('Doğrulama','')}")
+        official=_is_official_radar_row(row)
+        ver=norm(row.get('Doğrulama',''))
+        verified=official or any(x in ver for x in ['resmi','resmî','birincil','teyit'])
+        data_stat=any(x in text for x in data_terms)
+        product=any(x in text for x in product_terms)
+        score=int(v.get('Değer_Skoru',0) or 0)
+        sources=int(v.get('Kaynak_Sayısı',0) or 0)
+
+        # Proaktif eşik: en az bir güçlü kurumsal gerekçe olmalı.
+        if not (official or verified or data_stat or product):
+            continue
+        rank=score + (24 if official else 0) + (18 if verified else 0) + (18 if data_stat else 0) + (10 if product else 0) + min(sources,4)*4
+        reasons=[]
+        if official: reasons.append('resmî açıklama/birincil kaynak')
+        elif verified: reasons.append('resmî/teyitli bilgi')
+        if data_stat: reasons.append('veri/istatistiki bilgi')
+        if product: reasons.append('somut ürün/teknoloji gelişmesi')
+        if sources>=2: reasons.append(f'{sources} farklı kaynak')
+        if score>=65: reasons.append('yüksek analitik değer')
+
+        probability='🔴 Sorulma ihtimali yüksek' if rank>=105 else ('🟠 Sorulabilir' if rank>=80 else '🟡 Hazır bulunmak faydalı')
+        picked.append((rank,probability,reasons,row))
+        seen.add(k)
+
+    picked.sort(key=lambda x:x[0],reverse=True)
+    return picked[:limit]
+
 def _v70_boss_questions(row):
     """Önemli olay için amirin sorabileceği sorulara kaynakta mevcut bilgilerden hızlı cevap kartı üretir."""
     title=str(row.get('Başlık','') or '')
@@ -5300,29 +5360,36 @@ else:
                     st.markdown(f"**İzlenecek göstergeler:** {_sr['İzlenecek_Göstergeler']}")
 
         # ---------------------------------------------------------
-        # V70 — BANA SORULMADAN ÖNCE CEVABI HAZIRLA
+        # V71 — PROAKTİF AMİR BRİFİNGİ
         # ---------------------------------------------------------
-        st.subheader('🎤 Bana Sorulmadan Önce Cevabı Hazırla')
+        st.subheader('🎤 Bana Sorulmadan Önce Cevabı Hazırla — Proaktif Brifing')
         st.caption(
-            'Günün önemli gelişmelerinden birini seçtiğinizde muhtemel amir sorularını, mevcut açık kaynak verisine dayalı '
-            'hazır cevapları ve yaklaşık 30 saniyelik sözlü brifingi oluşturmaktadır.'
+            'Sistem seçim yapmanızı beklemeden resmî açıklama, veri/istatistik, resmî teyitli bilgi ve '
+            'somut ürün/teknoloji gelişmeleri arasından amirin sorabileceği konuları kendisi belirlemekte '
+            've cevapları önceden hazırlamaktadır.'
         )
-        _boss_value=_v52_event_value_table(df,12)
-        if _boss_value.empty:
-            st.info('Brifing hazırlanabilecek önemli gelişme bulunamadı.')
+        _proactive=_v71_proactive_brief_candidates(df,5)
+        if not _proactive:
+            st.success('Şu anda ayrıca proaktif brifing hazırlanmasını gerektiren güçlü bir konu tespit edilmemiştir.')
         else:
-            _boss_titles=_boss_value['Gelişme'].astype(str).tolist()
-            _boss_choice=st.selectbox('Brifing hazırlanacak gelişme',_boss_titles,key='v70_boss_choice')
-            _bv=_boss_value[_boss_value['Gelişme'].astype(str)==str(_boss_choice)].iloc[0]
-            _br=_v53_find_event_row(df,_bv)
-            if _br is not None:
-                st.markdown('**Muhtemel Amir Soruları ve Hazır Cevaplar**')
-                for _q,_a in _v70_boss_questions(_br):
-                    with st.expander(f'❓ {_q}'):
+            st.markdown(f'**Bugün sorulma ihtimali bulunan {len(_proactive)} konu için cevap hazırdır.**')
+            for _pi,(_rank,_prob,_reasons,_br) in enumerate(_proactive,1):
+                _title=str(_br.get('Başlık','') or 'Gelişme')
+                with st.expander(f'{_pi}. {_prob} | {_title}',expanded=(_pi==1)):
+                    st.markdown('**Neden önceden hazırlanmıştır?** ' + ' • '.join(_reasons))
+                    st.markdown('**Muhtemel Amir Soruları ve Hazır Cevaplar**')
+                    for _q,_a in _v70_boss_questions(_br):
+                        st.markdown(f'**{_q}**')
                         st.write(_a)
-                st.markdown('**🎙️ 30 Saniyelik Sözlü Brifing**')
-                st.info(_v70_30sec_brief(_br))
-                st.caption('Cevaplarda mevcut tarama verisinde bulunmayan rakam veya olgu uydurulmamaktadır.')
+                    st.markdown('**🎙️ 30 Saniyelik Sözlü Brifing**')
+                    st.info(_v70_30sec_brief(_br))
+                    _u=str(_br.get('URL','') or '')
+                    if _u:
+                        st.link_button('🔗 Haberi / Kaynağı Aç',_u,key=f'v71_source_{_pi}')
+            st.caption(
+                'Proaktif seçimde yalnız popülerlik esas alınmamaktadır. Kurumsal değer, resmî/teyitli bilgi, '
+                'veri-istatistik niteliği ve somut teknoloji gelişmesi önceliklendirilmektedir.'
+            )
 
         st.markdown('---')
 
