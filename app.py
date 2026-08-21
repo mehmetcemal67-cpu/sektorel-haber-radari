@@ -3564,7 +3564,7 @@ def _v87_ogn_summary(title, body, fallback):
     return out or (fallback[:520].strip() if fallback else title[:520].strip())
 
 
-V90_OGN_ENGINE_VERSION='v100_ogn_20260821_1'
+V90_OGN_ENGINE_VERSION='v101_ogn_20260821_1'
 
 def _v90_clean_title(title,source=''):
     t=_v87_safe_tr(title)
@@ -4940,6 +4940,291 @@ def _v100_pick_summary_sentences(title, source, body, fallback):
         return ''
     return text
 
+
+# ========================= V101: ÖGN KONU BÜTÜNLÜĞÜ 2.0 =========================
+
+def _v101_clean_unicode(text):
+    """Türkçe metindeki mojibake/control karakterlerini Word öncesi agresif biçimde temizler."""
+    import unicodedata
+    t=_repair_mojibake_utf8(_clean_note_text(text))
+
+    # Kullanıcı çıktısında görülen tek-byte/control bozulmaları.
+    fixes={
+        '\x9c':'Ü','\x9e':'Ş','\x9f':'ş','\x96':'Ö','\x91':"'",'\x92':"'",'\x93':'“','\x94':'”',
+        'T BİTAK':'TÜBİTAK','T BİTAK':'TÜBİTAK',
+        'ö şrenci':'öğrenci','ö şrenc':'öğrenc','yarı ş':'yarış','etti şi':'ettiği',
+        'ba şarı':'başarı','gümü ş':'gümüş',' zekinci':' Özekinci',
+        'Yapay Zek â':'Yapay Zekâ','veyaşağı':'veya aşağı'
+    }
+    for a,b in fixes.items():
+        t=t.replace(a,b)
+
+    # Harflerin arasına sızmış boşluklu ş/ğ/ü bozulmaları.
+    t=re.sub(r'\bö\s+şrenc', 'öğrenc', t, flags=re.I)
+    t=re.sub(r'\byarı\s+ş', 'yarış', t, flags=re.I)
+    t=re.sub(r'\bba\s+şar', 'başar', t, flags=re.I)
+    t=re.sub(r'\bgümü\s+ş', 'gümüş', t, flags=re.I)
+    t=re.sub(r'\betti\s+şi\b', 'ettiği', t, flags=re.I)
+
+    # Kontrol/görünmez karakterleri kaldır.
+    t=''.join(ch for ch in t if unicodedata.category(ch) not in {'Cc','Cf'} or ch in '\t\n\r')
+    t=unicodedata.normalize('NFC',t)
+    t=re.sub(r'\s+',' ',t).strip()
+    return t
+
+def _v101_title_terms(title):
+    stop={'ve','ile','için','bir','bu','da','de','ile','olan','olarak','son','yeni',
+          'türkiye','türk','haber','haberi','başladı','oldu','edildi','açıkladı'}
+    return [w for w in re.findall(r'[a-zçğıöşü0-9]+',norm(title)) if len(w)>2 and w not in stop]
+
+def _v101_sentence_overlap(title,s):
+    tw=set(_v101_title_terms(title))
+    sw=set(re.findall(r'[a-zçğıöşü0-9]+',norm(s)))
+    return len(tw & sw)
+
+def _v101_bad_sentence(s):
+    s=_v101_clean_unicode(s).strip()
+    n=norm(s)
+    if not s or len(s)<35:
+        return True
+    if _v100_is_fragment(s):
+        return True
+    if any(re.search(p,n,re.I) for p in _V99_UI_NOISE):
+        return True
+    # Başlık/navigation artıkları.
+    if re.search(r'\b(?:yarışıyor|tükendi|fırsatı|büyüyor)\s*!?\s*$',n) and len(s)<120:
+        return True
+    if re.search(r'\b(?:gazetesi|gazete|haberleri?)\s*[»|:-]',n):
+        return True
+    return False
+
+def _v101_formal_sentence(s):
+    """Haber dilini resmî bilgi notu diline yaklaştırır; doğrudan alıntı kırıntılarını atar."""
+    s=_v101_clean_unicode(s)
+    # Açık/kapanmamış tırnakları temizle.
+    s=s.replace('"','').replace('“','').replace('”','')
+    s=re.sub(r'\b(?:dedi|diyor|diye konuştu)\b','belirtmiştir',s,flags=re.I)
+    s=_v99_officialize(s)
+    # Kalan yaygın haber dili.
+    repl=[
+        (r'\bedecek\b','edecektir'),(r'\bolacak\b','olacaktır'),
+        (r'\byarışacak\b','yarışacaktır'),(r'\bsunuluyor\b','sunulmaktadır'),
+        (r'\büretiyor\b','üretmektedir'),(r'\bilerliyor\b','ilerlemektedir'),
+        (r'\bdevreye alındı\b','devreye alınmıştır'),
+        (r'\bonay alındı\b','onay alınmıştır'),
+        (r'\bgerçekleştirildi\b','gerçekleştirilmiştir'),
+        (r'\bdahil etti\b','dahil etmiştir'),
+        (r'\btest etti\b','test etmiştir'),
+        (r'\badım attı\b','adım atmıştır'),
+    ]
+    for a,b in repl:
+        s=re.sub(a,b,s,flags=re.I)
+    return re.sub(r'\s+',' ',s).strip()
+
+def _v101_build_intro(title,source,sents):
+    """
+    İlk cümle mutlaka 'kim/ne + ne oldu' bilgisini taşır.
+    Başlığın kendisini yazmaz; haber gövdesindeki en iyi bağlam cümlesini seçer.
+    """
+    subject=_v100_subject_hint(title,source)
+    scored=[]
+    for i,s in enumerate(sents[:8]):
+        n=norm(s)
+        action=sum(x in n for x in [
+            'açıkla','duyur','başlat','başvur','gerçekleştir','üret','teslim','envanter',
+            'faaliyete','satış','seç','program','proje','oran','veri','rekor','görev'
+        ])
+        sc=8*_v101_sentence_overlap(title,s)+4*action+_v99_sentence_value(s)-i
+        scored.append((sc,i,s))
+    if not scored:
+        return '',-1
+    _,idx,s=max(scored,key=lambda x:x[0])
+    s=_v101_formal_sentence(s)
+
+    # "Proje...", "Tüketim...", "Bunun yanında..." gibi referansı belirsiz başlangıçları konuya bağla.
+    n=norm(s)
+    ambiguous=re.match(r'^(proje|program|tüketim|şirket|bu kapsamda|bunun yanında|ayrıca|yoğun ilgi)',n)
+    if subject and (ambiguous or _v101_sentence_overlap(title,s)==0):
+        if n.startswith('proje'):
+            s=re.sub(r'^\s*Proje\s*,?\s*',subject+' kapsamında ',s,flags=re.I)
+        elif n.startswith('program'):
+            s=re.sub(r'^\s*Program\s*,?\s*',subject+' kapsamında ',s,flags=re.I)
+        elif n.startswith('tüketim'):
+            s=subject.rstrip(' .')+' kapsamında '+s[:1].lower()+s[1:]
+        else:
+            s=subject.rstrip(' .')+' kapsamında '+s[:1].lower()+s[1:]
+
+    return s,idx
+
+def _v101_semantic_key(s):
+    """Yakın tekrarları, özellikle aynı rakamı tekrarlayan cümleleri azaltır."""
+    n=norm(s)
+    nums=tuple(re.findall(r'\d+(?:[.,]\d+)?',n))
+    words=[w for w in re.findall(r'[a-zçğıöşü]+',n) if len(w)>4]
+    return set(words),set(nums)
+
+def _v101_is_near_duplicate(s,chosen):
+    sw,sn=_v101_semantic_key(s)
+    for prev in chosen:
+        pw,pn=_v101_semantic_key(prev)
+        word_sim=len(sw&pw)/max(1,len(sw|pw))
+        num_sim=(bool(sn) and bool(pn) and len(sn&pn)/max(1,len(sn|pn))>=0.75)
+        if word_sim>=0.48 or (num_sim and word_sim>=0.25):
+            return True
+    return False
+
+def _v101_analyst_paragraph(title,source,body,fallback=''):
+    """
+    Her haber için bağımsız okunabilen 4 satırlık mini bilgi notu:
+    GİRİŞ: kim/ne, hangi gelişme
+    GELİŞME: kritik veri/rakam/yer/tarih
+    SONUÇ: hedef, sonuç, mevcut durum veya sonraki aşama
+    """
+    title=_v101_clean_unicode(title)
+    source=_v101_clean_unicode(source)
+    body=_v99_clean_article_text(_v101_clean_unicode(body),source)
+    fallback=_v99_clean_article_text(_v101_clean_unicode(fallback),source)
+
+    candidate=body
+    if not candidate or _v99_is_title_only(title,candidate):
+        candidate=fallback
+
+    raw=_v96_unique_sentences(title,candidate)
+    sents=[]
+    for s in raw:
+        s=_v99_clean_article_text(_v101_clean_unicode(s),source)
+        if _v101_bad_sentence(s) or _v99_is_title_only(title,s):
+            continue
+        sents.append(s)
+
+    # İçerik gerçekten yoksa başlığı "özet" diye basma.
+    if not sents:
+        return ''
+
+    intro,intro_idx=_v101_build_intro(title,source,sents)
+    if not intro:
+        return ''
+
+    chosen=[intro]
+    used={intro_idx}
+
+    # Gelişme: rakam/istatistik/ölçek/yer/tarih taşıyan en güçlü cümle.
+    detail_candidates=[]
+    for i,s in enumerate(sents):
+        if i in used: continue
+        n=norm(s)
+        data=bool(re.search(r'\d|%|yüzde|milyon|milyar|bin|adet|oran|tarih',s,re.I))
+        sc=_v99_sentence_value(s)+5*data+2*_v101_sentence_overlap(title,s)
+        if sc>3:
+            detail_candidates.append((sc,i,s))
+    for _,i,s in sorted(detail_candidates,reverse=True):
+        fs=_v101_formal_sentence(s)
+        if fs and not _v101_is_near_duplicate(fs,chosen):
+            chosen.append(fs); used.add(i); break
+
+    # Sonuç: hedef/son durum/takvim/etki.
+    result_candidates=[]
+    for i,s in enumerate(sents):
+        if i in used: continue
+        n=norm(s)
+        hits=sum(x in n for x in [
+            'hedef','plan','beklen','teslim','başvuru','envanter','faaliyete',
+            'tamamlan','başlam','katkı','sonuç','rekor','artış','azalış','dönem',
+            'seviye','ulaş','oluştur','sağla'
+        ])
+        sc=5*hits+_v99_sentence_value(s)+_v101_sentence_overlap(title,s)
+        if hits:
+            result_candidates.append((sc,i,s))
+    for _,i,s in sorted(result_candidates,reverse=True):
+        fs=_v101_formal_sentence(s)
+        if fs and not _v101_is_near_duplicate(fs,chosen):
+            chosen.append(fs); break
+
+    # 2-3 tam cümle; 4 Word satırı hedefi. Cümle ortasında kesme yapılmaz.
+    final=[]
+    for s in chosen[:3]:
+        s=_v101_formal_sentence(s).strip()
+        if not s: continue
+        if s[-1] not in '.!?': s+='.'
+        cand=' '.join(final+[s])
+        if final and len(cand)>620:
+            break
+        final.append(s)
+
+    text=' '.join(final)
+    text=_v101_clean_unicode(_v98_strip_site_name(text,source))
+    # Cümle sonunda kalan başlık/site artıkları.
+    text=re.sub(r'\s+[A-ZÇĞİÖŞÜ0-9][A-ZÇĞİÖŞÜ0-9\s\'’-]{8,}\s*!?\s*(?=\.|$)','',text)
+    text=re.sub(r'\s+',' ',text).strip()
+    return text
+
+def make_important_basket_docx_v101(basket_df):
+    doc=Document()
+    sec=doc.sections[0]
+    sec.top_margin=Cm(2); sec.bottom_margin=Cm(2)
+    sec.left_margin=Cm(2.5); sec.right_margin=Cm(2.5)
+
+    normal=doc.styles['Normal']
+    normal.font.name='Times New Roman'
+    normal.font.size=Pt(12)
+    normal._element.rPr.rFonts.set(qn('w:eastAsia'),'Times New Roman')
+
+    now=datetime.now().astimezone()
+    p=doc.add_paragraph(); p.alignment=WD_ALIGN_PARAGRAPH.RIGHT
+    p.add_run(now.strftime('%d/%m/%Y'))
+    p=doc.add_paragraph()
+    p.add_run('Konu: ').bold=True
+    p.add_run('STB Temsilciliği Önemli Gelişmeler Notu')
+
+    rows=[] if basket_df is None else basket_df.to_dict('records')
+
+    def process_row(r):
+        title=_v101_clean_unicode(r.get('title',''))
+        source=_v101_clean_unicode(r.get('source',''))
+        summary=_v101_clean_unicode(r.get('summary',''))
+        url=str(r.get('url','') or '')
+        news_time=_v101_clean_unicode(r.get('news_time',''))
+
+        detail={}
+        try:
+            detail=article_detail({
+                'Başlık':title,'Kaynak':source,'URL':url,'Yayıncı_URL':url,
+                'İçerik_Özeti':summary,'Tarih':news_time
+            }) or {}
+        except Exception:
+            pass
+
+        text=_v101_analyst_paragraph(title,source,detail.get('text') or '',summary)
+        if not text and summary:
+            text=_v101_analyst_paragraph(title,source,summary,summary)
+        return text
+
+    outputs=['']*len(rows)
+    if rows:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(6,len(rows))) as ex:
+            jobs={ex.submit(process_row,r):i for i,r in enumerate(rows)}
+            for fut in concurrent.futures.as_completed(jobs):
+                idx=jobs[fut]
+                try: outputs[idx]=fut.result()
+                except Exception: outputs[idx]=''
+
+    for idx,r in enumerate(rows):
+        text=_v101_clean_unicode(outputs[idx] if idx<len(outputs) else '')
+        if not text:
+            # İçeriksiz başlığı sahte bir 4 satırlık özet haline getirmiyoruz.
+            # Kullanıcıya Word içinde başlık kalıntısı göstermek yerine bu kayıt atlanır.
+            continue
+        p=doc.add_paragraph()
+        p.alignment=WD_ALIGN_PARAGRAPH.JUSTIFY
+        p.paragraph_format.line_spacing=1.0
+        p.paragraph_format.space_after=Pt(7)
+        p.add_run(text.rstrip(' .;')+' (STB).')
+
+    doc.add_paragraph('Arz olunur.')
+    bio=BytesIO(); doc.save(bio); bio.seek(0)
+    return bio.getvalue()
+
+# ======================= /V101: ÖGN KONU BÜTÜNLÜĞÜ 2.0 =========================
 def make_important_basket_docx_v100(basket_df):
     """
     V100: Her haber kendi içinde anlamlı bir bütün oluşturur.
@@ -8003,6 +8288,15 @@ if run:
         label=f'✅ Tarama tamamlandı — {len(all_rows)} haber / {stat["Olay"]} olay',
         state='complete'
     )
+    # V101 — Tarama sonucu daha session_state'e yazılmadan gerçek yayın tarih-saatine göre sıralanır.
+    # Böylece özellikle Son 24 Saat taramasında Kronolojik ekran ilk açılışta en yeni -> en eski gelir.
+    def _v101_row_dt(_r):
+        _d=_to_utc_datetime(_r.get('Tarih_dt'))
+        if _d is None:
+            _d=_to_utc_datetime(_r.get('Tarih'))
+        return _d or datetime.min.replace(tzinfo=timezone.utc)
+
+    all_rows=sorted(all_rows,key=_v101_row_dt,reverse=True)
     st.session_state.rows=all_rows
     st.session_state.scan_time=datetime.now().astimezone()
     st.session_state.stats=stat
@@ -8748,12 +9042,12 @@ else:
                     # Her basışta eski çıktı silinir ve V90 motoruyla baştan hazırlanır.
                     st.session_state.pop('v90_ogn_docx_bytes',None)
                     with st.spinner('Önemli gelişmeler gerçek haber içeriklerinden resmî biçimde özetleniyor...'):
-                        st.session_state['v90_ogn_docx_bytes']=make_important_basket_docx_v100(basket)
+                        st.session_state['v90_ogn_docx_bytes']=make_important_basket_docx_v101(basket)
                 if st.session_state.get('v90_ogn_docx_bytes'):
                     st.download_button(
-                        '⬇️ 24 SAATLİK ÖNEMLİ GELİŞMELER / WORD — V100',
+                        '⬇️ 24 SAATLİK ÖNEMLİ GELİŞMELER / WORD — V101',
                         st.session_state['v90_ogn_docx_bytes'],
-                        file_name=f'24_Saatlik_Onemli_Gelismeler_V100_{date.today()}.docx',
+                        file_name=f'24_Saatlik_Onemli_Gelismeler_V101_{date.today()}.docx',
                         mime='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
                         use_container_width=True,
                         key='v90_download_ogn_word'
