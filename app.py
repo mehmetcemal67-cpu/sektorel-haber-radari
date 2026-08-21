@@ -7362,8 +7362,15 @@ def _v63_status_sets():
     Önemli Gelişmeler, AKT, Sunum ve hazırlanmış Bilgi Notu.
     """
     cached=st.session_state.get('_v73_status_sets_cache')
+    # V102 geçiş güvenliği: V101 açık oturumlarında cache 3 elemanlıdır.
+    # Yeni sürüm 4 durum kümesi kullandığı için eski cache'i otomatik geçersiz kıl.
     if cached is not None:
-        return cached
+        try:
+            if isinstance(cached,(tuple,list)) and len(cached)==4:
+                return cached
+        except Exception:
+            pass
+        st.session_state.pop('_v73_status_sets_cache',None)
 
     imp=set(); akt=set(); notes=set(); pres=set()
     if not _init_history_db():
