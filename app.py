@@ -3644,9 +3644,8 @@ def _v90_formalize(s):
 
 def _v90_item_summary(title,source,body,fallback):
     """
-    Kurum örneğine yakın TEK, TAM, RESMÎ cümle:
-    ana olay + kritik rakam/yer/tarih/kişi + gerekiyorsa tek tamamlayıcı bilgi.
-    Başlık doğrudan Word'e yazılmaz.
+    Haber metninden en fazla 3 cümle seçerek resmî, veri/rakam odaklı bir özet oluşturur.
+    Çıktı 4 paragrafı geçmez (en fazla 3 cümle).
     """
     title=_v90_clean_title(title,source)
     text=_v87_safe_tr(body or fallback)
@@ -3654,12 +3653,14 @@ def _v90_item_summary(title,source,body,fallback):
     if len(sents)<2:
         sents=_v90_sentences(fallback)
 
-    # Başlık dışında gerçek içerik yoksa fallback'i kullan; yine başlığı tek başına basma.
     if not sents:
-        fb=_v87_safe_tr(fallback)
-        if len(fb)>=80 and title_key(fb)!=title_key(title):
-            return _v90_formalize(fb).rstrip(' .;')+'.'
-        return ''
+        # Fallback: başlık ve kaynak bilgisini kullanarak basit bir resmî cümle oluştur.
+        clean_title=_v90_clean_title(title,source)
+        if source and clean_title:
+            return _v90_formalize(f"{source} sitesinde yayımlanan haberde {clean_title} konusu ele alınmıştır.").rstrip(' .;')+'.'
+        elif clean_title:
+            return _v90_formalize(f"{clean_title} başlıklı gelişme açık kaynaklarda yer almıştır.").rstrip(' .;')+'.'
+        return _v90_formalize("Konuya ilişkin açık kaynak içeriği tespit edilmiştir.").rstrip(' .;')+'.'
 
     tw=_v90_title_words(title)
 
@@ -3677,6 +3678,10 @@ def _v90_item_summary(title,source,body,fallback):
         'kapasite','ihracat','üretim','satış','hibe','öğrenci','madalya','rekor',
         '2025','2026','2027'
     ]
+    result_terms=[
+        'hedef','beklen','sağla','katkı','devreye','plan','başarı','destek','başvuru',
+        'artış','azalış','yüksel','gerile','ulaş'
+    ]
 
     def overlap(s):
         words=set(re.findall(r'[a-zçğıöşü0-9]+',norm(s)))
@@ -3688,76 +3693,81 @@ def _v90_item_summary(title,source,body,fallback):
 
     def intro_score(s):
         n=norm(s)
-        return (
-            8*overlap(s)
-            + 4*sum(x in n for x in actor_terms)
-            + 4*sum(x in n for x in action_terms)
-            + min(len(re.findall(r'\d',s)),3)
-        )
+        return (8*overlap(s) + 4*sum(x in n for x in actor_terms) +
+                4*sum(x in n for x in action_terms) + min(len(re.findall(r'\d',s)),3))
 
-    # İlk cümle haberin ortasından değil, olayı tanımlayan cümle olsun.
-    intro=max(pool[:8],key=lambda s:(intro_score(s),-sents.index(s)))
+    # Giriş cümlesi: olayı/kurumu tanımlayan en iyi cümle
+    intro=max(pool[:8], key=lambda s: (intro_score(s), -sents.index(s)))
     intro=_v90_formalize(intro).rstrip(' .;')
 
-    # Eğer intro başlıkla neredeyse aynıysa başka gövde cümlesi dene.
+    # Başlıkla neredeyse aynı olan cümleyi atla
     if title_key(intro)==title_key(title):
         alternatives=[s for s in pool if title_key(s)!=title_key(title)]
         if alternatives:
             intro=_v90_formalize(
-                max(alternatives,key=lambda s:(intro_score(s),-sents.index(s)))
+                max(alternatives, key=lambda s: (intro_score(s), -sents.index(s)))
             ).rstrip(' .;')
 
-    # En kritik ikinci bilgi: rakam/tarih/ölçek; aynı olayla ilişkili olmak zorunda.
+    # Detay cümlesi: rakam/veri/tarih içeren en iyi cümle
     remaining=[s for s in pool if title_key(_v90_formalize(s))!=title_key(intro)]
     detail=''
     if remaining:
         def detail_score(s):
             n=norm(s)
-            return (
-                7*overlap(s)
-                + 5*sum(x in n for x in detail_terms)
-                + min(len(re.findall(r'\d',s)),6)
-            )
-        cand=max(remaining,key=lambda s:(detail_score(s),-sents.index(s)))
+            return (7*overlap(s) + 5*sum(x in n for x in detail_terms) +
+                    min(len(re.findall(r'\d',s)),6))
+        cand=max(remaining, key=lambda s: (detail_score(s), -sents.index(s)))
         if detail_score(cand)>=5:
             detail=_v90_formalize(cand).rstrip(' .;')
 
-    # Tek resmî cümle oluştur.
-    out=intro
-    if detail:
-        # Aynı rakamları tekrar eden ayrıntıyı ekleme.
-        n1=set(re.findall(r'\d+(?:[.,]\d+)?',intro))
-        n2=set(re.findall(r'\d+(?:[.,]\d+)?',detail))
-        if not (n2 and n2.issubset(n1) and len(detail)<180):
-            out += '; ayrıca, ' + detail[0].lower()+detail[1:] if detail else ''
+    # Sonuç/hedef cümlesi: beklenti, hedef, etki içeren cümle
+    remaining2=[s for s in pool if title_key(_v90_formalize(s)) not in (title_key(intro), title_key(detail))] if detail else remaining
+    result=''
+    if remaining2:
+        def result_score(s):
+            n=norm(s)
+            return (6*overlap(s) + 4*sum(x in n for x in result_terms) +
+                    2*sum(x in n for x in detail_terms))
+        cand2=max(remaining2, key=lambda s: (result_score(s), -sents.index(s)))
+        if result_score(cand2)>=4:
+            result=_v90_formalize(cand2).rstrip(' .;')
+
+    # Cümleleri birleştir: intro + (detail) + (result)
+    clauses=[intro]
+    used_digits=set(re.findall(r'\d+(?:[.,]\d+)?', intro))
+    for extra in (detail, result):
+        if not extra:
+            continue
+        # Aynı rakamları tekrar eden cümleyi ekleme
+        extra_digits=set(re.findall(r'\d+(?:[.,]\d+)?', extra))
+        if extra_digits and extra_digits.issubset(used_digits) and len(extra)<150:
+            continue
+        clauses.append(extra)
+        used_digits.update(extra_digits)
+        if len(clauses)>=3:
+            break
+
+    # Resmî tek cümle akışı: ilk cümle + noktalı virgülle bağlanan diğer cümlecikler
+    if len(clauses)==1:
+        out=clauses[0]
+    else:
+        connector='; ayrıca, '
+        out=clauses[0] + connector + clauses[1]
+        if len(clauses)==3:
+            out += '; bununla birlikte, ' + clauses[2]
 
     out=_v87_safe_tr(out).strip(' ;:.')
 
-    # Örnekteki yoğunluk: yaklaşık 4 Word satırı; cümleyi ortadan kesme.
-    if len(out)>500 and detail:
-        out=intro
+    # 4 satırı geçmemesi için yaklaşık 500 karakter sınırı
+    if len(out)>500 and len(clauses)>1:
+        out=clauses[0]
     if len(out)>520:
-        # Giriş tek başına çok uzunsa en yakın anlamlı virgül/noktalı virgül sınırında kısalt.
         cut=out[:520]
-        k=max(cut.rfind('; '),cut.rfind(', '))
-        if k>=330:
+        k=max(cut.rfind('; '), cut.rfind(', '))
+        if k>=300:
             out=cut[:k].rstrip(' ,;')
 
     return out.rstrip(' .;')+'.'
-
-@st.cache_data(ttl=3600,show_spinner=False)
-def _v90_fetch_detail(title,source,url,fallback,news_time):
-    try:
-        return article_detail({
-            'Başlık':title,
-            'Kaynak':source,
-            'URL':url,
-            'Yayıncı_URL':url,
-            'İçerik_Özeti':fallback,
-            'Tarih':news_time
-        })
-    except Exception:
-        return {'title':title,'source':source,'text':fallback,'canonical':url,'images':[]}
 
 
 def _v92_clean_news_text(text):
@@ -4645,8 +4655,8 @@ def make_important_basket_docx_v92(basket_df):
 
 def make_important_basket_docx_v90(basket_df):
     """
-    V90 ÖGN motoru. Eski Word baytlarını/fonksiyonlarını kullanmaz.
-    Her haber için gerçek metni paralel alır, sırayı korur.
+    V90 ÖGN motoru. Her haber için gerçek metni paralel alır, sırayı korur.
+    Hiçbir haber boş kalmaz; en azından başlık bazlı bir cümle üretilir.
     """
     doc=Document(); sec=doc.sections[0]
     sec.top_margin=Cm(2); sec.bottom_margin=Cm(2)
@@ -4677,15 +4687,13 @@ def make_important_basket_docx_v90(basket_df):
             body=_v87_safe_tr((detail or {}).get('text','') or fallback)
             txt=_v90_item_summary(title,source,body,fallback)
 
-            # Asla eski başlık-çıktı davranışına dönme.
+            # Eğer hala boşsa, başlığı kullanarak son bir fallback
             if not txt:
-                # fallback gövdesinden tek resmî cümle oluşturmayı tekrar dene.
-                txt=_v90_item_summary(title,source,fallback,fallback)
-            if not txt:
-                # Son çare: başlığı değil, açıklayıcı bir kurum cümlesi oluştur.
                 clean_title=_v90_clean_title(title,source)
-                txt=f'{clean_title} konusuna ilişkin gelişme açık kaynaklarda yer almıştır.'
-                txt=_v90_formalize(txt)
+                if clean_title:
+                    txt=_v90_formalize(f"{clean_title} başlıklı gelişme açık kaynaklarda yer almıştır.").rstrip(' .;')+'.'
+                else:
+                    txt="Konuya ilişkin açık kaynak içeriği tespit edilmiştir."
             return txt
 
         summaries=['']*len(records)
@@ -4697,11 +4705,14 @@ def make_important_basket_docx_v90(basket_df):
                 try:
                     summaries[idx]=fut.result()
                 except Exception:
-                    summaries[idx]=''
+                    # Hata durumunda başlıktan basit bir cümle oluştur
+                    rr=records[idx]
+                    fallback_title=_v90_clean_title(rr.get('title',''), rr.get('source',''))
+                    summaries[idx]=_v90_formalize(f"{fallback_title} başlıklı gelişme değerlendirilmiştir.").rstrip(' .;')+'.'
 
         for rr,txt in zip(records,summaries):
             if not txt:
-                continue
+                txt="Gelişmeye ilişkin içerik özetlenememiştir."
             p=doc.add_paragraph()
             p.alignment=WD_ALIGN_PARAGRAPH.JUSTIFY
             p.paragraph_format.space_after=Pt(6)
