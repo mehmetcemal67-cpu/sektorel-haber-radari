@@ -3034,55 +3034,120 @@ def _clear_important_basket():
 def _v81_sentence_case_title(title):
     t=_clean_note_text(title).strip()
     letters=''.join(c for c in t if c.isalpha())
-    if letters and sum(c.isupper() for c in letters)/len(letters)>.80:
+    if letters and sum(c.isupper() for c in letters)/max(1,len(letters))>.80:
         t=t.lower()
         t=t[:1].upper()+t[1:]
     return t
 
-def _v80_reference_important_summary(title,summary):
-    """2-3 cümlelik, anlamlı bütün oluşturan, yaklaşık dört Word satırlık STB özeti."""
-    title=_v81_sentence_case_title(title)
-    body=_clean_note_text(summary)
-    garbage=['sıralamayı değiştirmek','kartları yukarı','çerez','cookie','reklam','devamını oku',
-             'tıklayın','anasayfa','benzer haber','ilgili haber','foto galeri','video galeri']
-    good=[]; seen=set()
-    for s in _sentence_split_tr(body):
+def _v82_clean_article_sentences(text):
+    """Haber gövdesinden menü/reklam/başka haber parçalarını ayıklar."""
+    garbage=[
+        'çerez','cookie','reklam','devamını oku','tıklayın','anasayfa',
+        'son dakika','benzer haber','ilgili haber','foto galeri','video galeri',
+        'sıralamayı değiştirmek','kartları yukarı','abone ol','bildirimleri aç',
+        'google news','whatsapp kanal','instagram','facebook','twitter'
+    ]
+    out=[]; seen=set()
+    for s in _sentence_split_tr(_clean_note_text(text)):
         s=_clean_note_text(s).strip(" ;:-[]'\"")
-        if len(s)<30 or any(g in norm(s) for g in garbage): continue
+        ns=norm(s)
+        if len(s)<35 or len(s)>420:
+            continue
+        if any(g in ns for g in garbage):
+            continue
+        # Navigasyon / başlık kırıntısı niteliğindeki aşırı kısa büyük harf dizilerini alma.
+        letters=''.join(c for c in s if c.isalpha())
+        if letters and len(s)<120 and sum(c.isupper() for c in letters)/max(1,len(letters))>.75:
+            continue
         k=title_key(s)
-        if k in seen: continue
-        seen.add(k); good.append(s)
+        if not k or k in seen:
+            continue
+        seen.add(k); out.append(s)
+    return out
+
+def _v82_formal_sentence(s):
+    """Kaynak cümlesinin anlamını bozmadan kurumsal yüklem biçimini uygular."""
+    s=_clean_note_text(s).strip()
+    s=_v66_formalize_sentence_endings(s)
+    # Yaygın haber dili kalıntıları.
+    repl=[
+        (r'\bifade ediyor\b','ifade etmektedir'),
+        (r'\bbelirtiyor\b','belirtmektedir'),
+        (r'\baçıklıyor\b','açıklamaktadır'),
+        (r'\bduyuruyor\b','duyurmaktadır'),
+        (r'\bgösteriyor\b','göstermektedir'),
+        (r'\bsağlıyor\b','sağlamaktadır'),
+        (r'\bhedefliyor\b','hedeflemektedir'),
+        (r'\bplanlıyor\b','planlamaktadır'),
+    ]
+    for pat,val in repl:
+        s=re.sub(pat,val,s,flags=re.I)
+    return s
+
+def _v80_reference_important_summary(title,summary,full_text=''):
+    """
+    V82: Kurum örneğine yakın ÖGN özeti.
+    Başlık kopyalanmaz. Haber gövdesinden olayın özü + kritik veri/detay +
+    sonuç/gelecek adımı seçilerek 2-3 cümlelik, yaklaşık dört Word satırlık
+    anlamlı tek paragraf oluşturulur.
+    """
+    title=_v81_sentence_case_title(title)
+    body=_clean_note_text(full_text or summary)
+    good=_v82_clean_article_sentences(body)
+    if len(good)<2 and full_text:
+        good=_v82_clean_article_sentences(str(summary)+' '+str(full_text))
     if not good:
-        return _v66_formalize_sentence_endings(title)
+        return _v82_formal_sentence(title)
 
-    terms=['%','yüzde','milyon','milyar','bin ','tüik','tübitak','bakan','açıklad','duyur',
-           'başlat','tamamla','üretim','ihracat','yatırım','kapasite','başvuru','test','sözleşme',
-           'artış','azalış','ulaşt','hedef']
-    # Giriş + en kritik iki tamamlayıcı cümle.
-    chosen=[good[0]]
-    ranked=sorted(list(enumerate(good[1:],1)),
-                  key=lambda z:(sum(t in norm(z[1]) for t in terms),-z[0]),reverse=True)
-    for _,sent in ranked:
-        if sent not in chosen: chosen.append(sent)
-        if len(chosen)>=3: break
-    chosen=sorted(chosen,key=lambda x:good.index(x))
+    # Rol puanları: olay/kurum, sayısal kritik detay, sonuç/gelecek adımı.
+    fact_terms=['açıklad','duyur','başlat','gerçekleştir','tamamla','imzala','yayımla',
+                'üret','geliştir','test','düzenlen','başvuru','yatırım','proje']
+    data_terms=['%','yüzde','milyon','milyar','trilyon','bin ','adet','km','mw','gwh',
+                'oran','endeks','kapasite','ciro','ihracat','üretim','satış','başvuru']
+    result_terms=['art','azal','gerile','yüksel','ulaş','hedef','plan','beklen','başlay',
+                  'sağla','imkân','kazandır','devreye','pilot','uygulan','kullanıl']
+    official_terms=['tüik','tübitak','bakanlık','bakan','tse','türkpatent','ssb','nasa',
+                    'ibm','cumhurbaşkan','başkanlık','enstitü']
 
-    # Başlığı aynen çıktı olarak kullanma; sadece özet yetersizse özne bağlamı ekle.
-    tw=[w for w in re.findall(r'\w+',norm(title)) if len(w)>5][:3]
-    if title and tw and not any(w in norm(chosen[0]) for w in tw) and len(title)<110:
-        # ALL CAPS artık sentence-case'dir.
-        chosen[0]=title.rstrip('.;')+'. '+chosen[0]
+    def score(s,terms):
+        ns=norm(s)
+        return sum(1 for t in terms if t in ns)
 
-    text=' '.join(_v66_formalize_sentence_endings(x) for x in chosen)
-    text=_clean_note_text(text)
-    # En az iki cümleyi koru; 4 satır hedefi için 620 karakter üst sınırı.
+    # İlk cümle: ilk 4 temiz cümle içinden olayı en iyi tanımlayanı seç.
+    first_pool=good[:4]
+    first=max(first_pool,key=lambda s:(2*score(s,fact_terms)+score(s,official_terms)+score(s,data_terms),-good.index(s)))
+    chosen=[first]
+
+    # İkinci: mümkünse rakam/ölçek/teknik kritik ayrıntı.
+    remaining=[s for s in good if s not in chosen]
+    if remaining:
+        second=max(remaining,key=lambda s:(3*score(s,data_terms)+score(s,official_terms)+score(s,fact_terms),-good.index(s)))
+        if score(second,data_terms)>0 or len(chosen)<2:
+            chosen.append(second)
+
+    # Üçüncü: sonuç, hedef, takvim veya anlamı tamamlayan cümle.
+    remaining=[s for s in good if s not in chosen]
+    if remaining:
+        third=max(remaining,key=lambda s:(3*score(s,result_terms)+score(s,data_terms)+score(s,fact_terms),-good.index(s)))
+        if score(third,result_terms)>0 or len(chosen)<2:
+            chosen.append(third)
+
+    # Haber akışını koru.
+    chosen=sorted(chosen,key=lambda s:good.index(s))
+    formal=[_v82_formal_sentence(s) for s in chosen[:3]]
+    text=_clean_note_text(' '.join(formal))
+
+    # Yaklaşık 4 satır: cümleyi ortadan kesmeden 680 karaktere kadar.
     sents=_sentence_split_tr(text)
     kept=[]; total=0
     for sent in sents:
-        if len(kept)>=2 and total+len(sent)+1>620: break
-        kept.append(sent); total+=len(sent)+1
-        if total>=620: break
-    return ' '.join(kept[:3]).strip()
+        n=len(sent)+(1 if kept else 0)
+        if len(kept)>=2 and total+n>680:
+            break
+        kept.append(sent); total+=n
+        if len(kept)>=3:
+            break
+    return ' '.join(kept).strip()
 
 def make_important_basket_docx(basket_df):
     """V80: Gerçek STB Önemli Gelişmeler Notu dil/üslup ve yoğunluğuna göre."""
@@ -3107,7 +3172,21 @@ def make_important_basket_docx(basket_df):
             # artığı taşımak yerine sepete alınırken kaydedilen temiz haber özeti esas alınır.
             title=_clean_note_text(rr.get('title',''))
             summary=_clean_note_text(rr.get('summary',''))
-            txt=_v80_reference_important_summary(title,summary)
+            # V82: yalnız Word oluşturulurken gerçek haber metnini okumaya çalış.
+            # Böylece günlük panel hızı etkilenmez; ÖGN özeti RSS başlığına mahkûm kalmaz.
+            full_text=''
+            try:
+                _detail=article_detail({
+                    'Başlık':title,
+                    'İçerik_Özeti':summary,
+                    'URL':str(rr.get('url','') or ''),
+                    'Kaynak':_clean_note_text(rr.get('source','')),
+                    'Tarih':_clean_note_text(rr.get('news_time',''))
+                })
+                full_text=_clean_note_text(_detail.get('text',''))
+            except Exception:
+                full_text=''
+            txt=_v80_reference_important_summary(title,summary,full_text)
             if not txt:
                 continue
             txt=txt.rstrip(' .;')
@@ -5361,23 +5440,30 @@ else:
         _selected_idx=_edited_know.index[_edited_know['Seç'].astype(bool)].tolist()
         _selected_know=_know_select.loc[_selected_idx].copy() if _selected_idx else pd.DataFrame()
 
-        k1,k2,k3=st.columns(3)
+        k1,k2,k3,k4=st.columns(4)
         with k1:
-            if st.button('📌 Önemli Gelişmelere Ekle',key='v61_know_imp',use_container_width=True):
+            if st.button('📌 Önemli Gelişmelere Ekle',key='v82_know_imp',use_container_width=True):
                 if _selected_know.empty:
                     st.warning('Önce en az bir gelişmeyi seçin.')
                 else:
                     _n=_add_rows_to_important_basket(_selected_know.to_dict('records'))
                     st.success(f'{_n} haber önemli gelişmeler sepetine eklendi.')
         with k2:
-            if st.button('🗂️ Açık Kaynak Tarama Sepetine Ekle',key='v61_know_akt',use_container_width=True):
+            if st.button('🗂️ AKT Sepetine Ekle',key='v82_know_akt',use_container_width=True):
                 if _selected_know.empty:
                     st.warning('Önce en az bir gelişmeyi seçin.')
                 else:
                     _n=_add_rows_to_osint_basket(_selected_know.to_dict('records'))
                     st.success(f'{_n} haber açık kaynak tarama sepetine eklendi.')
         with k3:
-            if st.button('📌 DETAYLI BİLGİ NOTU OLUŞTUR / WORD',key='v61_know_note',use_container_width=True):
+            if st.button('🖥️ Sunum Sepetine Ekle',key='v82_know_pres',use_container_width=True):
+                if _selected_know.empty:
+                    st.warning('Önce en az bir gelişmeyi seçin.')
+                else:
+                    _n=_v80_add_presentation(_selected_know.to_dict('records'))
+                    st.success(f'{_n} haber sunum sepetine eklendi.')
+        with k4:
+            if st.button('📝 Detaylı Bilgi Notu Oluştur',key='v82_know_note',use_container_width=True):
                 if _selected_know.empty:
                     st.warning('Önce en az bir gelişmeyi seçin.')
                 else:
