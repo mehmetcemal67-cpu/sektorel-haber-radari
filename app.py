@@ -2410,6 +2410,19 @@ def _init_history_db():
                 )
             """)
             conn.execute("""
+                CREATE TABLE IF NOT EXISTS presentation_basket(
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    added_at TEXT NOT NULL,
+                    news_time TEXT,
+                    title TEXT NOT NULL,
+                    source TEXT,
+                    url TEXT,
+                    category TEXT,
+                    summary TEXT,
+                    UNIQUE(url,title)
+                )
+            """)
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS osint_report_basket(
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     added_at TEXT NOT NULL,
@@ -3018,39 +3031,112 @@ def _clear_important_basket():
     except Exception:
         return 0
 
+def _v80_reference_important_summary(title, summary):
+    """
+    Kullanıcının gerçek STB örneğine göre:
+    - tek kısa resmî paragraf,
+    - en kritik olay + sayı/tarih/kurum,
+    - teknik/web artıkları yok,
+    - yaklaşık 4 Word satırını aşmayacak yoğunluk.
+    """
+    title=_clean_note_text(title)
+    body=_clean_note_text(summary)
+
+    garbage=[
+        'sıralamayı değiştirmek','kartları yukarı','çerez','cookie','reklam',
+        'son dakika','devamını oku','tıklayın','haberler','anasayfa',
+        'google deepmind’in dümeninde'
+    ]
+    sentences=_sentence_split_tr(body)
+    good=[]
+    for s in sentences:
+        s=_clean_note_text(s).strip(" ;:-")
+        ns=norm(s)
+        if len(s)<25 or any(g in ns for g in garbage):
+            continue
+        if s not in good:
+            good.append(s)
+
+    # Önce rakam, resmî kurum, tarih, somut sonuç içeren cümleleri seç.
+    priority_terms=[
+        '%','yüzde','milyon','milyar','bin ','tüik','tübitak','bakan',
+        'başkan','açıklad','duyur','başlat','tamamla','artış','azalış',
+        'üretim','ihracat','yatırım','kapasite','başvuru','test','sözleşme'
+    ]
+    ranked=sorted(
+        enumerate(good),
+        key=lambda z:(
+            sum(1 for t in priority_terms if t in norm(z[1])),
+            -z[0]
+        ),
+        reverse=True
+    )
+    chosen=[]
+    for _,s in ranked:
+        if s not in chosen:
+            chosen.append(s)
+        if len(chosen)>=2:
+            break
+    if not chosen:
+        chosen=[title]
+    chosen=sorted(chosen,key=lambda s: good.index(s) if s in good else -1)
+
+    text=' '.join(chosen)
+    # Başlık somut özneyi taşıyorsa ve özet onsuz anlamsızsa başlığı öne al.
+    if title and title_key(title) not in title_key(text) and len(text)<260:
+        text=f"{title.rstrip('.')} kapsamında {text[0].lower()+text[1:] if text else ''}"
+
+    text=_clean_note_text(text)
+    text=_v66_formalize_sentence_endings(text)
+    # Gerçek örnekteki yoğunluğa yaklaşmak için 420 karakter tavanı.
+    if len(text)>420:
+        cut=text[:420]
+        for sep in ['. ','; ', ', ']:
+            k=cut.rfind(sep)
+            if k>=300:
+                cut=cut[:k+1]
+                break
+        text=cut.rstrip(' ,;.-')+'.'
+    return text.strip()
+
 def make_important_basket_docx(basket_df):
-    """V65: Kullanıcının STB Önemli Gelişmeler Notu örneğinin resmî, kısa paragraf yapısı."""
+    """V80: Gerçek STB Önemli Gelişmeler Notu dil/üslup ve yoğunluğuna göre."""
     doc=Document(); sec=doc.sections[0]
     sec.top_margin=Cm(2); sec.bottom_margin=Cm(2); sec.left_margin=Cm(2.5); sec.right_margin=Cm(2.5)
-    doc.styles['Normal'].font.name='Times New Roman'; doc.styles['Normal'].font.size=Pt(12)
-    doc.styles['Normal']._element.rPr.rFonts.set(qn('w:eastAsia'),'Times New Roman')
+    normal=doc.styles['Normal']
+    normal.font.name='Times New Roman'; normal.font.size=Pt(12)
+    normal._element.rPr.rFonts.set(qn('w:eastAsia'),'Times New Roman')
 
     now=datetime.now().astimezone()
-    p=doc.add_paragraph(); p.alignment=WD_ALIGN_PARAGRAPH.CENTER
-    r=p.add_run(now.strftime('%d/%m/%Y')); r.bold=True
-    p=doc.add_paragraph(); p.add_run('Konu: ').bold=True; p.add_run('STB Temsilciliği Önemli Gelişmeler Notu')
+    p=doc.add_paragraph(); p.alignment=WD_ALIGN_PARAGRAPH.RIGHT
+    p.add_run(now.strftime('%d/%m/%Y')).bold=True
+    p=doc.add_paragraph()
+    p.add_run('Konu: ').bold=True
+    p.add_run('STB Temsilciliği Önemli Gelişmeler Notu')
 
     if basket_df is None or basket_df.empty:
         doc.add_paragraph('Kayıtlı önemli gelişme bulunmamaktadır.')
     else:
         for _,rr in basket_df.iterrows():
-            row={'Başlık':rr.get('title',''),'Kaynak':rr.get('source','Açık Kaynak'),'URL':rr.get('url',''),
-                 'Yayıncı_URL':rr.get('url',''),'İçerik_Özeti':rr.get('summary',''),'Tarih':rr.get('news_time','')}
-            detail=article_detail(row)
-            title_text=_clean_note_text(detail.get('title') or row['Başlık'])
-            body=detail.get('text') or row['İçerik_Özeti'] or title_text
-            summary=_akt_formal_summary(title_text,body,max_sentences=3,max_chars=650)
-            summary=_v66_limit_important_paragraph(summary,max_chars=520,max_sentences=3)
-            source=_clean_note_text(detail.get('source') or row['Kaynak'] or 'STB')
-            p=doc.add_paragraph(); p.alignment=WD_ALIGN_PARAGRAPH.JUSTIFY
-            p.paragraph_format.first_line_indent=Cm(1.25); p.paragraph_format.space_after=Pt(8)
-            # Örnekte her gelişme bağımsız, kısa ve doğrudan resmî paragraftır; risk puanı/link gibi teknik alanlar yoktur.
-            txt=_v66_formalize_sentence_endings(summary).strip().rstrip(' .;')
-            if txt: txt=txt[0].upper()+txt[1:]
+            # Önemli gelişmeler çıktısında web sayfasının tamamını çekip menü/reklam
+            # artığı taşımak yerine sepete alınırken kaydedilen temiz haber özeti esas alınır.
+            title=_clean_note_text(rr.get('title',''))
+            summary=_clean_note_text(rr.get('summary',''))
+            txt=_v80_reference_important_summary(title,summary)
+            if not txt:
+                continue
+            txt=txt.rstrip(' .;')
+            p=doc.add_paragraph()
+            p.alignment=WD_ALIGN_PARAGRAPH.JUSTIFY
+            p.paragraph_format.space_after=Pt(6)
+            p.paragraph_format.line_spacing=1.0
             p.add_run(txt + ' (STB).')
 
-    endp=doc.add_paragraph(); endp.paragraph_format.space_before=Pt(8); endp.add_run('Arz olunur.')
-    bio=BytesIO(); doc.save(bio); bio.seek(0); return bio.getvalue()
+    p=doc.add_paragraph()
+    p.paragraph_format.space_before=Pt(8)
+    p.add_run('Arz olunur.')
+    bio=BytesIO(); doc.save(bio); bio.seek(0)
+    return bio.getvalue()
 
 # -----------------------------
 # GÜNLÜK DURUM ÖZETİ — V32 EK MODÜL
@@ -4594,6 +4680,58 @@ def _v74_fast_add_important(rows):
 def _v74_fast_add_osint(rows):
     return _v74_bulk_add_basket(rows,'osint_report_basket')
 
+def _v80_add_presentation(rows):
+    """Her bölümden seçilen haberleri sunum sepetine toplu ekler."""
+    if rows is None or len(rows)==0 or not _init_history_db():
+        return 0
+    payload=[]
+    now_iso=datetime.now().astimezone().isoformat()
+    for row in rows:
+        title=_clean_note_text(row.get('Başlık',''))
+        if not title:
+            continue
+        payload.append((
+            now_iso,
+            str(row.get('Tarih','') or ''),
+            title,
+            _clean_note_text(row.get('Kaynak','')),
+            str(row.get('URL','') or '').strip(),
+            _clean_note_text(row.get('Kategori','')),
+            _clean_note_text(row.get('İçerik_Özeti',''))[:5000]
+        ))
+    try:
+        with _history_connect() as conn:
+            before=conn.total_changes
+            conn.executemany("""
+                INSERT OR IGNORE INTO presentation_basket(
+                    added_at,news_time,title,source,url,category,summary
+                ) VALUES(?,?,?,?,?,?,?)
+            """,payload)
+            conn.commit()
+            return int(conn.total_changes-before)
+    except Exception:
+        return 0
+
+def _v80_load_presentation():
+    if not _init_history_db():
+        return pd.DataFrame()
+    try:
+        with _history_connect() as conn:
+            return pd.read_sql_query(
+                "SELECT * FROM presentation_basket ORDER BY id DESC",conn
+            )
+    except Exception:
+        return pd.DataFrame()
+
+def _v80_clear_presentation():
+    try:
+        with _history_connect() as conn:
+            cur=conn.execute("DELETE FROM presentation_basket")
+            conn.commit()
+            return cur.rowcount
+    except Exception:
+        return 0
+
 def _v73_main_selected(selected_keys):
     """
     Ana tarama DataFrame'ini yalnız kullanıcı gerçekten bir işlem butonuna bastığında oluşturur/eşleştirir.
@@ -4649,19 +4787,21 @@ def _section_select_table(section_key, data, columns, height=420):
             hide_index=True,use_container_width=True,height=height,
             key=f'v75_section_editor_{section_key}'
         )
-        a1,a2,a3=st.columns(3)
+        a1,a2,a3,a4=st.columns(4)
         with a1:
             do_imp=st.form_submit_button('📌 Önemli Gelişmelere Ekle',use_container_width=True)
         with a2:
             do_akt=st.form_submit_button('🗂️ AKT Sepetine Ekle',use_container_width=True)
         with a3:
             do_note=st.form_submit_button('📝 Bilgi Notu Oluştur',use_container_width=True)
+        with a4:
+            do_pres=st.form_submit_button('🖥️ Sunuma Ekle',use_container_width=True)
 
     selected_keys=set(edited.loc[edited['Seç'].astype(bool),'_row_key'].astype(str))
     st.session_state.section_selections[section_key]={k:(k in selected_keys) for k in edited['_row_key'].astype(str)}
     selected=data[_v73_row_keys(data).isin(selected_keys)].copy()
 
-    if do_imp or do_akt or do_note:
+    if do_imp or do_akt or do_note or do_pres:
         if not selected_keys:
             st.warning('Önce en az bir haberi işaretleyin.')
         else:
@@ -4673,6 +4813,9 @@ def _section_select_table(section_key, data, columns, height=420):
             elif do_akt:
                 n=_v74_fast_add_osint(action_rows.to_dict('records'))
                 st.success(f'✅ {n} yeni haber AKT Sepeti’ne eklenmiştir.')
+            elif do_pres:
+                n=_v80_add_presentation(action_rows.to_dict('records'))
+                st.success(f'✅ {n} yeni haber Sunum Sepeti’ne eklenmiştir.')
             elif do_note:
                 # Bilgi notunda tam içerik gerekiyorsa yalnız burada ana tabloya dön.
                 full=_v73_main_selected(selected_keys)
@@ -5601,24 +5744,17 @@ else:
                 )
 
                 st.markdown('### ⚡ Seçilen Haberlerle Hızlı İşlem')
-                c1,c2,c3=st.columns(3)
+                c1,c2,c3,c4=st.columns(4)
                 with c1:
-                    do_imp=st.form_submit_button(
-                        '📌 Önemli Gelişmelere Ekle',
-                        use_container_width=True
-                    )
+                    do_imp=st.form_submit_button('📌 Önemli Gelişmelere Ekle',use_container_width=True)
                 with c2:
-                    do_akt=st.form_submit_button(
-                        '🗂️ AKT Sepetine Ekle',
-                        use_container_width=True
-                    )
+                    do_akt=st.form_submit_button('🗂️ AKT Sepetine Ekle',use_container_width=True)
                 with c3:
-                    do_note=st.form_submit_button(
-                        '📝 Detaylı Bilgi Notu Oluştur',
-                        use_container_width=True
-                    )
+                    do_note=st.form_submit_button('📝 Detaylı Bilgi Notu Oluştur',use_container_width=True)
+                with c4:
+                    do_pres=st.form_submit_button('🖥️ Sunuma Ekle',use_container_width=True)
 
-            if do_imp or do_akt or do_note:
+            if do_imp or do_akt or do_note or do_pres:
                 selected_mask=edited['Seç'].astype(bool).to_numpy()
                 selected_page=page_df.loc[selected_mask].copy()
 
@@ -5630,6 +5766,9 @@ else:
                 elif do_akt:
                     n=_v74_fast_add_osint(selected_page.to_dict('records'))
                     st.success(f'✅ {n} yeni haber Açık Kaynak Tarama Sepeti’ne eklenmiştir.')
+                elif do_pres:
+                    n=_v80_add_presentation(selected_page.to_dict('records'))
+                    st.success(f'✅ {n} yeni haber Sunum Sepeti’ne eklenmiştir.')
                 elif do_note:
                     with st.spinner(
                         f'{len(selected_page)} seçili haber için ayrıntılı bilgi notu hazırlanmaktadır...'
@@ -6096,22 +6235,22 @@ else:
                 height=min(700,100+40*len(lifecycle))
             )
 
-        st.markdown('---')
-        st.subheader('🖥️ Sunum Güncelleme Yardımcısı')
-        st.caption('Günün gelişmelerinden sunuma girmeye en uygun 5 başlığı; kısa özet ve kritik sayı ile birlikte önerir.')
-        presentation5=_presentation_candidates(df,5)
-        if presentation5.empty:
-            st.info('Sunum için önerilecek gelişme bulunamadı.')
-        else:
-            presentation_view=presentation5.copy()
-            _section_select_table(
-                'presentation_top5',
-                presentation_view,
-                ['Tarih','Kaynak','Sunum_Başlığı','2_Cümle_Özet','Kritik_Sayı','Risk_Skoru','URL'],
-                height=min(520,90+70*len(presentation_view))
-            )
 
         st.markdown('---')
+        st.subheader('🖥️ Sunum Sepeti')
+        st.caption('Her bölümün altındaki “Sunuma Ekle” butonuyla seçtiğiniz gelişmeler burada birikir.')
+        _pb=_v80_load_presentation()
+        if _pb.empty:
+            st.info('Sunum sepeti boş.')
+        else:
+            st.dataframe(
+                _pb[['news_time','source','title','url']],
+                column_config={'url':st.column_config.LinkColumn('Haber Linki')},
+                hide_index=True,use_container_width=True,height=min(380,80+35*len(_pb))
+            )
+            if st.button('🧹 SUNUM SEPETİNİ TEMİZLE',key='v80_clear_presentation'):
+                n=_v80_clear_presentation()
+                st.success(f'{n} kayıt silinmiştir.')
 
         st.markdown('---')
         st.subheader('📋 Gün Sonu Performans Özeti')
