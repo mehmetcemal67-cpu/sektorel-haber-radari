@@ -3564,7 +3564,7 @@ def _v87_ogn_summary(title, body, fallback):
     return out or (fallback[:520].strip() if fallback else title[:520].strip())
 
 
-V90_OGN_ENGINE_VERSION='v95_ogn_20260821_1'
+V90_OGN_ENGINE_VERSION='v96_ogn_20260821_1'
 
 def _v90_clean_title(title,source=''):
     t=_v87_safe_tr(title)
@@ -4114,6 +4114,234 @@ def _v95_ogn_from_existing_engines(title, body):
 
     return ' '.join(chosen).strip()
 
+
+
+def _v96_unique_sentences(title, body):
+    """Bilgi notu motorundaki temizleme mantığını tek haber için uygular."""
+    cleaned=_akt_clean_sentences(
+        _clean_note_text(title),
+        _clean_note_text(body)
+    )
+    uniq=[]
+    seen=[]
+    for sent in cleaned:
+        sent=_repair_mojibake_utf8(_clean_note_text(sent)).strip()
+        if not sent:
+            continue
+        toks=set(norm(sent).split())
+        if not toks:
+            continue
+        dup=False
+        for old in seen[-30:]:
+            union=len(toks|old)
+            if union and len(toks&old)/union>=0.78:
+                dup=True
+                break
+        if not dup:
+            uniq.append(sent)
+            seen.append(toks)
+    return uniq
+
+def _v96_has_critical_data(s):
+    n=norm(s)
+    return bool(
+        re.search(r'\b\d+(?:[.,]\d+)?\b|%|yüzde|milyon|milyar|trilyon|bin\b',s,re.I)
+        or any(x in n for x in [
+            'üretim','ihracat','ithalat','kapasite','yatırım','ciro','satış',
+            'başvuru','öğrenci','personel','istihdam','menzil','adet','oran',
+            'endeks','bütçe','hibe','destek','maliyet','gelir','zarar'
+        ])
+    )
+
+def _v96_short_information_note(title, body):
+    """
+    ÖGN = kısaltılmış bilgi notu.
+    En fazla 4 paragraf:
+      1) ana gelişme/özet,
+      2) kritik veri-rakam-istatistik,
+      3) gerekiyorsa tamamlayıcı gelişme/sonuç,
+      4) yalnız kaynakta anlamlı bir sonuç/son durum varsa.
+    """
+    uniq=_v96_unique_sentences(title,body)
+    if not uniq:
+        fallback=_repair_mojibake_utf8(_clean_note_text(body or title))
+        if not fallback:
+            return []
+        return [_v66_formalize_sentence_endings(fallback)]
+
+    # 1. paragraf: bilgi notundaki gibi ilk 1-2 cümlede olayın özü.
+    intro_s=uniq[:2]
+    intro=_join_sentences_naturally(intro_s)
+    intro=_v66_formalize_sentence_endings(intro)
+
+    # Kritik rakam/veri cümlelerini ASLA sırf kısa özet uğruna atlama.
+    critical=[]
+    for i,s in enumerate(uniq):
+        if i<2:
+            continue
+        if _v96_has_critical_data(s):
+            critical.append((i,_sent_score(s),s))
+
+    # En yüksek bilgi yoğunluklu kritik cümleleri seç, fakat haber sırasını koru.
+    chosen_detail_idx=set()
+    for i,score,s in sorted(critical,key=lambda x:(x[1],-x[0]),reverse=True)[:6]:
+        chosen_detail_idx.add(i)
+
+    # İlk iki cümleden sonra konu akışını tamamlayan yüksek skorlu normal cümleler.
+    remaining=[
+        (i,_sent_score(s),s) for i,s in enumerate(uniq[2:],start=2)
+        if i not in chosen_detail_idx
+    ]
+    for i,score,s in sorted(remaining,key=lambda x:(x[1],-x[0]),reverse=True)[:3]:
+        if score>=3:
+            chosen_detail_idx.add(i)
+
+    ordered_details=[uniq[i] for i in sorted(chosen_detail_idx)]
+
+    paragraphs=[intro] if intro else []
+
+    # 2-3. paragraflar: kritik detayları bilgi notu gibi gruplandır.
+    if ordered_details:
+        if len(ordered_details)<=4:
+            p2=_join_sentences_naturally(ordered_details)
+            if p2:
+                paragraphs.append(_v66_formalize_sentence_endings(p2))
+        else:
+            split=max(2,min(4,(len(ordered_details)+1)//2))
+            p2=_join_sentences_naturally(ordered_details[:split])
+            p3=_join_sentences_naturally(ordered_details[split:])
+            if p2:
+                paragraphs.append(_v66_formalize_sentence_endings(p2))
+            if p3:
+                paragraphs.append(_v66_formalize_sentence_endings(p3))
+
+    # Son paragraf: generic değerlendirme yazma; kaynakta kalan gerçek son durumdan seç.
+    used=set(intro_s+ordered_details)
+    tail_candidates=[s for s in uniq[-5:] if s not in used]
+    if tail_candidates and len(paragraphs)<4:
+        # Sonuç/hedef/son durum taşıyan cümleyi tercih et.
+        result_terms=[
+            'hedef','beklen','plan','sonuç','bu kapsamda','bu çerçevede','devam',
+            'başlayacak','tamamlanacak','uygulanacak','sağlanacak','öngör',
+            'artıracak','azaltacak','katkı','etki','takvim'
+        ]
+        ranked=sorted(
+            tail_candidates,
+            key=lambda s:(
+                sum(x in norm(s) for x in result_terms),
+                _sent_score(s)
+            ),
+            reverse=True
+        )
+        tail=ranked[0] if ranked else ''
+        if tail:
+            paragraphs.append(
+                _v66_formalize_sentence_endings(_join_sentences_naturally([tail]))
+            )
+
+    # Maksimum 4 paragraf; boşları temizle.
+    out=[]
+    for para in paragraphs[:4]:
+        para=_repair_mojibake_utf8(_clean_note_text(para)).strip()
+        if para and para not in out:
+            out.append(para)
+    return out
+
+
+def make_important_basket_docx_v96(basket_df):
+    """
+    Önemli Gelişmeler Word = her haber için ayrı ayrı kısaltılmış bilgi notu.
+    Başlık/link yazılmaz. Her haber en fazla 4 paragraftır.
+    Kritik veri, rakam ve istatistikler yüksek öncelikle korunur.
+    """
+    doc=Document()
+    sec=doc.sections[0]
+    sec.top_margin=Cm(2); sec.bottom_margin=Cm(2)
+    sec.left_margin=Cm(2.5); sec.right_margin=Cm(2.5)
+
+    normal=doc.styles['Normal']
+    normal.font.name='Times New Roman'
+    normal.font.size=Pt(12)
+    normal._element.rPr.rFonts.set(qn('w:eastAsia'),'Times New Roman')
+
+    now=datetime.now().astimezone()
+    p=doc.add_paragraph()
+    p.alignment=WD_ALIGN_PARAGRAPH.RIGHT
+    p.add_run(now.strftime('%d/%m/%Y'))
+
+    p=doc.add_paragraph()
+    p.add_run('Konu: ').bold=True
+    p.add_run('STB Temsilciliği Önemli Gelişmeler Notu')
+
+    rows=[] if basket_df is None else basket_df.to_dict('records')
+
+    def process_row(r):
+        title=_clean_note_text(r.get('title',''))
+        source=_clean_note_text(r.get('source',''))
+        summary=_clean_note_text(r.get('summary',''))
+        url=str(r.get('url','') or '')
+        news_time=_clean_note_text(r.get('news_time',''))
+
+        # Bilgi Notu ile aynı içerik alma sistemi.
+        try:
+            detail=article_detail({
+                'Başlık':title,
+                'Kaynak':source,
+                'URL':url,
+                'Yayıncı_URL':url,
+                'İçerik_Özeti':summary,
+                'Tarih':news_time
+            })
+        except Exception:
+            detail={}
+
+        body=_clean_note_text(detail.get('text') or summary or title)
+        paras=_v96_short_information_note(title,body)
+
+        # Tam metin sorunluysa kayıtlı özet üzerinde aynı motoru tekrar çalıştır.
+        if not paras:
+            paras=_v96_short_information_note(title,summary or title)
+
+        return paras
+
+    outputs=[[] for _ in rows]
+    if rows:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(6,len(rows))) as ex:
+            jobs={ex.submit(process_row,r):i for i,r in enumerate(rows)}
+            for fut in concurrent.futures.as_completed(jobs):
+                idx=jobs[fut]
+                try:
+                    outputs[idx]=fut.result()
+                except Exception:
+                    r=rows[idx]
+                    outputs[idx]=_v96_short_information_note(
+                        r.get('title',''),
+                        r.get('summary','') or r.get('title','')
+                    )
+
+    for item_index,paras in enumerate(outputs):
+        if not paras:
+            continue
+
+        for para_index,text in enumerate(paras[:4]):
+            text=_repair_mojibake_utf8(_clean_note_text(text)).strip()
+            if not text:
+                continue
+            p=doc.add_paragraph()
+            p.alignment=WD_ALIGN_PARAGRAPH.JUSTIFY
+            p.paragraph_format.first_line_indent=Cm(1.25)
+            p.paragraph_format.line_spacing=1.0
+            p.paragraph_format.space_after=Pt(4 if para_index<len(paras)-1 else 8)
+            # (STB) yalnız haberin son paragrafında.
+            suffix=' (STB).' if para_index==len(paras[:4])-1 else ''
+            p.add_run(text.rstrip(' .;')+suffix)
+
+    doc.add_paragraph('Arz olunur.')
+
+    bio=BytesIO()
+    doc.save(bio)
+    bio.seek(0)
+    return bio.getvalue()
 
 def make_important_basket_docx_v95(basket_df):
     """
@@ -7458,12 +7686,12 @@ else:
                     # Her basışta eski çıktı silinir ve V90 motoruyla baştan hazırlanır.
                     st.session_state.pop('v90_ogn_docx_bytes',None)
                     with st.spinner('Önemli gelişmeler gerçek haber içeriklerinden resmî biçimde özetleniyor...'):
-                        st.session_state['v90_ogn_docx_bytes']=make_important_basket_docx_v95(basket)
+                        st.session_state['v90_ogn_docx_bytes']=make_important_basket_docx_v96(basket)
                 if st.session_state.get('v90_ogn_docx_bytes'):
                     st.download_button(
-                        '⬇️ 24 SAATLİK ÖNEMLİ GELİŞMELER / WORD — V95',
+                        '⬇️ 24 SAATLİK ÖNEMLİ GELİŞMELER / WORD — V96',
                         st.session_state['v90_ogn_docx_bytes'],
-                        file_name=f'24_Saatlik_Onemli_Gelismeler_V95_{date.today()}.docx',
+                        file_name=f'24_Saatlik_Onemli_Gelismeler_V96_{date.today()}.docx',
                         mime='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
                         use_container_width=True,
                         key='v90_download_ogn_word'
