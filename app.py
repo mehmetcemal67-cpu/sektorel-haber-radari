@@ -733,26 +733,6 @@ def classify(title,snippet,source_domain=''):
         score=max(0,score-min(8,2*positive_count))
         reasons.append('karma/olumlu unsurlar mevcut')
 
-    # V85 — Açık başarı / ödül / ilerleyen test haberlerini yanlış negatiften koru.
-    # Yalnız başlık açıkça olumluysa ve gerçek ağır olumsuz olay yoksa uygulanır.
-    _tn=norm(title)
-    _positive_title_patterns=[
-        r'\b\d+\s*(?:madalya|ödül)\b', r'\bmadalya kazand', r'\bödül kazand',
-        r'\bşampiyon oldu', r'\bbaşarı elde', r'\brekor kır', r'\btestleri devam ediyor',
-        r'\btestler devam ediyor', r'\btest başarıyla', r'\bbaşarıyla tamamla',
-        r'\bihracat.*art', r'\büretim.*art', r'\bsatış.*art'
-    ]
-    _explicit_bad=any(x in _tn for x in [
-        'başarısız','testi geçemedi','test başarısız','kaza','yangın','patlama','ölüm',
-        'yaralan','iptal','gecik','arıza','iflas','konkordato','siber saldırı','veri sızıntısı',
-        'eleştiri','eleştirdi','yetersiz','tehlikeli','kriz','sorun'
-    ])
-    _clear_positive=any(re.search(p,_tn,re.I) for p in _positive_title_patterns)
-    if _clear_positive and not _explicit_bad and not severe_active:
-        neg=[]; risk=[]; structural=set(); critical_negative=set(); directional=False; persistent=False
-        score=min(score,12)
-        reasons=['açık başarı/olumlu ilerleme haberi; negatif sinyal bastırıldı']
-
     score=max(0,min(100,score))
 
     # En kritik değişiklik: gerçek ve bağlamsal negatif sinyal bulunduysa,
@@ -773,27 +753,28 @@ def classify(title,snippet,source_domain=''):
     if status=='Normal' and not neg:
         reasons=['olumsuz risk sinyali tespit edilmedi']
 
-    # V86 SON KORUMA — sınıflandırmanın EN SONUNDA çalışır.
-    # Başlık açık başarı/ödül/madalya veya normal test ilerlemesi ise,
-    # gerçek bir olumsuzluk sözcüğü yokken hiçbir önceki geniş negatif kuralı bunu ezemez.
-    _h=norm(title)
-    _v86_good=bool(re.search(
-        r'(?:\b\d+\s*(?:madalya|ödül)\b|madalya\s+kazan|ödül\s+kazan|'
-        r'şampiyon|rekor\s+kır|başarıyla|başarı\s+elde|'
-        r'testleri?\s+devam\s+ediyor|test\s+süreci\s+devam|test.*başarıyla)',
-        _h,re.I))
-    _v86_bad=bool(re.search(
-        r'(başarısız|başarısızlık|test.*başarısız|geçemedi|kaza|yangın|patlama|'
-        r'ölüm|yaralan|iptal|gecik|arıza|iflas|konkordato|saldırı|sızıntı|'
-        r'eleştir|yetersiz|tehlike|kriz|sorun|risk|düştü|geriledi|azaldı)',
-        _h,re.I))
-    if _v86_good and not _v86_bad:
+    # V87 — çok sınırlı yanlış-negatif koruması.
+    # Açık başarı/madalya/ödül ve normal test ilerlemesi haberleri,
+    # başlıkta gerçek bir olumsuzluk yoksa negatif değildir.
+    _hn=norm(title)
+    _positive_head=bool(re.search(
+        r'(madalya\s+kazan|ödül\s+kazan|şampiyon|rekor\s+kır|başarıyla|'
+        r'başarı\s+elde|testleri?\s+devam\s+ediyor|test\s+süreci\s+devam)',
+        _hn,re.I
+    ))
+    _bad_head=bool(re.search(
+        r'(başarısız|kaza|yangın|patlama|ölüm|yaralan|iptal|gecik|arıza|'
+        r'iflas|saldırı|eleştir|yetersiz|kriz|sorun|tehlike|zarar|kayıp|'
+        r'geriledi|azaldı|düştü|ceza|yaptırım)',
+        _hn,re.I
+    ))
+    if _positive_head and not _bad_head:
         sentiment='Nötr'
         status='Normal'
+        score=min(score,12)
         neg=[]
         risk=[]
-        score=min(score,12)
-        reasons=['açık başarı/ödül veya normal program-test ilerlemesi; negatif sınıflandırma uygulanmadı']
+        reasons=['açık başarı veya normal test/program ilerlemesi; negatif değildir']
 
     return sentiment,score,status,neg,risk,cat,reasons
 
@@ -3192,186 +3173,139 @@ def _v84_score_result(s):
             'kazandır','devreye','pilot','kullanıl','rekor','destek','katkı','başarı']
     return 4*sum(x in ns for x in result)+min(len(re.findall(r'\d',s)),3)
 
-def _v85_title_terms(title):
-    stop={'ve','ile','için','bir','bu','da','de','ile','olan','olarak','son','yeni','türk','türkiye','haber','haberi'}
-    return {w for w in re.findall(r"[a-zA-ZçğıöşüÇĞİÖŞÜ0-9]+",norm(title)) if len(w)>=4 and w not in stop}
-
-def _v85_related_sentence(s,title_terms):
-    ns=norm(s)
-    if not title_terms: return True
-    return sum(1 for w in title_terms if w in ns)>=1
-
-def _v85_formal_intro(title, first_sentence=''):
-    """Başlıktan haber ortası değil, kurumsal bir giriş üretir."""
-    t=_v81_sentence_case_title(_v84_hard_repair_text(title)).strip(' -–—:;')
-    # Kişi/Kurum: açıklama biçimli başlıklar
-    if ':' in t:
-        actor,claim=t.split(':',1)
-        actor=actor.strip(); claim=claim.strip(' “”\"')
-        if actor and claim:
-            return _v84_formalize(f'{actor}, {claim}')
-    # Başlık zaten yüklem taşıyorsa resmileştir.
-    x=_v84_formalize(t)
-    if x and not x.endswith(('.', '!', '?')): x+='.'
-    return x
-
-def _v86_deep_article_text(title, source, url, fallback=''):
-    """
-    Yalnız ÖGN Word oluşturulurken çalışır.
-    article_detail yetersiz kalırsa başlıkla yayıncı sayfasını arayıp gerçek paragraf metnini almaya çalışır.
-    """
-    best=_clean_note_text(fallback)
-    try:
-        d=article_detail({'Başlık':title,'İçerik_Özeti':fallback,'URL':url,'Kaynak':source})
-        cand=_clean_note_text(d.get('text',''))
-        if len(cand)>len(best): best=cand
-    except Exception:
-        pass
-
-    # İçerik hâlâ başlık/snippet düzeyindeyse arama sonucu üzerinden yayıncıya git.
-    if len(best)<350 or title_key(best)==title_key(title):
-        try:
-            q=requests.utils.quote(f'"{title}" {source}')
-            rr=requests.get('https://html.duckduckgo.com/html/?q='+q,headers=HEADERS,timeout=8)
-            soup=BeautifulSoup(rr.text,'html.parser')
-            links=[]
-            for a in soup.select('a.result__a'):
-                href=a.get('href','')
-                if href.startswith('http'): links.append(href)
-            for href in links[:4]:
-                try:
-                    pg=requests.get(href,headers=HEADERS,timeout=7,allow_redirects=True)
-                    ps=BeautifulSoup(pg.text,'html.parser')
-                    paras=[]
-                    for node in ps.find_all('p'):
-                        tx=_clean_note_text(node.get_text(' ',strip=True))
-                        if len(tx)>=45: paras.append(tx)
-                    cand=_clean_note_text(' '.join(paras))
-                    if len(cand)>len(best):
-                        best=cand
-                    if len(best)>=700: break
-                except Exception:
-                    continue
-        except Exception:
-            pass
-    return _v84_hard_repair_text(best)
-
-def _v86_compose_ogn(title, text):
-    """
-    5N1K odaklı, başlıktan değil haber gövdesinden başlayan kurumsal ÖGN özeti.
-    2-3 tam cümle; kişi/kurum + olay + kritik rakam/yer/tarih + sonuç.
-    """
-    title=_v84_hard_repair_text(title)
-    sents=_v84_clean_article_sentences(text)
-    if not sents:
-        return ''
-
-    title_terms=_v85_title_terms(title)
-    rel=[s for s in sents if _v85_related_sentence(s,title_terms)]
-    if len(rel)<2: rel=sents[:8]
-
-    who_terms=['cumhurbaşkan','bakan','başkan','genel müdür','tüik','tübitak','tcmb','bakanlık',
-               'şirket','üniversite','valili','türk telekom','kardemir','togg','aselsan','roketsan']
-    action_terms=['açıklad','duyur','başlat','gerçekleştir','tamamla','imzala','kazand','ulaş',
-                  'art','azal','gerile','yüksel','üret','sat','yatırım','test','görev']
-    data_terms=['%','yüzde','milyon','milyar','bin ','adet','km','mw','gwh','puan','kapasite',
-                'ihracat','üretim','satış','hibe','öğrenci','madalya','yıl','ay']
-    place_terms=['ankara','istanbul','antalya','amasya','kocaeli','gölcük','türkiye','abd','çin',
-                 'kazakistan','almanya','isveç','avustralya']
-
-    def sc_intro(s):
-        n=norm(s)
-        return 4*sum(x in n for x in who_terms)+4*sum(x in n for x in action_terms)+sum(x in n for x in place_terms)
-    def sc_fact(s):
-        n=norm(s)
-        return 3*sum(x in n for x in data_terms)+min(len(re.findall(r'\d',s)),5)+sum(x in n for x in place_terms)
-
-    intro=max(rel[:10],key=lambda s:(sc_intro(s),-rel.index(s)))
-    chosen=[intro]
-    rem=[s for s in rel if s!=intro]
-    if rem:
-        fact=max(rem,key=lambda s:(sc_fact(s),-rel.index(s)))
-        if sc_fact(fact)>0: chosen.append(fact)
-    rem=[s for s in rel if s not in chosen]
-    if rem:
-        result_terms=['hedef','beklen','sağla','katkı','devreye','art','azal','ulaş','rekor','başarı','destek']
-        res=max(rem,key=lambda s:(sum(x in norm(s) for x in result_terms),sc_fact(s),-rel.index(s)))
-        if sum(x in norm(res) for x in result_terms)>0: chosen.append(res)
-
-    chosen=sorted(chosen,key=lambda s:rel.index(s))
-    formal=[]
-    for s in chosen[:3]:
-        fs=_v84_formalize(s)
-        if fs and _v84_sentence_is_clean(fs):
-            formal.append(fs)
-
-    # Başlık kopyalama kesinlikle yasak.
-    formal=[x for x in formal if title_key(x)!=title_key(title)]
-    if not formal:
-        return ''
-
-    # Dört satır için sıkı ama cümleyi kesmeyen sınır.
-    kept=[]; total=0
-    for s in formal:
-        if not s.endswith(('.', '!', '?')): s+='.'
-        add=len(s)+(1 if kept else 0)
-        if kept and total+add>410: break
-        kept.append(s); total+=add
-        if len(kept)>=3: break
-    return _v84_hard_repair_text(' '.join(kept)).strip()
-
 def _v80_reference_important_summary(title,summary,full_text=''):
-    """V85: başlıktan düzgün giriş + aynı olaya ait en kritik 2 ayrıntı; 4 satır hedefi."""
-    title=_v84_hard_repair_text(title)
+    """
+    V84: Önce düzgün bir giriş cümlesi, sonra kritik rakam/detay, sonra sonuç/önem.
+    2-3 tam cümle; cümle ortasında kesme yok; Word'de yaklaşık 4 satır hedefi.
+    """
+    title=_v81_sentence_case_title(_v84_hard_repair_text(title))
     body=_v84_hard_repair_text(full_text or summary)
-    raw=_v84_clean_article_sentences(body)
-    if len(raw)<2:
-        raw=_v84_clean_article_sentences(str(summary)+' '+str(full_text))
-    terms=_v85_title_terms(title)
-    related=[x for x in raw if _v85_related_sentence(x,terms)]
-    if len(related)<2: related=raw[:5]
+    good=_v84_clean_article_sentences(body)
 
-    intro=_v85_formal_intro(title, related[0] if related else '')
-    candidates=[]
-    intro_key=title_key(intro)
-    for x in related:
-        fx=_v84_formalize(x)
-        if not fx or not _v84_sentence_is_clean(fx): continue
-        if title_key(fx)==intro_key: continue
-        candidates.append(fx)
+    if len(good)<2:
+        good=_v84_clean_article_sentences(str(summary)+' '+str(full_text))
+    if not good:
+        return _v84_formalize(title)
 
-    # Kritik rakam/yer/kurum içeren cümleleri öne al; aynı haberden en fazla iki ayrıntı.
-    def score(x):
-        ns=norm(x)
-        nums=min(len(re.findall(r'\\d',x)),5)
-        keys=['yüzde','milyon','milyar','bin ','adet','km','mw','gwh','tübitak','tüik','tcmb','bakanlık',
-              'ankara','istanbul','antalya','amasya','kocaeli','hedef','program','yatırım','ihracat','üretim','kapasite']
-        return 3*nums+sum(2 for k in keys if k in ns)
-    candidates=sorted(enumerate(candidates),key=lambda z:(score(z[1]),-z[0]),reverse=True)
-    details=[x for _,x in candidates[:2]]
+    # Giriş asla haberin ortasından başlamasın: aktör + eylem taşıyan cümleyi seç.
+    intro_candidates=good[:12]
+    intro=max(intro_candidates,key=lambda s:(_v84_score_intro(s),-good.index(s)))
+    if _v84_score_intro(intro)<4:
+        # Güçlü giriş bulunamazsa ilk temiz cümleyi kullan.
+        intro=good[0]
 
-    parts=[intro]+details
-    # Cümle ortasında kesmeden sıkı 4 satır hedefi (~430 karakter).
+    chosen=[intro]
+
+    rem=[s for s in good if s not in chosen]
+    if rem:
+        detail=max(rem,key=lambda s:(_v84_score_detail(s),-good.index(s)))
+        if _v84_score_detail(detail)>0:
+            chosen.append(detail)
+
+    rem=[s for s in good if s not in chosen]
+    if rem:
+        result=max(rem,key=lambda s:(_v84_score_result(s),-good.index(s)))
+        if _v84_score_result(result)>0:
+            chosen.append(result)
+
+    # En az iki cümle olsun.
+    if len(chosen)<2:
+        for s in good:
+            if s not in chosen:
+                chosen.append(s)
+                break
+
+    chosen=sorted(chosen,key=lambda s:good.index(s))
+    formal=[_v84_formalize(s) for s in chosen[:3] if _v84_sentence_is_clean(_v84_formalize(s))]
+    text=_clean_note_text(' '.join(formal))
+
+    # Çok uzun cümleler nedeniyle 4 satırı aşmaması için sıkı sınır:
+    # 2 veya 3 TAM cümle, yaklaşık 500 karakter.
+    sents=_sentence_split_tr(text)
     kept=[]; total=0
-    for part in parts:
-        part=_clean_note_text(part).strip()
-        if not part: continue
-        if not part.endswith(('.', '!', '?')): part+='.'
-        add=len(part)+(1 if kept else 0)
-        if kept and total+add>430: continue
-        kept.append(part); total+=add
-        if len(kept)>=3: break
-    if len(kept)==1 and candidates:
-        # Tek başlık kalmasın; en kısa anlamlı ayrıntıyı zorunlu ekle.
-        short=sorted([x for _,x in candidates],key=len)
-        for x in short:
-            if len(x)<220:
-                kept.append(x if x.endswith('.') else x+'.'); break
-    result=' '.join(kept[:3])
-    return _v84_hard_repair_text(result).strip()
+    for sent in sents:
+        add=len(sent)+(1 if kept else 0)
+        if kept and total+add>500:
+            break
+        kept.append(sent); total+=add
+        if len(kept)>=3:
+            break
+
+    # Eğer ilk cümle tek başına çok uzunsa, güvenli cümle sınırında sıkıştır.
+    if kept and len(' '.join(kept))>520:
+        kept=kept[:2]
+
+    result=' '.join(kept).strip()
+
+    # Son güvenlik: bozuk yabancı karakter kalırsa o cümleyi düşür.
+    final_sents=[s for s in _sentence_split_tr(result) if _v84_sentence_is_clean(s)]
+    return ' '.join(final_sents[:3]).strip()
+
+
+def _v87_safe_tr(text):
+    """Only obvious mojibake repair; never drop the whole item."""
+    t=_clean_note_text(text)
+    fixes={
+        'TÃ¼rkiye':'Türkiye','TÃ¼rk':'Türk','genÃ§':'genç','dÃ¼nya':'dünya',
+        'Ã¼lke':'ülke','Ã¼stÃ¼n':'üstün','Ã¶ÄŸrenci':'öğrenci','Ã¶Ärenci':'öğrenci',
+        'baÅŸar':'başar','katÄ±lÄ±m':'katılım','mÃ¼cadele':'mücadele',
+        'Ä±':'ı','ÄŸ':'ğ','ÅŸ':'ş','Ã§':'ç','Ã¶':'ö','Ã¼':'ü',
+        'Ä°':'İ','Äž':'Ğ','Åž':'Ş','Ã‡':'Ç','Ã–':'Ö','Ãœ':'Ü',
+        'Â':'','â€™':'’','â€œ':'“','â€':'”','â€“':'–','â€”':'—'
+    }
+    for a,b in fixes.items():
+        t=t.replace(a,b)
+    return re.sub(r'\s+',' ',t).strip()
+
+def _v87_ogn_summary(title, body, fallback):
+    """
+    Simple, deterministic recovery summarizer:
+    - never returns blank when fallback exists,
+    - uses stable _akt_formal_summary,
+    - keeps 2-3 complete sentences where available,
+    - no extra web search and no experimental sentence dropping.
+    """
+    title=_v87_safe_tr(title)
+    body=_v87_safe_tr(body or fallback or title)
+    fallback=_v87_safe_tr(fallback)
+
+    try:
+        text=_akt_formal_summary(title,body,max_sentences=3,max_chars=700)
+    except Exception:
+        text=fallback or body or title
+
+    text=_v87_safe_tr(text)
+    if not text or title_key(text)==title_key(title):
+        text=fallback if len(fallback)>=60 else (body if len(body)>=60 else title)
+
+    # Formalize endings using existing stable routine.
+    text=_v66_formalize_sentence_endings(text)
+
+    # Keep max 3 COMPLETE sentences and roughly 4 Word lines.
+    sents=_sentence_chunks(text)
+    if not sents:
+        return text[:520].strip()
+
+    kept=[]; total=0
+    for sent in sents:
+        sent=_v87_safe_tr(sent).strip()
+        if not sent: continue
+        add=len(sent)+(1 if kept else 0)
+        if kept and total+add>520:
+            break
+        kept.append(sent)
+        total+=add
+        if len(kept)>=3:
+            break
+
+    out=' '.join(kept).strip()
+    return out or (fallback[:520].strip() if fallback else title[:520].strip())
 
 def make_important_basket_docx(basket_df):
-    """V85: kurumsal giriş + kritik ayrıntı + yanlış negatif koruması."""
+    """
+    V87 recovery: Word is generated ONLY when user presses the button.
+    No item is silently dropped. Uses article_detail if available, then stable fallback.
+    """
     doc=Document(); sec=doc.sections[0]
     sec.top_margin=Cm(2); sec.bottom_margin=Cm(2); sec.left_margin=Cm(2.5); sec.right_margin=Cm(2.5)
     normal=doc.styles['Normal']
@@ -3381,60 +3315,43 @@ def make_important_basket_docx(basket_df):
     now=datetime.now().astimezone()
     p=doc.add_paragraph(); p.alignment=WD_ALIGN_PARAGRAPH.RIGHT
     p.add_run(now.strftime('%d/%m/%Y')).bold=True
-    p=doc.add_paragraph()
-    p.add_run('Konu: ').bold=True
+    p=doc.add_paragraph(); p.add_run('Konu: ').bold=True
     p.add_run('STB Temsilciliği Önemli Gelişmeler Notu')
 
     if basket_df is None or basket_df.empty:
         doc.add_paragraph('Kayıtlı önemli gelişme bulunmamaktadır.')
     else:
         for _,rr in basket_df.iterrows():
-            # Önemli gelişmeler çıktısında web sayfasının tamamını çekip menü/reklam
-            # artığı taşımak yerine sepete alınırken kaydedilen temiz haber özeti esas alınır.
-            title=_clean_note_text(rr.get('title',''))
-            summary=_clean_note_text(rr.get('summary',''))
-            # V82: yalnız Word oluşturulurken gerçek haber metnini okumaya çalış.
-            # Böylece günlük panel hızı etkilenmez; ÖGN özeti RSS başlığına mahkûm kalmaz.
-            full_text=''
+            title=_v87_safe_tr(rr.get('title',''))
+            fallback=_v87_safe_tr(rr.get('summary',''))
+            body=fallback
             try:
-                _detail=article_detail({
+                detail=article_detail({
                     'Başlık':title,
-                    'İçerik_Özeti':summary,
+                    'Kaynak':_v87_safe_tr(rr.get('source','')),
                     'URL':str(rr.get('url','') or ''),
-                    'Kaynak':_clean_note_text(rr.get('source','')),
-                    'Tarih':_clean_note_text(rr.get('news_time',''))
+                    'Yayıncı_URL':str(rr.get('url','') or ''),
+                    'İçerik_Özeti':fallback,
+                    'Tarih':_v87_safe_tr(rr.get('news_time',''))
                 })
-                full_text=_clean_note_text(_detail.get('text',''))
+                candidate=_v87_safe_tr(detail.get('text',''))
+                if len(candidate)>len(body):
+                    body=candidate
             except Exception:
-                full_text=''
-            # V86: V85'teki gerçek sorun buydu: article_detail başarısız olduğunda
-            # motor başlığı özet diye Word'e yazıyordu. Artık ikinci derin erişim yapılır
-            # ve başlık tek başına ÖGN maddesi olarak kabul edilmez.
-            deep_text=_v86_deep_article_text(
-                title,
-                _clean_note_text(rr.get('source','')),
-                str(rr.get('url','') or ''),
-                full_text or summary
-            )
-            txt=_v86_compose_ogn(title,deep_text)
+                pass
+
+            txt=_v87_ogn_summary(title,body,fallback)
+            # Never silently omit an item.
             if not txt:
-                # İçerik gerçekten alınamamışsa başlığı uydurma bir "özet"e çevirmiyoruz.
-                # Mevcut temiz snippet başlıktan farklı ve yeterince bilgi taşıyorsa kullan.
-                _fb=_v84_hard_repair_text(summary)
-                if len(_fb)>=120 and title_key(_fb)!=title_key(title):
-                    txt=_v86_compose_ogn(title,_fb)
-            if not txt:
-                continue
-            txt=txt.rstrip(' .;')
+                txt=fallback or title
+
             p=doc.add_paragraph()
             p.alignment=WD_ALIGN_PARAGRAPH.JUSTIFY
-            p.paragraph_format.space_after=Pt(6)
-            p.paragraph_format.line_spacing=1.0
             p.paragraph_format.space_after=Pt(5)
-            p.add_run(txt + ' (STB).')
+            p.paragraph_format.line_spacing=1.0
+            p.add_run(_v87_safe_tr(txt).rstrip(' .;')+' (STB).')
 
-    p=doc.add_paragraph()
-    p.paragraph_format.space_before=Pt(8)
+    p=doc.add_paragraph(); p.paragraph_format.space_before=Pt(8)
     p.add_run('Arz olunur.')
     bio=BytesIO(); doc.save(bio); bio.seek(0)
     return bio.getvalue()
@@ -6329,14 +6246,18 @@ else:
 
             b1,b2=st.columns(2)
             with b1:
-                st.session_state.basket_docx_bytes=make_important_basket_docx(basket)
-                st.download_button(
-                    '⬇️ 24 SAATLİK ÖNEMLİ GELİŞMELER / WORD',
-                    st.session_state.basket_docx_bytes,
-                    file_name=f'24_Saatlik_Onemli_Gelismeler_{date.today()}.docx',
-                    mime='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-                    use_container_width=True
-                )
+                if st.button('📄 ÖNEMLİ GELİŞMELER WORD OLUŞTUR',use_container_width=True,key='v87_make_ogn_word'):
+                    with st.spinner('Önemli gelişmeler Word dosyası hazırlanıyor...'):
+                        st.session_state.basket_docx_bytes=make_important_basket_docx(basket)
+                if st.session_state.get('basket_docx_bytes'):
+                    st.download_button(
+                        '⬇️ 24 SAATLİK ÖNEMLİ GELİŞMELER / WORD',
+                        st.session_state.basket_docx_bytes,
+                        file_name=f'24_Saatlik_Onemli_Gelismeler_{date.today()}.docx',
+                        mime='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                        use_container_width=True,
+                        key='v87_download_ogn_word'
+                    )
             with b2:
                 if st.button('🧹 SEPETİ TAMAMEN TEMİZLE',use_container_width=True):
                     removed=_clear_important_basket()
