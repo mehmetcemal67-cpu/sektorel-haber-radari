@@ -3642,83 +3642,76 @@ def _v90_formalize(s):
         s=s[0].upper()+s[1:]
     return s
 
-def _v90_item_summary(title,source,body,fallback):
+def _v90_item_summary(title, source, body, fallback):
     """
     Haber metninden en iyi tek bir cümle seçerek resmî, veri/rakam odaklı bir özet oluşturur.
-    Çıktı tek cümledir, 4 paragrafı geçmez (zaten tek cümle).
+    Çıktı tek cümledir, yaklaşık 350 karakterle sınırlıdır (≈4 Word satırı).
     """
-    title=_v90_clean_title(title,source)
-    text=_v87_safe_tr(body or fallback)
-    sents=_v90_sentences(text)
-    if len(sents)<2:
-        sents=_v90_sentences(fallback)
+    title = _v90_clean_title(title, source)
+    text = _v87_safe_tr(body or fallback)
+    sents = _v90_sentences(text)
+    if len(sents) < 2:
+        sents = _v90_sentences(fallback)
 
     if not sents:
-        # Fallback: başlık ve kaynak bilgisini kullanarak basit bir resmî cümle oluştur.
-        clean_title=_v90_clean_title(title,source)
+        clean_title = _v90_clean_title(title, source)
         if source and clean_title:
-            return _v90_formalize(f"{source} sitesinde yayımlanan haberde {clean_title} konusu ele alınmıştır.").rstrip(' .;')+'.'
+            return _v90_formalize(f"{source} sitesinde yayımlanan haberde {clean_title} konusu ele alınmıştır.").rstrip(' .;') + '.'
         elif clean_title:
-            return _v90_formalize(f"{clean_title} başlıklı gelişme açık kaynaklarda yer almıştır.").rstrip(' .;')+'.'
-        return _v90_formalize("Konuya ilişkin açık kaynak içeriği tespit edilmiştir.").rstrip(' .;')+'.'
+            return _v90_formalize(f"{clean_title} başlıklı gelişme açık kaynaklarda yer almıştır.").rstrip(' .;') + '.'
+        return _v90_formalize("Konuya ilişkin açık kaynak içeriği tespit edilmiştir.").rstrip(' .;') + '.'
 
-    tw=_v90_title_words(title)
+    tw = _v90_title_words(title)
 
-    actor_terms=[
-        'cumhurbaşkan','bakan','bakanlık','başkan','tüik','tübitak','tcmb','tse',
-        'türkpatent','ssb','valili','üniversite','şirket','genel müdür','türk telekom',
-        'kardemir','togg','aselsan','roketsan','gezeravcı','zeytinoğlu','takım'
+    actor_terms = [
+        'cumhurbaşkan', 'bakan', 'bakanlık', 'başkan', 'tüik', 'tübitak', 'tcmb', 'tse',
+        'türkpatent', 'ssb', 'valili', 'üniversite', 'şirket', 'genel müdür', 'türk telekom',
+        'kardemir', 'togg', 'aselsan', 'roketsan', 'gezeravcı', 'zeytinoğlu', 'takım'
     ]
-    action_terms=[
-        'açıkla','duyur','başlat','gerçekleştir','tamamla','imzala','kazan','yatırım',
-        'test','görev','üret','satış','başvuru','düzenlen','ulaş','art','azal','gerile'
+    action_terms = [
+        'açıkla', 'duyur', 'başlat', 'gerçekleştir', 'tamamla', 'imzala', 'kazan', 'yatırım',
+        'test', 'görev', 'üret', 'satış', 'başvuru', 'düzenlen', 'ulaş', 'art', 'azal', 'gerile'
     ]
-    detail_terms=[
-        '%','yüzde','milyon','milyar','bin ','adet','mw','gwh','mwh','km','puan',
-        'kapasite','ihracat','üretim','satış','hibe','öğrenci','madalya','rekor',
-        '2025','2026','2027'
+    detail_terms = [
+        '%', 'yüzde', 'milyon', 'milyar', 'bin ', 'adet', 'mw', 'gwh', 'mwh', 'km', 'puan',
+        'kapasite', 'ihracat', 'üretim', 'satış', 'hibe', 'öğrenci', 'madalya', 'rekor',
+        '2025', '2026', '2027'
     ]
 
     def overlap(s):
-        words=set(re.findall(r'[a-zçğıöşü0-9]+',norm(s)))
+        words = set(re.findall(r'[a-zçğıöşü0-9]+', norm(s)))
         return len(words & tw)
 
-    # Yalnız haberle ilişkili cümleleri tercih et.
-    related=[s for s in sents if overlap(s)>0]
-    pool=related if related else sents[:8]
+    related = [s for s in sents if overlap(s) > 0]
+    pool = related if related else sents[:8]
 
     def combined_score(s):
-        n=norm(s)
-        # Aktör, eylem, detay (rakam/veri) ve başlıkla ilişkiyi birleştir.
-        return (8*overlap(s) +
-                4*sum(x in n for x in actor_terms) +
-                4*sum(x in n for x in action_terms) +
-                5*sum(x in n for x in detail_terms) +
-                min(len(re.findall(r'\d',s)),5))
+        n = norm(s)
+        return (8 * overlap(s) +
+                4 * sum(x in n for x in actor_terms) +
+                4 * sum(x in n for x in action_terms) +
+                5 * sum(x in n for x in detail_terms) +
+                min(len(re.findall(r'\d', s)), 5))
 
-    # En yüksek skorlu cümleyi seç.
-    best_sentence=max(pool, key=lambda s: (combined_score(s), -sents.index(s)))
-    best_formal=_v90_formalize(best_sentence).rstrip(' .;')
+    best_sentence = max(pool, key=lambda s: (combined_score(s), -sents.index(s)))
+    best_formal = _v90_formalize(best_sentence).rstrip(' .;')
 
-    # Eğer seçilen cümle başlıkla neredeyse aynıysa, ikinci en iyiyi dene.
-    if title_key(best_formal)==title_key(title):
-        alternatives=[s for s in pool if title_key(_v90_formalize(s))!=title_key(title)]
+    if title_key(best_formal) == title_key(title):
+        alternatives = [s for s in pool if title_key(_v90_formalize(s)) != title_key(title)]
         if alternatives:
-            best_sentence=max(alternatives, key=lambda s: (combined_score(s), -sents.index(s)))
-            best_formal=_v90_formalize(best_sentence).rstrip(' .;')
+            best_sentence = max(alternatives, key=lambda s: (combined_score(s), -sents.index(s)))
+            best_formal = _v90_formalize(best_sentence).rstrip(' .;')
 
-    # Çok uzun cümleleri kısalt (350 karakter civarı)
-    if len(best_formal)>350:
-        # Noktalı virgül veya virgülden bölmeyi dene
-        cut=best_formal[:350]
-        last_punct=max(cut.rfind('; '), cut.rfind(', '), cut.rfind(' ve '))
-        if last_punct>200:
-            best_formal=cut[:last_punct].rstrip(' ,;')
+    # 350 karakter sınırı (≈4 Word satırı), cümle bütünlüğünü koruyarak kısalt
+    if len(best_formal) > 350:
+        cut = best_formal[:350]
+        last_punct = max(cut.rfind('; '), cut.rfind(', '), cut.rfind(' ve '))
+        if last_punct > 200:
+            best_formal = cut[:last_punct].rstrip(' ,;')
         else:
-            # Yoksa kelime sınırından kes
-            best_formal=best_formal[:350].rsplit(' ',1)[0]
+            best_formal = best_formal[:350].rsplit(' ', 1)[0]
 
-    return best_formal.rstrip(' .;')+'.'
+    return best_formal.rstrip(' .;') + '.'
 
 
 def _v92_clean_news_text(text):
@@ -7648,7 +7641,7 @@ else:
                     # Her basışta eski çıktı silinir ve V90 motoruyla baştan hazırlanır.
                     st.session_state.pop('v90_ogn_docx_bytes',None)
                     with st.spinner('Önemli gelişmeler gerçek haber içeriklerinden resmî biçimde özetleniyor...'):
-                        st.session_state['v90_ogn_docx_bytes']=make_important_basket_docx_v96(basket)
+                        st.session_state['v90_ogn_docx_bytes'] = make_important_basket_docx_v90(basket)
                 if st.session_state.get('v90_ogn_docx_bytes'):
                     st.download_button(
                         '⬇️ 24 SAATLİK ÖNEMLİ GELİŞMELER / WORD — V96',
