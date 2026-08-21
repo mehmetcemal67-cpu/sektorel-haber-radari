@@ -3039,26 +3039,59 @@ def _v81_sentence_case_title(title):
         t=t[:1].upper()+t[1:]
     return t
 
-def _v83_clean_article_sentences(text):
-    """Haber gövdesini kurumsal özetlemeye uygun cümlelere ayırır."""
+def _v84_hard_repair_text(text):
+    """
+    V84: Türkçe olmayan/mojibake karakterleri agresif biçimde temizler.
+    Tam onarılamayan bozuk cümleler ÖGN özetine hiç alınmaz.
+    """
+    t=_clean_note_text(text)
+
+    # Ek yaygın bozulmalar.
+    fixes={
+        'TÃ¼rkiye':'Türkiye','TÃ¼rk':'Türk','genÃ§':'genç','dÃ¼nya':'dünya',
+        'Ã¼lke':'ülke','Ã¼stÃ¼n':'üstün','Ã¶ÄŸrenci':'öğrenci','Ã¶Ärenci':'öğrenci',
+        'baÅŸar':'başar','katÄ±lÄ±m':'katılım','mÃ¼cadele':'mücadele',
+        'saÄŸladÄ±ÄŸÄ±':'sağladığı','saÄladÄÄ±ÄÄ±':'sağladığı',
+        'ettiÄŸi':'ettiği','ettiÄi':'ettiği','TÃ¼rkiyenin':"Türkiye'nin",
+        'TÃ¼rkiyeyi':"Türkiye'yi",'Ã§':'ç','ÄŸ':'ğ','Ä±':'ı',
+        'Ã¶':'ö','Ã¼':'ü','ÅŸ':'ş','Ã‡':'Ç','Äž':'Ğ','Ä°':'İ','Ã–':'Ö','Ãœ':'Ü','Åž':'Ş'
+    }
+    for a,b in fixes.items():
+        t=t.replace(a,b)
+
+    # Kalan açık mojibake işaretleri varsa cümle güvenilmez kabul edilir.
+    return _clean_note_text(t)
+
+def _v84_sentence_is_clean(s):
+    bad=('Ã','Ä','Å','Â',' ','\ufffd','','',' ')
+    return not any(x in s for x in bad)
+
+def _v84_clean_article_sentences(text):
+    """Haber gövdesinden yalnız güvenilir, tam ve kurumsal özetlemeye uygun cümleleri alır."""
+    text=_v84_hard_repair_text(text)
     garbage=[
         'çerez','cookie','reklam','devamını oku','tıklayın','anasayfa','son dakika',
         'benzer haber','ilgili haber','foto galeri','video galeri','sıralamayı değiştirmek',
         'kartları yukarı','abone ol','bildirimleri aç','google news','whatsapp kanal',
         'instagram','facebook','twitter','ekonomi gazetesi »','doğru şarj alışkanlıklarını',
-        'haberler (','bugün kocaeli gazetesi'
+        'haberler (','bugün kocaeli gazetesi','açıklaması şöyle','şunları kaydetti',
+        'şöyle konuştu','şöyle dedi'
     ]
     out=[]; seen=set()
-    for s in _sentence_split_tr(_clean_note_text(text)):
-        s=_clean_note_text(s).strip(" ;:-[]'\"")
+    for s in _sentence_split_tr(text):
+        s=_v84_hard_repair_text(s).strip(" ;:-[]'\"")
         ns=norm(s)
-        if len(s)<38 or len(s)>500 or any(g in ns for g in garbage):
+        if not _v84_sentence_is_clean(s):
             continue
-        # Kesilmiş haber/snippet cümleleri.
+        if len(s)<38 or len(s)>480 or any(g in ns for g in garbage):
+            continue
         if s.endswith(('…','...')) or re.search(r'\bve k$',s,re.I):
             continue
+        # Haber ortasından alınmış doğrudan konuşma/alıntı ile başlama.
+        if s.startswith(('"','“',"'",'‘')) or re.match(r'^\d+\s',s):
+            continue
         letters=''.join(c for c in s if c.isalpha())
-        if letters and len(s)<130 and sum(c.isupper() for c in letters)/max(1,len(letters))>.78:
+        if letters and len(s)<135 and sum(c.isupper() for c in letters)/max(1,len(letters))>.76:
             continue
         k=title_key(s)
         if not k or k in seen:
@@ -3066,10 +3099,10 @@ def _v83_clean_article_sentences(text):
         seen.add(k); out.append(s)
     return out
 
-def _v83_formalize(s):
-    """Haber dili kalıntılarını mümkün olduğunca resmî kurum diline dönüştürür."""
-    s=_clean_note_text(s).strip()
-    pairs=[
+def _v84_formalize(s):
+    """Yalnız cümle sonunu değil, yaygın haber dili kalıntılarını da resmîleştirir."""
+    s=_v84_hard_repair_text(s).strip()
+    replacements=[
         (r'\bifade etti\b','ifade etmiştir'),(r'\bifade ediyor\b','ifade etmektedir'),
         (r'\bbelirtti\b','belirtmiştir'),(r'\bbelirtiyor\b','belirtmektedir'),
         (r'\baçıkladı\b','açıklamıştır'),(r'\baçıklıyor\b','açıklamaktadır'),
@@ -3078,113 +3111,119 @@ def _v83_formalize(s):
         (r'\bsağladı\b','sağlamıştır'),(r'\bsağlıyor\b','sağlamaktadır'),
         (r'\bhedefliyor\b','hedeflemektedir'),(r'\bplanlıyor\b','planlamaktadır'),
         (r'\bbaşladı\b','başlamıştır'),(r'\bbaşlıyor\b','başlamaktadır'),
-        (r'\btamamladı\b','tamamlamıştır'),(r'\bkazandı\b','kazanmıştır'),
-        (r'\bgerçekleşti\b','gerçekleşmiştir'),(r'\byükseldi\b','yükselmiştir'),
-        (r'\bgeriledi\b','gerilemiştir'),(r'\barttı\b','artmıştır'),(r'\bazaldı\b','azalmıştır'),
-        (r'\bolacak\b','olacaktır'),(r'\byapılacak\b','yapılacaktır'),
-        (r'\bsağlanacak\b','sağlanacaktır'),(r'\bbaşlayacak\b','başlayacaktır')
+        (r'\btamamladı\b','tamamlamıştır'),(r'\btamamladı\b','tamamlamıştır'),
+        (r'\bkazandı\b','kazanmıştır'),(r'\bgerçekleşti\b','gerçekleşmiştir'),
+        (r'\byükseldi\b','yükselmiştir'),(r'\bgeriledi\b','gerilemiştir'),
+        (r'\barttı\b','artmıştır'),(r'\bazaldı\b','azalmıştır'),
+        (r'\boldu\b','olmuştur'),(r'\bolacak\b','olacaktır'),
+        (r'\byapılacak\b','yapılacaktır'),(r'\bsağlanacak\b','sağlanacaktır'),
+        (r'\bbaşlayacak\b','başlayacaktır'),(r'\byer alacak\b','yer alacaktır'),
+        (r'\bmücadele edecek\b','mücadele edecektir')
     ]
-    for pat,val in pairs:
+    for pat,val in replacements:
         s=re.sub(pat,val,s,flags=re.I)
     s=_v66_formalize_sentence_endings(s)
-    # Kötü haber dili örneği: "ifade ettiği ifade etti"
     s=re.sub(r'\bifade ettiği ifade etmiştir\b','ifade etmiştir',s,flags=re.I)
-    return _clean_note_text(s)
+    s=re.sub(r'\bbelirttiği belirtmiştir\b','belirtmiştir',s,flags=re.I)
+    return _v84_hard_repair_text(s)
 
-def _v83_extract_entities(text):
-    """Kim/nerede/ne zaman/rakam için görünür ipuçlarını çıkarır."""
-    t=_clean_note_text(text)
-    numbers=re.findall(r'(?:% ?\d+(?:[.,]\d+)?|\d+(?:[.,]\d+)?\s*(?:milyar|milyon|bin|MW|GWh|MWh|km|adet|TL|dolar|avro|euro|kron|puan|yıl|ay|gün))',t,re.I)
-    dates=re.findall(r'\b(?:\d{1,2}\s+(?:Ocak|Şubat|Mart|Nisan|Mayıs|Haziran|Temmuz|Ağustos|Eylül|Ekim|Kasım|Aralık)\s+\d{4}|(?:Ocak|Şubat|Mart|Nisan|Mayıs|Haziran|Temmuz|Ağustos|Eylül|Ekim|Kasım|Aralık)\s+\d{4}|20\d{2})\b',t,re.I)
-    return numbers[:8],dates[:4]
+def _v84_score_intro(s):
+    ns=norm(s)
+    actor=['cumhurbaşkan','bakan','bakanlık','tüik','tübitak','tcmb','tse','türkpatent',
+           'ssb','valili','başkan','şirket','üniversite','nasa','ibm','türk telekom',
+           'kardemir','togg','gezeravcı','zeytinoğlu']
+    action=['açıklad','duyur','başlat','gerçekleştir','tamamla','imzala','yayımla',
+            'düzenlen','üret','geliştir','test','ziyaret','göreve','başvuru','yatırım']
+    place=['ankara','istanbul','kocaeli','antalya','amasya','astana','pekin','gölcük',
+           'türkiye','abd','çin','kazakistan','avustralya','almanya','isveç']
+    return 4*sum(x in ns for x in actor)+4*sum(x in ns for x in action)+sum(x in ns for x in place)+min(len(re.findall(r'\d',s)),2)
+
+def _v84_score_detail(s):
+    ns=norm(s)
+    data=['%','yüzde','milyon','milyar','bin ','adet','mw','gwh','mwh','km','puan',
+          'oran','endeks','kapasite','ciro','ihracat','üretim','satış','başvuru','rekor']
+    return 4*sum(x in ns for x in data)+min(len(re.findall(r'\d',s)),5)
+
+def _v84_score_result(s):
+    ns=norm(s)
+    result=['art','azal','gerile','yüksel','ulaş','hedef','plan','beklen','sağla',
+            'kazandır','devreye','pilot','kullanıl','rekor','destek','katkı','başarı']
+    return 4*sum(x in ns for x in result)+min(len(re.findall(r'\d',s)),3)
 
 def _v80_reference_important_summary(title,summary,full_text=''):
     """
-    V83 ÖGN: 5N1K odaklı kurumsal özet.
-    Kim? Nerede? Ne zaman? Ne oldu? Nasıl/hangi kapsamda? Neden/sonuç ne?
-    Haber bunları desteklediği ölçüde, 3-4 cümlelik ve yaklaşık 4 Word satırlık
-    anlamlı tek paragraf oluşturulur.
+    V84: Önce düzgün bir giriş cümlesi, sonra kritik rakam/detay, sonra sonuç/önem.
+    2-3 tam cümle; cümle ortasında kesme yok; Word'de yaklaşık 4 satır hedefi.
     """
-    title=_v81_sentence_case_title(title)
-    body=_clean_note_text(full_text or summary)
-    good=_v83_clean_article_sentences(body)
-    if len(good)<3:
-        good=_v83_clean_article_sentences(str(summary)+' '+str(full_text))
+    title=_v81_sentence_case_title(_v84_hard_repair_text(title))
+    body=_v84_hard_repair_text(full_text or summary)
+    good=_v84_clean_article_sentences(body)
+
+    if len(good)<2:
+        good=_v84_clean_article_sentences(str(summary)+' '+str(full_text))
     if not good:
-        return _v83_formalize(title)
+        return _v84_formalize(title)
 
-    fact=['açıklad','duyur','başlat','gerçekleştir','tamamla','imzala','yayımla','düzenlen',
-          'üret','geliştir','test','ziyaret','başvuru','yatırım','göreve','satış']
-    actor=['tüik','tübitak','bakanlık','bakan','cumhurbaşkan','tcmb','tse','türkpatent','ssb',
-           'valili','üniversite','şirket','başkan','nasa','ibm','türk telekom']
-    place=['ankara','istanbul','kocaeli','antalya','amasya','astana','pekin','türkiye','gölcük',
-           'abd','çin','kazakistan','avustralya','almanya','isveç']
-    result=['art','azal','gerile','yüksel','ulaş','hedef','plan','beklen','sağla','kazandır',
-            'devreye','pilot','kullanıl','satış','ihracat','kapasite','rekor','destek']
-    nums,dates=_v83_extract_entities(body)
+    # Giriş asla haberin ortasından başlamasın: aktör + eylem taşıyan cümleyi seç.
+    intro_candidates=good[:12]
+    intro=max(intro_candidates,key=lambda s:(_v84_score_intro(s),-good.index(s)))
+    if _v84_score_intro(intro)<4:
+        # Güçlü giriş bulunamazsa ilk temiz cümleyi kullan.
+        intro=good[0]
 
-    def has(s,terms): return sum(t in norm(s) for t in terms)
-    def numscore(s):
-        return len(re.findall(r'%|\d',s))
-
-    # 1. cümle = kim + ne yaptı + mümkünse nerede/ne zaman.
-    intro_pool=good[:7]
-    intro=max(intro_pool,key=lambda s:(3*has(s,fact)+2*has(s,actor)+has(s,place)+min(numscore(s),2),-good.index(s)))
     chosen=[intro]
 
-    # 2. cümle = en kritik sayı/ölçek/teknik ayrıntı.
     rem=[s for s in good if s not in chosen]
     if rem:
-        detail=max(rem,key=lambda s:(4*min(numscore(s),3)+2*has(s,actor)+has(s,fact),-good.index(s)))
-        if numscore(detail)>0 or len(chosen)<2:
+        detail=max(rem,key=lambda s:(_v84_score_detail(s),-good.index(s)))
+        if _v84_score_detail(detail)>0:
             chosen.append(detail)
 
-    # 3. cümle = sonuç / amaç / sonraki adım / önem.
     rem=[s for s in good if s not in chosen]
     if rem:
-        consequence=max(rem,key=lambda s:(4*has(s,result)+has(s,fact)+min(numscore(s),2),-good.index(s)))
-        if has(consequence,result)>0 or len(chosen)<3:
-            chosen.append(consequence)
+        result=max(rem,key=lambda s:(_v84_score_result(s),-good.index(s)))
+        if _v84_score_result(result)>0:
+            chosen.append(result)
 
-    # 4. cümle yalnız gerçekten yeni kritik bilgi taşıyorsa.
-    rem=[s for s in good if s not in chosen]
-    if rem:
-        fourth=max(rem,key=lambda s:(2*has(s,result)+2*min(numscore(s),3)+has(s,place),-good.index(s)))
-        if (numscore(fourth)>=2 or has(fourth,result)>=2) and len(' '.join(chosen))<520:
-            chosen.append(fourth)
+    # En az iki cümle olsun.
+    if len(chosen)<2:
+        for s in good:
+            if s not in chosen:
+                chosen.append(s)
+                break
 
     chosen=sorted(chosen,key=lambda s:good.index(s))
-    formal=[]
-    for s in chosen[:4]:
-        fs=_v83_formalize(s)
-        if fs and title_key(fs) not in {title_key(x) for x in formal}:
-            formal.append(fs)
-
+    formal=[_v84_formalize(s) for s in chosen[:3] if _v84_sentence_is_clean(_v84_formalize(s))]
     text=_clean_note_text(' '.join(formal))
-    # Başlık metnini bağımsız cümle olarak basma; yalnız haber gövdesi yetersizse kullan.
-    if len(formal)<2 and title:
-        text=_clean_note_text(_v83_formalize(title)+'. '+text)
 
-    # 4 Word satırı hedefi: 3-4 tam cümle, cümle ortasında kesme yok.
+    # Çok uzun cümleler nedeniyle 4 satırı aşmaması için sıkı sınır:
+    # 2 veya 3 TAM cümle, yaklaşık 500 karakter.
     sents=_sentence_split_tr(text)
     kept=[]; total=0
     for sent in sents:
         add=len(sent)+(1 if kept else 0)
-        if len(kept)>=3 and total+add>760:
-            break
-        if total+add>820 and len(kept)>=2:
+        if kept and total+add>500:
             break
         kept.append(sent); total+=add
-        if len(kept)>=4:
+        if len(kept)>=3:
             break
-    return ' '.join(kept).strip()
+
+    # Eğer ilk cümle tek başına çok uzunsa, güvenli cümle sınırında sıkıştır.
+    if kept and len(' '.join(kept))>520:
+        kept=kept[:2]
+
+    result=' '.join(kept).strip()
+
+    # Son güvenlik: bozuk yabancı karakter kalırsa o cümleyi düşür.
+    final_sents=[s for s in _sentence_split_tr(result) if _v84_sentence_is_clean(s)]
+    return ' '.join(final_sents[:3]).strip()
 
 def make_important_basket_docx(basket_df):
     """V83: 5N1K + kritik veri + kurumsal dil esaslı Önemli Gelişmeler Notu."""
     doc=Document(); sec=doc.sections[0]
     sec.top_margin=Cm(2); sec.bottom_margin=Cm(2); sec.left_margin=Cm(2.5); sec.right_margin=Cm(2.5)
     normal=doc.styles['Normal']
-    normal.font.name='Times New Roman'; normal.font.size=Pt(12)
+    normal.font.name='Times New Roman'; normal.font.size=Pt(11)
     normal._element.rPr.rFonts.set(qn('w:eastAsia'),'Times New Roman')
 
     now=datetime.now().astimezone()
@@ -3224,6 +3263,7 @@ def make_important_basket_docx(basket_df):
             p.alignment=WD_ALIGN_PARAGRAPH.JUSTIFY
             p.paragraph_format.space_after=Pt(6)
             p.paragraph_format.line_spacing=1.0
+            p.paragraph_format.space_after=Pt(5)
             p.add_run(txt + ' (STB).')
 
     p=doc.add_paragraph()
