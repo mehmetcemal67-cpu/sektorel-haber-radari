@@ -1917,8 +1917,78 @@ def watchlist_hits(df, terms):
     mask=df.apply(lambda r:any(t in norm(f"{r.get('Başlık','')} {r.get('İçerik_Özeti','')}") for t in terms),axis=1)
     return df[mask].copy()
 
+def _repair_mojibake_tr(text):
+    """
+    UTF-8 bytes'in Latin-1/Windows-1252 olarak yanlış çözüldüğü Türkçe metinleri
+    mümkün olduğunca geri çevirir. Örn: TÃ¼rkiye -> Türkiye, katÄ±lÄ±m -> katılım.
+    """
+    import unicodedata as _unicodedata
+
+    s=str(text or '')
+    if not s:
+        return s
+
+    # Akıllı noktalama Latin-1 encode'u bozmasın diye geçici olarak koru.
+    placeholders={
+        '’':'__APOS_R__','‘':'__APOS_L__','“':'__QUOTE_L__','”':'__QUOTE_R__',
+        '–':'__DASH_EN__','—':'__DASH_EM__','…':'__ELLIPSIS__'
+    }
+    for ch,ph in placeholders.items():
+        s=s.replace(ch,ph)
+
+    bad_tokens=('Ã','Ä','Å','Â','â€','ðŸ',' ')
+
+    def bad_score(x):
+        return sum(x.count(t) for t in bad_tokens)
+
+    # 2 kata kadar yanlış decode edilmiş metni onarmaya çalış.
+    for _ in range(2):
+        current_score=bad_score(s)
+        candidates=[s]
+        for enc in ('latin1','cp1252'):
+            try:
+                cand=s.encode(enc,errors='strict').decode('utf-8',errors='strict')
+                candidates.append(cand)
+            except Exception:
+                pass
+        best=min(candidates,key=bad_score)
+        if bad_score(best) >= current_score:
+            break
+        s=best
+
+    for ch,ph in placeholders.items():
+        s=s.replace(ph,ch)
+
+    # Geriye kalan yaygın parçalar.
+    repl={
+        'Ã¼':'ü','Ãœ':'Ü','Ã¶':'ö','Ã–':'Ö','Ã§':'ç','Ã‡':'Ç',
+        'Ä±':'ı','Ä°':'İ','ÄŸ':'ğ','Äž':'Ğ','ÅŸ':'ş','Åž':'Ş',
+        'Â ':' ','Â':'','â€™':'’','â€˜':'‘','â€œ':'“','â€':'”',
+        'â€“':'–','â€”':'—','â€¦':'…'
+    }
+    for a,b in repl.items():
+        s=s.replace(a,b)
+
+    return _unicodedata.normalize('NFC',s)
+
 def _clean_note_text(value):
+    """
+    V78: Word-safe + Türkçe encoding onarımı.
+    Web içeriği önce mojibake açısından düzeltilir, ardından XML/DOCX için temizlenir.
+    """
+    import html as _html
+    import unicodedata as _unicodedata
+
     text=BeautifulSoup(str(value or ''),'html.parser').get_text(' ',strip=True)
+    text=_html.unescape(text)
+    text=_repair_mojibake_tr(text)
+
+    text=text.replace('\u00ad','')
+    text=text.replace('\u200b','').replace('\u200c','').replace('\u200d','').replace('\ufeff','')
+
+    # XML 1.0 uyumsuz kontrol karakterlerini kaldır.
+    text=''.join(ch for ch in text if ch in ('\t','\n','\r') or ord(ch)>=32)
+    text=_unicodedata.normalize('NFC',text)
     text=re.sub(r'\s+',' ',text).strip()
     return text
 
@@ -2130,7 +2200,7 @@ def make_analyst_docx(df, title='BİLGİ NOTU'):
     styles['Normal']._element.rPr.rFonts.set(qn('w:eastAsia'),'Times New Roman')
 
     p=doc.add_paragraph(); p.alignment=WD_ALIGN_PARAGRAPH.CENTER
-    r=p.add_run(title); r.bold=True; r.font.size=Pt(14)
+    r=p.add_run(_clean_note_text(title)); r.bold=True; r.font.size=Pt(14)
     p=doc.add_paragraph(); p.add_run('Tarih: ').bold=True
     p.add_run(datetime.now().astimezone().strftime('%d.%m.%Y'))
 
@@ -2150,7 +2220,7 @@ def make_analyst_docx(df, title='BİLGİ NOTU'):
     all_sent=[]
     for row,detail in enriched:
         title_text=_clean_note_text(detail.get('title') or row.get('Başlık',''))
-        body=detail.get('text') or row.get('İçerik_Özeti') or title_text
+        body=_clean_note_text(detail.get('text') or row.get('İçerik_Özeti') or title_text)
         all_sent.extend(_akt_clean_sentences(title_text,body))
 
     # Yakın tekrarları temizle.
@@ -2174,7 +2244,8 @@ def make_analyst_docx(df, title='BİLGİ NOTU'):
         bp.paragraph_format.first_line_indent=Cm(1.25)
         bp.paragraph_format.line_spacing=1.15
         bp.paragraph_format.space_after=Pt(8)
-        bp.add_run(_v66_formalize_sentence_endings(text.strip()))
+        safe_text=_clean_note_text(text)
+        bp.add_run(_v66_formalize_sentence_endings(safe_text))
 
     if uniq:
         # İlk paragraf: haberin kısa özeti. Başlık yazılmaz.
@@ -5651,7 +5722,9 @@ else:
         else:
             basket_view=basket[['id','news_time','source','category','title','risk_score','risk_status','url']].copy()
             basket_view.insert(0,'Sil',False)
-            with st.form('important_basket_form',clear_on_submit=False):
+
+            # Silme işlemi ayrı formdadır; bilgi notu seçimini etkilemez.
+            with st.form('important_basket_remove_form',clear_on_submit=False):
                 edited_basket=st.data_editor(
                     basket_view,
                     column_config={
@@ -5660,13 +5733,78 @@ else:
                         'risk_score':st.column_config.NumberColumn('Risk',format='%d/100')
                     },
                     disabled=[c for c in basket_view.columns if c!='Sil'],
-                    hide_index=True,use_container_width=True,height=min(430,80+36*len(basket_view))
+                    hide_index=True,use_container_width=True,height=min(430,80+36*len(basket_view)),
+                    key='v78_important_basket_remove_editor'
                 )
                 remove_btn=st.form_submit_button('🗑️ İŞARETLENENLERİ SEPETTEN ÇIKAR',use_container_width=True)
+
             if remove_btn:
-                ids=edited_basket.loc[edited_basket['Sil']==True,'id'].tolist()
+                ids=edited_basket.loc[edited_basket['Sil']==True,'id'].astype(int).tolist()
                 removed=_remove_basket_ids(ids)
                 st.success(f'{removed} kayıt sepetten çıkarıldı.')
+
+            # BİLGİ NOTU: Tek haber, tek ID. Eski checkbox state'i veya sepetin diğer satırları kullanılamaz.
+            st.markdown('### 📝 Seçili Haberden Detaylı Bilgi Notu')
+            note_options=[
+                (int(r['id']), _clean_note_text(r['title']))
+                for _,r in basket.iterrows()
+            ]
+            note_label_map={bid:f"{title}  [Kayıt #{bid}]" for bid,title in note_options}
+            selected_note_id=st.selectbox(
+                'Bilgi notu hazırlanacak haber',
+                options=[bid for bid,_ in note_options],
+                format_func=lambda bid:note_label_map.get(bid,str(bid)),
+                key='v78_important_note_exact_id'
+            )
+
+            if st.button(
+                '📝 SADECE BU HABERDEN DETAYLI BİLGİ NOTU OLUŞTUR',
+                use_container_width=True,
+                key='v78_important_exact_note_btn'
+            ):
+                selected_basket=basket[basket['id'].astype(int)==int(selected_note_id)].copy()
+                if len(selected_basket)!=1:
+                    st.error('Seçilen haber tekil olarak eşleştirilemedi. Lütfen yeniden deneyin.')
+                else:
+                    rr=selected_basket.iloc[0]
+                    exact_row=pd.DataFrame([{
+                        'Tarih':rr.get('news_time',''),
+                        'Kaynak':_clean_note_text(rr.get('source','')),
+                        'Başlık':_clean_note_text(rr.get('title','')),
+                        'İçerik_Özeti':_clean_note_text(rr.get('summary','')),
+                        'URL':str(rr.get('url','') or ''),
+                        'Yayıncı_URL':str(rr.get('url','') or ''),
+                        'Kategori':_clean_note_text(rr.get('category','')),
+                        'Risk_Skoru':rr.get('risk_score',0),
+                        'Risk_Durumu':_clean_note_text(rr.get('risk_status',''))
+                    }])
+                    with st.spinner('Yalnızca seçtiğiniz haber için detaylı bilgi notu hazırlanıyor...'):
+                        try:
+                            st.session_state['v78_exact_important_note_bytes']=make_analyst_docx(
+                                exact_row,
+                                title='SANAYİ & TEKNOLOJİ BİLGİ NOTU'
+                            )
+                            st.session_state['v78_exact_important_note_title']=exact_row.iloc[0]['Başlık']
+                            _v63_mark_notes(exact_row.to_dict('records'))
+                            _v73_invalidate_status_cache()
+                            st.success(f"✅ Bilgi notu yalnızca şu haberden hazırlanmıştır: {exact_row.iloc[0]['Başlık']}")
+                        except Exception as e:
+                            st.session_state['v78_exact_important_note_bytes']=None
+                            st.error(f'Bilgi notu hazırlanamadı: {e}')
+
+            if st.session_state.get('v78_exact_important_note_bytes'):
+                st.caption(
+                    'Hazırlanan bilgi notunun kaynağı: '
+                    + str(st.session_state.get('v78_exact_important_note_title',''))
+                )
+                st.download_button(
+                    '⬇️ SEÇİLİ HABERİN DETAYLI BİLGİ NOTUNU İNDİR',
+                    data=st.session_state['v78_exact_important_note_bytes'],
+                    file_name=f'Secili_Haber_Detayli_Bilgi_Notu_{date.today()}.docx',
+                    mime='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                    use_container_width=True,
+                    key='v78_exact_important_note_download'
+                )
 
             b1,b2=st.columns(2)
             with b1:
@@ -5683,44 +5821,6 @@ else:
                     removed=_clear_important_basket()
                     st.success(f'{removed} kayıt silindi.')
 
-            st.markdown('**📝 Önemli Gelişmeler Sepetinden Bilgi Notu**')
-            if st.button(
-                '📝 ÖNEMLİ GELİŞMELER SEPETİNDEN BİLGİ NOTU OLUŞTUR',
-                use_container_width=True,
-                key='v76_important_basket_note'
-            ):
-                important_note_rows=pd.DataFrame([{
-                    'Tarih':r.get('news_time',''),
-                    'Kaynak':r.get('source',''),
-                    'Başlık':r.get('title',''),
-                    'İçerik_Özeti':r.get('summary',''),
-                    'URL':r.get('url',''),
-                    'Kategori':r.get('category',''),
-                    'Risk_Skoru':r.get('risk_score',0),
-                    'Risk_Durumu':r.get('risk_status','')
-                } for _,r in basket.iterrows()])
-                with st.spinner('Önemli gelişmeler sepetindeki haberlerden ayrıntılı bilgi notu hazırlanıyor...'):
-                    try:
-                        st.session_state['v76_important_basket_note_bytes']=make_analyst_docx(
-                            important_note_rows,
-                            title='SANAYİ & TEKNOLOJİ BİLGİ NOTU'
-                        )
-                        _v63_mark_notes(important_note_rows.to_dict('records'))
-                        _v73_invalidate_status_cache()
-                        st.success('✅ Bilgi notu hazırlanmıştır.')
-                    except Exception as e:
-                        st.session_state['v76_important_basket_note_bytes']=None
-                        st.error(f'Bilgi notu hazırlanamadı: {e}')
-
-            if st.session_state.get('v76_important_basket_note_bytes'):
-                st.download_button(
-                    '⬇️ ÖNEMLİ GELİŞMELERDEN HAZIRLANAN BİLGİ NOTUNU İNDİR',
-                    data=st.session_state['v76_important_basket_note_bytes'],
-                    file_name=f'Onemli_Gelismeler_Bilgi_Notu_{date.today()}.docx',
-                    mime='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-                    use_container_width=True,
-                    key='v76_important_basket_note_download'
-                )
 
         st.markdown('---')
         st.subheader('🗂️ Açık Kaynak Tarama Çalışması Sepeti')
