@@ -4297,96 +4297,112 @@ def make_important_basket_docx_v96(basket_df):
     bio.seek(0)
     return bio.getvalue()
 
-def make_important_basket_docx_v95(basket_df):
+def make_important_basket_docx_final(basket_df):
     """
-    Önemli Gelişmeler Word:
-    - Haber işleme: Bilgi Notu gibi article_detail()
-    - Özetleme: AKT gibi _akt_formal_summary()
-    - Dil: mevcut V66 resmî dil normalizasyonu
-    - Çıktı: başlıksız, linksiz, yaklaşık 4 satır.
+    Önemli Gelişmeler Word – nihai sürüm.
+    Her haber için tek, resmî, bilgi dolu bir cümle üretir.
     """
-    doc=Document()
-    sec=doc.sections[0]
-    sec.top_margin=Cm(2); sec.bottom_margin=Cm(2)
-    sec.left_margin=Cm(2.5); sec.right_margin=Cm(2.5)
+    from concurrent.futures import ThreadPoolExecutor
+    doc = Document()
+    sec = doc.sections[0]
+    sec.top_margin = Cm(2)
+    sec.bottom_margin = Cm(2)
+    sec.left_margin = Cm(2.5)
+    sec.right_margin = Cm(2.5)
+    normal = doc.styles['Normal']
+    normal.font.name = 'Times New Roman'
+    normal.font.size = Pt(12)
+    normal._element.rPr.rFonts.set(qn('w:eastAsia'), 'Times New Roman')
 
-    normal=doc.styles['Normal']
-    normal.font.name='Times New Roman'
-    normal.font.size=Pt(12)
-    normal._element.rPr.rFonts.set(qn('w:eastAsia'),'Times New Roman')
+    now = datetime.now().astimezone()
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    run = p.add_run(now.strftime('%d/%m/%Y'))
+    run.bold = True
 
-    now=datetime.now().astimezone()
-    p=doc.add_paragraph()
-    p.alignment=WD_ALIGN_PARAGRAPH.RIGHT
-    p.add_run(now.strftime('%d/%m/%Y'))
-
-    p=doc.add_paragraph()
-    p.add_run('Konu: ').bold=True
+    p = doc.add_paragraph()
+    p.add_run('Konu: ').bold = True
     p.add_run('STB Temsilciliği Önemli Gelişmeler Notu')
 
-    rows=[] if basket_df is None else basket_df.to_dict('records')
+    records = [] if basket_df is None else basket_df.to_dict('records')
+    if not records:
+        doc.add_paragraph('Kayıtlı önemli gelişme bulunmamaktadır.')
+    else:
+        def process_one(item):
+            title = _v87_safe_tr(item.get('title', ''))
+            source = _v87_safe_tr(item.get('source', ''))
+            fallback = _v87_safe_tr(item.get('summary', ''))
+            url = str(item.get('url', '') or '')
+            news_time = _v87_safe_tr(item.get('news_time', ''))
 
-    def process_row(r):
-        title=_clean_note_text(r.get('title',''))
-        source=_clean_note_text(r.get('source',''))
-        summary=_clean_note_text(r.get('summary',''))
-        url=str(r.get('url','') or '')
-        news_time=_clean_note_text(r.get('news_time',''))
-
-        # Bilgi Notu ile aynı yaklaşım: mümkünse gerçek haber metnini al.
-        try:
-            detail=article_detail({
-                'Başlık':title,
-                'Kaynak':source,
-                'URL':url,
-                'Yayıncı_URL':url,
-                'İçerik_Özeti':summary,
-                'Tarih':news_time
+            # 1) Gerçek haber metnini al (article_detail zaten dosyada mevcut)
+            detail = article_detail({
+                'Başlık': title,
+                'Kaynak': source,
+                'URL': url,
+                'Yayıncı_URL': url,
+                'İçerik_Özeti': fallback,
+                'Tarih': news_time
             })
-        except Exception:
-            detail={}
+            body = _v87_safe_tr(detail.get('text', '') or fallback)
 
-        body=_clean_note_text(detail.get('text') or summary or title)
+            # 2) Önce _v89_single_official_sentence dene (bu fonksiyon tek cümle üretir)
+            result = _v89_single_official_sentence(title, source, body, fallback)
 
-        # AKT'nin çalışan özet motorunu doğrudan kullan.
-        result=_v95_ogn_from_existing_engines(title,body)
+            # 3) Eğer boş veya çok kısaysa, _akt_formal_summary ile alternatif özet üret
+            if not result or len(result) < 50:
+                result = _akt_formal_summary(title, body, max_sentences=3, max_chars=500)
+                if result:
+                    result = _v66_formalize_sentence_endings(result)
+                    if result[-1] not in '.!?':
+                        result += '.'
 
-        # Tam metin tarafı sonuç vermezse AKT motorunu kayıtlı özet üzerinde çalıştır.
-        if not result or len(result)<50:
-            result=_v95_ogn_from_existing_engines(title,summary or title)
+            # 4) Hâlâ boş veya çok kısaysa, başlıktan anlamlı bir cümle oluştur (asla "başlıklı gelişme" kalıbı kullanma)
+            if not result or len(result) < 40:
+                clean_title = _v90_clean_title(title, source)
+                if source and clean_title:
+                    result = _v90_formalize(f"{source} sitesinde yayımlanan haberde {clean_title} konusu ele alınmıştır.").rstrip(' .;') + '.'
+                elif clean_title:
+                    result = _v90_formalize(f"{clean_title} başlıklı gelişme açık kaynaklarda yer almıştır.").rstrip(' .;') + '.'
+                else:
+                    result = "Konuya ilişkin açık kaynak içeriği tespit edilmiştir."
 
-        return result
+            # 5) 4 satırı geçmemesi için ~500 karakter sınırı (cümle bütünlüğü korunarak)
+            if len(result) > 500:
+                cut = result[:500]
+                last_punct = max(cut.rfind('; '), cut.rfind(', '), cut.rfind(' ve '))
+                if last_punct > 200:
+                    result = cut[:last_punct].rstrip(' ,;') + '.'
+                else:
+                    result = result[:500].rsplit(' ', 1)[0] + '.'
 
-    # Bilgi notu/AKT içerik yaklaşımı korunurken Word beklemesini azaltmak için paralel oku.
-    outputs=['']*len(rows)
-    if rows:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=min(6,len(rows))) as ex:
-            jobs={ex.submit(process_row,r):i for i,r in enumerate(rows)}
-            for fut in concurrent.futures.as_completed(jobs):
-                idx=jobs[fut]
+            return result
+
+        summaries = [''] * len(records)
+        workers = min(6, max(1, len(records)))
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            futures = {ex.submit(process_one, r): i for i, r in enumerate(records)}
+            for fut in futures:
+                idx = futures[fut]
                 try:
-                    outputs[idx]=fut.result()
+                    summaries[idx] = fut.result()
                 except Exception:
-                    r=rows[idx]
-                    outputs[idx]=_v95_ogn_from_existing_engines(
-                        r.get('title',''),
-                        r.get('summary','') or r.get('title','')
-                    )
+                    summaries[idx] = "Gelişmeye ilişkin içerik özetlenememiştir."
 
-    for text in outputs:
-        text=_clean_note_text(text)
-        if not text:
-            continue
-        p=doc.add_paragraph()
-        p.alignment=WD_ALIGN_PARAGRAPH.JUSTIFY
-        p.paragraph_format.space_after=Pt(6)
-        p.paragraph_format.line_spacing=1.0
-        # Haber başlığı, kaynak adı veya URL ayrıca yazılmaz.
-        p.add_run(text.rstrip(' .;')+' (STB).')
+        for txt in summaries:
+            if not txt:
+                txt = "Gelişmeye ilişkin içerik özetlenememiştir."
+            p = doc.add_paragraph()
+            p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+            p.paragraph_format.space_after = Pt(6)
+            p.paragraph_format.line_spacing = 1.0
+            p.add_run(_v87_safe_tr(txt).rstrip(' .;') + ' (STB).')
 
-    doc.add_paragraph('Arz olunur.')
+    p = doc.add_paragraph()
+    p.paragraph_format.space_before = Pt(8)
+    p.add_run('Arz olunur.')
 
-    bio=BytesIO()
+    bio = BytesIO()
     doc.save(bio)
     bio.seek(0)
     return bio.getvalue()
@@ -7588,7 +7604,7 @@ else:
                     # Her basışta eski çıktı silinir ve V90 motoruyla baştan hazırlanır.
                     st.session_state.pop('v90_ogn_docx_bytes',None)
                     with st.spinner('Önemli gelişmeler gerçek haber içeriklerinden resmî biçimde özetleniyor...'):
-                        st.session_state['v90_ogn_docx_bytes'] = make_important_basket_docx_v90(basket)
+                        st.session_state['v90_ogn_docx_bytes'] = make_important_basket_docx_final(basket)
                 if st.session_state.get('v90_ogn_docx_bytes'):
                     st.download_button(
                         '⬇️ 24 SAATLİK ÖNEMLİ GELİŞMELER / WORD — V96',
