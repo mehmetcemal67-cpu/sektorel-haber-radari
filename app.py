@@ -3644,8 +3644,8 @@ def _v90_formalize(s):
 
 def _v90_item_summary(title,source,body,fallback):
     """
-    Haber metninden en fazla 3 cümle seçerek resmî, veri/rakam odaklı bir özet oluşturur.
-    Çıktı 4 paragrafı geçmez (en fazla 3 cümle).
+    Haber metninden en iyi tek bir cümle seçerek resmî, veri/rakam odaklı bir özet oluşturur.
+    Çıktı tek cümledir, 4 paragrafı geçmez (zaten tek cümle).
     """
     title=_v90_clean_title(title,source)
     text=_v87_safe_tr(body or fallback)
@@ -3678,10 +3678,6 @@ def _v90_item_summary(title,source,body,fallback):
         'kapasite','ihracat','üretim','satış','hibe','öğrenci','madalya','rekor',
         '2025','2026','2027'
     ]
-    result_terms=[
-        'hedef','beklen','sağla','katkı','devreye','plan','başarı','destek','başvuru',
-        'artış','azalış','yüksel','gerile','ulaş'
-    ]
 
     def overlap(s):
         words=set(re.findall(r'[a-zçğıöşü0-9]+',norm(s)))
@@ -3691,83 +3687,38 @@ def _v90_item_summary(title,source,body,fallback):
     related=[s for s in sents if overlap(s)>0]
     pool=related if related else sents[:8]
 
-    def intro_score(s):
+    def combined_score(s):
         n=norm(s)
-        return (8*overlap(s) + 4*sum(x in n for x in actor_terms) +
-                4*sum(x in n for x in action_terms) + min(len(re.findall(r'\d',s)),3))
+        # Aktör, eylem, detay (rakam/veri) ve başlıkla ilişkiyi birleştir.
+        return (8*overlap(s) +
+                4*sum(x in n for x in actor_terms) +
+                4*sum(x in n for x in action_terms) +
+                5*sum(x in n for x in detail_terms) +
+                min(len(re.findall(r'\d',s)),5))
 
-    # Giriş cümlesi: olayı/kurumu tanımlayan en iyi cümle
-    intro=max(pool[:8], key=lambda s: (intro_score(s), -sents.index(s)))
-    intro=_v90_formalize(intro).rstrip(' .;')
+    # En yüksek skorlu cümleyi seç.
+    best_sentence=max(pool, key=lambda s: (combined_score(s), -sents.index(s)))
+    best_formal=_v90_formalize(best_sentence).rstrip(' .;')
 
-    # Başlıkla neredeyse aynı olan cümleyi atla
-    if title_key(intro)==title_key(title):
-        alternatives=[s for s in pool if title_key(s)!=title_key(title)]
+    # Eğer seçilen cümle başlıkla neredeyse aynıysa, ikinci en iyiyi dene.
+    if title_key(best_formal)==title_key(title):
+        alternatives=[s for s in pool if title_key(_v90_formalize(s))!=title_key(title)]
         if alternatives:
-            intro=_v90_formalize(
-                max(alternatives, key=lambda s: (intro_score(s), -sents.index(s)))
-            ).rstrip(' .;')
+            best_sentence=max(alternatives, key=lambda s: (combined_score(s), -sents.index(s)))
+            best_formal=_v90_formalize(best_sentence).rstrip(' .;')
 
-    # Detay cümlesi: rakam/veri/tarih içeren en iyi cümle
-    remaining=[s for s in pool if title_key(_v90_formalize(s))!=title_key(intro)]
-    detail=''
-    if remaining:
-        def detail_score(s):
-            n=norm(s)
-            return (7*overlap(s) + 5*sum(x in n for x in detail_terms) +
-                    min(len(re.findall(r'\d',s)),6))
-        cand=max(remaining, key=lambda s: (detail_score(s), -sents.index(s)))
-        if detail_score(cand)>=5:
-            detail=_v90_formalize(cand).rstrip(' .;')
+    # Çok uzun cümleleri kısalt (350 karakter civarı)
+    if len(best_formal)>350:
+        # Noktalı virgül veya virgülden bölmeyi dene
+        cut=best_formal[:350]
+        last_punct=max(cut.rfind('; '), cut.rfind(', '), cut.rfind(' ve '))
+        if last_punct>200:
+            best_formal=cut[:last_punct].rstrip(' ,;')
+        else:
+            # Yoksa kelime sınırından kes
+            best_formal=best_formal[:350].rsplit(' ',1)[0]
 
-    # Sonuç/hedef cümlesi: beklenti, hedef, etki içeren cümle
-    remaining2=[s for s in pool if title_key(_v90_formalize(s)) not in (title_key(intro), title_key(detail))] if detail else remaining
-    result=''
-    if remaining2:
-        def result_score(s):
-            n=norm(s)
-            return (6*overlap(s) + 4*sum(x in n for x in result_terms) +
-                    2*sum(x in n for x in detail_terms))
-        cand2=max(remaining2, key=lambda s: (result_score(s), -sents.index(s)))
-        if result_score(cand2)>=4:
-            result=_v90_formalize(cand2).rstrip(' .;')
-
-    # Cümleleri birleştir: intro + (detail) + (result)
-    clauses=[intro]
-    used_digits=set(re.findall(r'\d+(?:[.,]\d+)?', intro))
-    for extra in (detail, result):
-        if not extra:
-            continue
-        # Aynı rakamları tekrar eden cümleyi ekleme
-        extra_digits=set(re.findall(r'\d+(?:[.,]\d+)?', extra))
-        if extra_digits and extra_digits.issubset(used_digits) and len(extra)<150:
-            continue
-        clauses.append(extra)
-        used_digits.update(extra_digits)
-        if len(clauses)>=3:
-            break
-
-    # Resmî tek cümle akışı: ilk cümle + noktalı virgülle bağlanan diğer cümlecikler
-    if len(clauses)==1:
-        out=clauses[0]
-    else:
-        connector='; ayrıca, '
-        out=clauses[0] + connector + clauses[1]
-        if len(clauses)==3:
-            out += '; bununla birlikte, ' + clauses[2]
-
-    out=_v87_safe_tr(out).strip(' ;:.')
-
-    # 4 satırı geçmemesi için yaklaşık 500 karakter sınırı
-    if len(out)>500 and len(clauses)>1:
-        out=clauses[0]
-    if len(out)>520:
-        cut=out[:520]
-        k=max(cut.rfind('; '), cut.rfind(', '))
-        if k>=300:
-            out=cut[:k].rstrip(' ,;')
-
-    return out.rstrip(' .;')+'.'
+    return best_formal.rstrip(' .;')+'.'
 
 
 def _v92_clean_news_text(text):
