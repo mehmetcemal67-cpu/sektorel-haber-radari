@@ -3564,7 +3564,7 @@ def _v87_ogn_summary(title, body, fallback):
     return out or (fallback[:520].strip() if fallback else title[:520].strip())
 
 
-V90_OGN_ENGINE_VERSION='v90_ogn_20260821_1'
+V90_OGN_ENGINE_VERSION='v92_ogn_20260821_1'
 
 def _v90_clean_title(title,source=''):
     t=_v87_safe_tr(title)
@@ -3759,6 +3759,230 @@ def _v90_fetch_detail(title,source,url,fallback,news_time):
     except Exception:
         return {'title':title,'source':source,'text':fallback,'canonical':url,'images':[]}
 
+
+def _v92_clean_news_text(text):
+    t=_v87_safe_tr(text)
+    # Portal artıkları / başka haber başlıkları / navigasyon.
+    noise_patterns=[
+        r'sıralamayı değiştirmek[^.!?]*[.!?]?',
+        r'kartları yukarı[^.!?]*[.!?]?',
+        r'devamını oku[^.!?]*[.!?]?',
+        r'benzer haber(?:ler)?[^.!?]*[.!?]?',
+        r'ilgili haber(?:ler)?[^.!?]*[.!?]?',
+        r'google news[^.!?]*[.!?]?',
+        r'whatsapp kanal[^.!?]*[.!?]?',
+    ]
+    for pat in noise_patterns:
+        t=re.sub(pat,' ',t,flags=re.I)
+    return re.sub(r'\s+',' ',t).strip()
+
+def _v92_formal_sentence(s):
+    """Yalnız haber dili yüklemlerini kurumsal geçmiş/şimdiki zamana çevirir."""
+    s=_v92_clean_news_text(s).strip()
+    pairs=[
+        (r'\baçıkladı\b','açıklamıştır'),
+        (r'\bbelirtti\b','belirtmiştir'),
+        (r'\bduyurdu\b','duyurmuştur'),
+        (r'\bkaydetti\b','kaydetmiştir'),
+        (r'\bifade etti\b','ifade etmiştir'),
+        (r'\bbaşladı\b','başlamıştır'),
+        (r'\btamamladı\b','tamamlamıştır'),
+        (r'\bkazandı\b','kazanmıştır'),
+        (r'\barttı\b','artmıştır'),
+        (r'\bazaldı\b','azalmıştır'),
+        (r'\bgeriledi\b','gerilemiştir'),
+        (r'\byükseldi\b','yükselmiştir'),
+        (r'\bulaştı\b','ulaşmıştır'),
+        (r'\bgerçekleşti\b','gerçekleşmiştir'),
+        (r'\boldu\b','olmuştur'),
+        (r'\bkırıldı\b','kırılmıştır'),
+        (r'\byayımlandı\b','yayımlanmıştır'),
+        (r'\byayınlandı\b','yayımlanmıştır'),
+        (r'\bbaşlıyor\b','başlamaktadır'),
+        (r'\bdevam ediyor\b','devam etmektedir'),
+        (r'\bsağlıyor\b','sağlamaktadır'),
+        (r'\bgösteriyor\b','göstermektedir'),
+        (r'\bhedefleniyor\b','hedeflenmektedir'),
+        (r'\bplanlanıyor\b','planlanmaktadır'),
+    ]
+    for pat,val in pairs:
+        s=re.sub(pat,val,s,flags=re.I)
+    return _v66_formalize_sentence_endings(s).strip()
+
+def _v92_good_sentence(s):
+    s=_v92_clean_news_text(s)
+    if len(s)<35 or len(s)>650:
+        return False
+    if any(x in s for x in ('Ã','Ä','Å',' ',' ','','')):
+        return False
+    n=norm(s)
+    noise=[
+        'çerez','cookie','reklam','foto galeri','video galeri',
+        'instagram','facebook','twitter','abone ol','bildirimleri aç',
+        'sıralamayı değiştirmek','kartları yukarı','devamını oku',
+        'benzer haber','ilgili haber'
+    ]
+    return not any(x in n for x in noise)
+
+def _v92_summary(title, source, body, fallback):
+    """
+    STB örneğindeki mantık:
+    1) Haberin ana gelişmesini veren giriş cümlesi.
+    2) Hemen ardından gelen kritik veri/rakam/açıklama.
+    3) Gerekliyse üçüncü ardışık cümle.
+    Farklı yerlerden cümle toplayıp yapıştırmaz.
+    """
+    title=_v90_clean_title(title,source)
+    raw=_v92_clean_news_text(body or fallback)
+
+    sents=[]
+    seen=set()
+    for s in _sentence_chunks(raw):
+        s=_v92_clean_news_text(s).strip(" []'\";-:")
+        if not _v92_good_sentence(s):
+            continue
+        k=title_key(s)
+        if not k or k in seen:
+            continue
+        seen.add(k)
+        sents.append(s)
+
+    if not sents:
+        fb=_v92_clean_news_text(fallback)
+        return _v92_formal_sentence(fb) if len(fb)>=50 else ''
+
+    # Başlıktaki ayırt edici sözcükler.
+    stop={'haber','haberi','son','dakika','bugün','yeni','ile','ve','bir','için',
+          'olan','oldu','olacak','dedi','türkiye','türk'}
+    title_words={
+        w for w in re.findall(r'[a-zçğıöşü0-9]+',norm(title))
+        if len(w)>=4 and w not in stop
+    }
+
+    def overlap(s):
+        sw=set(re.findall(r'[a-zçğıöşü0-9]+',norm(s)))
+        return len(sw & title_words)
+
+    # Giriş: ilk 6 temiz cümle içinde başlıkla en ilişkili olanı bul.
+    # Böylece sayfanın ortasından başlamaz; ama başlık tekrarına da mahkûm olmaz.
+    first_pool=sents[:6]
+    start=max(range(len(first_pool)), key=lambda i:(overlap(first_pool[i]), -i))
+
+    # Eğer ilk cümle zaten makul derecede ilgiliyse onu tercih et.
+    if overlap(first_pool[0])>0:
+        start=0
+
+    # Ardışık cümleler: bağlam korunur. Maksimum 3 cümle.
+    chosen=[]
+    total=0
+    for s in sents[start:start+3]:
+        fs=_v92_formal_sentence(s).strip()
+        if not fs:
+            continue
+        if fs[-1] not in '.!?':
+            fs+='.'
+        # Yaklaşık 4 satır; cümleyi ortadan kesme.
+        add=len(fs)+(1 if chosen else 0)
+        if chosen and total+add>560:
+            break
+        chosen.append(fs)
+        total+=add
+
+    # Tek cümle çok kısa kaldıysa bir sonraki ilgili tam cümleyi ekle.
+    if len(' '.join(chosen))<220:
+        for s in sents[start+len(chosen):]:
+            if overlap(s)<=0 and title_words:
+                continue
+            fs=_v92_formal_sentence(s).strip()
+            if not fs:
+                continue
+            if fs[-1] not in '.!?':
+                fs+='.'
+            if len(' '.join(chosen+[fs]))<=560:
+                chosen.append(fs)
+            break
+
+    out=' '.join(chosen).strip()
+
+    # Başlığı tek başına "özet" kabul etme.
+    if title_key(out)==title_key(title):
+        fb=_v92_clean_news_text(fallback)
+        if len(fb)>=80 and title_key(fb)!=title_key(title):
+            out=_v92_formal_sentence(fb)
+
+    return _v87_safe_tr(out).strip()
+
+def make_important_basket_docx_v92(basket_df):
+    """
+    V92: ÖGN için sade ve izlenebilir akış.
+    Haberleri paralel alır; her haber için tek gövde + ardışık 2-3 cümle.
+    """
+    doc=Document()
+    sec=doc.sections[0]
+    sec.top_margin=Cm(2); sec.bottom_margin=Cm(2)
+    sec.left_margin=Cm(2.5); sec.right_margin=Cm(2.5)
+
+    normal=doc.styles['Normal']
+    normal.font.name='Times New Roman'
+    normal.font.size=Pt(12)
+    normal._element.rPr.rFonts.set(qn('w:eastAsia'),'Times New Roman')
+
+    now=datetime.now().astimezone()
+    p=doc.add_paragraph()
+    p.alignment=WD_ALIGN_PARAGRAPH.RIGHT
+    p.add_run(now.strftime('%d/%m/%Y')).bold=True
+
+    p=doc.add_paragraph()
+    p.add_run('Konu: ').bold=True
+    p.add_run('STB Temsilciliği Önemli Gelişmeler Notu')
+
+    records=[] if basket_df is None else basket_df.to_dict('records')
+
+    def process(item):
+        title=_v87_safe_tr(item.get('title',''))
+        source=_v87_safe_tr(item.get('source',''))
+        fallback=_v87_safe_tr(item.get('summary',''))
+        url=str(item.get('url','') or '')
+        news_time=_v87_safe_tr(item.get('news_time',''))
+
+        detail=_v90_fetch_detail(title,source,url,fallback,news_time)
+        body=_v87_safe_tr((detail or {}).get('text','') or fallback)
+
+        txt=_v92_summary(title,source,body,fallback)
+        if not txt:
+            txt=_v92_summary(title,source,fallback,fallback)
+        return txt
+
+    summaries=['']*len(records)
+    if records:
+        workers=min(8,max(1,len(records)))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
+            fmap={ex.submit(process,r):i for i,r in enumerate(records)}
+            for fut in concurrent.futures.as_completed(fmap):
+                idx=fmap[fut]
+                try:
+                    summaries[idx]=fut.result()
+                except Exception:
+                    summaries[idx]=''
+
+    for txt in summaries:
+        if not txt:
+            continue
+        p=doc.add_paragraph()
+        p.alignment=WD_ALIGN_PARAGRAPH.JUSTIFY
+        p.paragraph_format.space_after=Pt(6)
+        p.paragraph_format.line_spacing=1.0
+        p.add_run(_v87_safe_tr(txt).rstrip(' .;')+' (STB).')
+
+    p=doc.add_paragraph()
+    p.paragraph_format.space_before=Pt(8)
+    p.add_run('Arz olunur.')
+
+    bio=BytesIO()
+    doc.save(bio)
+    bio.seek(0)
+    return bio.getvalue()
+
 def make_important_basket_docx_v90(basket_df):
     """
     V90 ÖGN motoru. Eski Word baytlarını/fonksiyonlarını kullanmaz.
@@ -3798,12 +4022,10 @@ def make_important_basket_docx_v90(basket_df):
                 # fallback gövdesinden tek resmî cümle oluşturmayı tekrar dene.
                 txt=_v90_item_summary(title,source,fallback,fallback)
             if not txt:
-                # Son çare: kalıp cümle üretme. Kaydedilmiş içerikten kısa ve resmî bir özet oluştur.
-                fb=_v87_safe_tr(fallback)
-                if fb:
-                    txt=_v90_item_summary(title,source,fb,fb)
-                if not txt:
-                    txt=_v90_formalize(fb) if len(fb)>=60 else ''
+                # Son çare: başlığı değil, açıklayıcı bir kurum cümlesi oluştur.
+                clean_title=_v90_clean_title(title,source)
+                txt=f'{clean_title} konusuna ilişkin gelişme açık kaynaklarda yer almıştır.'
+                txt=_v90_formalize(txt)
             return txt
 
         summaries=['']*len(records)
@@ -4472,9 +4694,12 @@ def article_detail(row):
             key=norm(body[:700])
             if key in seen_t: continue
             seen_t.add(key); texts.append(body)
+        # V92: Birden fazla article/main/content bloğunu BİRLEŞTİRME.
+        # Aynı sayfadaki önerilen haberler ve tekrar blokları ÖGN'ye karışmasın.
+        # Tek, en kapsamlı gövdeyi kullan.
         texts.sort(key=len, reverse=True)
         if texts:
-            out["text"]=" ".join(texts[:4])[:18000]
+            out["text"]=texts[0][:18000]
 
     # 3) Sayfa erişilemediyse bile RSS kaydını çöp etmiyoruz.
     # Generic Google Haberler adını asla gerçek yayıncı olarak rapora yazma.
@@ -6801,12 +7026,12 @@ else:
                     # Her basışta eski çıktı silinir ve V90 motoruyla baştan hazırlanır.
                     st.session_state.pop('v90_ogn_docx_bytes',None)
                     with st.spinner('Önemli gelişmeler gerçek haber içeriklerinden resmî biçimde özetleniyor...'):
-                        st.session_state['v90_ogn_docx_bytes']=make_important_basket_docx_v90(basket)
+                        st.session_state['v90_ogn_docx_bytes']=make_important_basket_docx_v92(basket)
                 if st.session_state.get('v90_ogn_docx_bytes'):
                     st.download_button(
-                        '⬇️ 24 SAATLİK ÖNEMLİ GELİŞMELER / WORD — V90',
+                        '⬇️ 24 SAATLİK ÖNEMLİ GELİŞMELER / WORD — V92',
                         st.session_state['v90_ogn_docx_bytes'],
-                        file_name=f'24_Saatlik_Onemli_Gelismeler_V90_{date.today()}.docx',
+                        file_name=f'24_Saatlik_Onemli_Gelismeler_V92_{date.today()}.docx',
                         mime='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
                         use_container_width=True,
                         key='v90_download_ogn_word'
