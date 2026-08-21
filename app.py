@@ -3564,7 +3564,7 @@ def _v87_ogn_summary(title, body, fallback):
     return out or (fallback[:520].strip() if fallback else title[:520].strip())
 
 
-V90_OGN_ENGINE_VERSION='v93_ogn_20260821_1'
+V90_OGN_ENGINE_VERSION='v94_ogn_20260821_1'
 
 def _v90_clean_title(title,source=''):
     t=_v87_safe_tr(title)
@@ -4014,6 +4014,134 @@ def _v93_build_summary(title, source, body, fallback):
     out=re.sub(r'https?://\S+','',out)
     out=re.sub(r'\s+',' ',out).strip()
     return _v87_safe_tr(out)
+
+
+def _v94_formal_summary_text(text):
+    """
+    Very simple and robust:
+    - clean the saved news summary
+    - take complete sentences in their original order
+    - keep up to ~4 Word lines
+    - formalize common journalistic endings
+    - never return blank if usable text exists
+    """
+    t=_v87_safe_tr(text or '')
+    t=re.sub(r'https?://\S+',' ',t)
+    t=re.sub(r'\s+',' ',t).strip()
+    if not t:
+        return ''
+
+    # Split only on real sentence endings; preserve original order.
+    parts=[x.strip() for x in re.split(r'(?<=[.!?])\s+',t) if x.strip()]
+    if not parts:
+        parts=[t]
+
+    noise=('devamını oku','benzer haber','ilgili haber','çerez','cookie',
+           'reklam','instagram','facebook','twitter','whatsapp','google news')
+    clean=[]
+    for s in parts:
+        ns=norm(s)
+        if any(x in ns for x in noise):
+            continue
+        s=_v92_formal_sentence(s).strip()
+        if not s:
+            continue
+        if s[-1] not in '.!?':
+            s+='.'
+        clean.append(s)
+
+    if not clean:
+        s=_v92_formal_sentence(t).strip()
+        return (s.rstrip(' .;')+'.') if s else ''
+
+    # Approx. four lines. Do not cut a sentence.
+    chosen=[]
+    for s in clean:
+        candidate=' '.join(chosen+[s])
+        if chosen and len(candidate)>560:
+            break
+        chosen.append(s)
+        if len(chosen)>=3:
+            break
+
+    out=' '.join(chosen).strip()
+    return out
+
+def make_important_basket_docx_v94(basket_df):
+    """
+    Reliable ÖGN Word generator.
+    No headline, no URL, no bullet.
+    Every basket row produces one paragraph.
+    Primary source = summary already stored when the news was scanned.
+    """
+    doc=Document()
+    sec=doc.sections[0]
+    sec.top_margin=Cm(2); sec.bottom_margin=Cm(2)
+    sec.left_margin=Cm(2.5); sec.right_margin=Cm(2.5)
+
+    stl=doc.styles['Normal']
+    stl.font.name='Times New Roman'
+    stl.font.size=Pt(12)
+    stl._element.rPr.rFonts.set(qn('w:eastAsia'),'Times New Roman')
+
+    now=datetime.now().astimezone()
+    p0=doc.add_paragraph()
+    p0.alignment=WD_ALIGN_PARAGRAPH.RIGHT
+    p0.add_run(now.strftime('%d/%m/%Y'))
+
+    p1=doc.add_paragraph()
+    p1.add_run('Konu: ').bold=True
+    p1.add_run('STB Temsilciliği Önemli Gelişmeler Notu')
+
+    rows=[] if basket_df is None else basket_df.to_dict('records')
+
+    for r in rows:
+        title=_v87_safe_tr(r.get('title',''))
+        source=_v87_safe_tr(r.get('source',''))
+        summary=_v87_safe_tr(r.get('summary',''))
+        url=str(r.get('url','') or '')
+        news_time=_v87_safe_tr(r.get('news_time',''))
+
+        # Use the text already saved in the basket first: fast and stable.
+        text=summary
+
+        # Only if the stored summary is genuinely empty/too short, try the article.
+        if len(text.strip())<60 and url:
+            try:
+                d=article_detail({
+                    'Başlık':title,'Kaynak':source,'URL':url,'Yayıncı_URL':url,
+                    'İçerik_Özeti':summary,'Tarih':news_time
+                })
+                fetched=_v87_safe_tr((d or {}).get('text',''))
+                if len(fetched)>len(text):
+                    text=fetched
+            except Exception:
+                pass
+
+        out=_v94_formal_summary_text(text)
+
+        # Absolute fallback: do not create an empty Word document.
+        # If scan stored no summary and article could not be read, use a cleaned
+        # sentence from the title rather than silently omitting the news.
+        if not out:
+            out=_v92_formal_sentence(title).strip()
+            if out and out[-1] not in '.!?':
+                out+='.'
+
+        if not out:
+            continue
+
+        p=doc.add_paragraph()
+        p.alignment=WD_ALIGN_PARAGRAPH.JUSTIFY
+        p.paragraph_format.space_after=Pt(6)
+        p.paragraph_format.line_spacing=1.0
+        p.add_run(out.rstrip(' .;')+' (STB).')
+
+    doc.add_paragraph('Arz olunur.')
+    bio=BytesIO()
+    doc.save(bio)
+    bio.seek(0)
+    return bio.getvalue()
 
 def make_important_basket_docx_v93(basket_df):
     """STB referansına göre sıfırdan yazılmış Önemli Gelişmeler Word motoru."""
@@ -7188,12 +7316,12 @@ else:
                     # Her basışta eski çıktı silinir ve V90 motoruyla baştan hazırlanır.
                     st.session_state.pop('v90_ogn_docx_bytes',None)
                     with st.spinner('Önemli gelişmeler gerçek haber içeriklerinden resmî biçimde özetleniyor...'):
-                        st.session_state['v90_ogn_docx_bytes']=make_important_basket_docx_v93(basket)
+                        st.session_state['v90_ogn_docx_bytes']=make_important_basket_docx_v94(basket)
                 if st.session_state.get('v90_ogn_docx_bytes'):
                     st.download_button(
-                        '⬇️ 24 SAATLİK ÖNEMLİ GELİŞMELER / WORD — V93',
+                        '⬇️ 24 SAATLİK ÖNEMLİ GELİŞMELER / WORD — V94',
                         st.session_state['v90_ogn_docx_bytes'],
-                        file_name=f'24_Saatlik_Onemli_Gelismeler_V93_{date.today()}.docx',
+                        file_name=f'24_Saatlik_Onemli_Gelismeler_V94_{date.today()}.docx',
                         mime='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
                         use_container_width=True,
                         key='v90_download_ogn_word'
