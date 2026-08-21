@@ -3031,73 +3031,58 @@ def _clear_important_basket():
     except Exception:
         return 0
 
-def _v80_reference_important_summary(title, summary):
-    """
-    Kullanıcının gerçek STB örneğine göre:
-    - tek kısa resmî paragraf,
-    - en kritik olay + sayı/tarih/kurum,
-    - teknik/web artıkları yok,
-    - yaklaşık 4 Word satırını aşmayacak yoğunluk.
-    """
-    title=_clean_note_text(title)
+def _v81_sentence_case_title(title):
+    t=_clean_note_text(title).strip()
+    letters=''.join(c for c in t if c.isalpha())
+    if letters and sum(c.isupper() for c in letters)/len(letters)>.80:
+        t=t.lower()
+        t=t[:1].upper()+t[1:]
+    return t
+
+def _v80_reference_important_summary(title,summary):
+    """2-3 cümlelik, anlamlı bütün oluşturan, yaklaşık dört Word satırlık STB özeti."""
+    title=_v81_sentence_case_title(title)
     body=_clean_note_text(summary)
+    garbage=['sıralamayı değiştirmek','kartları yukarı','çerez','cookie','reklam','devamını oku',
+             'tıklayın','anasayfa','benzer haber','ilgili haber','foto galeri','video galeri']
+    good=[]; seen=set()
+    for s in _sentence_split_tr(body):
+        s=_clean_note_text(s).strip(" ;:-[]'\"")
+        if len(s)<30 or any(g in norm(s) for g in garbage): continue
+        k=title_key(s)
+        if k in seen: continue
+        seen.add(k); good.append(s)
+    if not good:
+        return _v66_formalize_sentence_endings(title)
 
-    garbage=[
-        'sıralamayı değiştirmek','kartları yukarı','çerez','cookie','reklam',
-        'son dakika','devamını oku','tıklayın','haberler','anasayfa',
-        'google deepmind’in dümeninde'
-    ]
-    sentences=_sentence_split_tr(body)
-    good=[]
-    for s in sentences:
-        s=_clean_note_text(s).strip(" ;:-")
-        ns=norm(s)
-        if len(s)<25 or any(g in ns for g in garbage):
-            continue
-        if s not in good:
-            good.append(s)
+    terms=['%','yüzde','milyon','milyar','bin ','tüik','tübitak','bakan','açıklad','duyur',
+           'başlat','tamamla','üretim','ihracat','yatırım','kapasite','başvuru','test','sözleşme',
+           'artış','azalış','ulaşt','hedef']
+    # Giriş + en kritik iki tamamlayıcı cümle.
+    chosen=[good[0]]
+    ranked=sorted(list(enumerate(good[1:],1)),
+                  key=lambda z:(sum(t in norm(z[1]) for t in terms),-z[0]),reverse=True)
+    for _,sent in ranked:
+        if sent not in chosen: chosen.append(sent)
+        if len(chosen)>=3: break
+    chosen=sorted(chosen,key=lambda x:good.index(x))
 
-    # Önce rakam, resmî kurum, tarih, somut sonuç içeren cümleleri seç.
-    priority_terms=[
-        '%','yüzde','milyon','milyar','bin ','tüik','tübitak','bakan',
-        'başkan','açıklad','duyur','başlat','tamamla','artış','azalış',
-        'üretim','ihracat','yatırım','kapasite','başvuru','test','sözleşme'
-    ]
-    ranked=sorted(
-        enumerate(good),
-        key=lambda z:(
-            sum(1 for t in priority_terms if t in norm(z[1])),
-            -z[0]
-        ),
-        reverse=True
-    )
-    chosen=[]
-    for _,s in ranked:
-        if s not in chosen:
-            chosen.append(s)
-        if len(chosen)>=2:
-            break
-    if not chosen:
-        chosen=[title]
-    chosen=sorted(chosen,key=lambda s: good.index(s) if s in good else -1)
+    # Başlığı aynen çıktı olarak kullanma; sadece özet yetersizse özne bağlamı ekle.
+    tw=[w for w in re.findall(r'\w+',norm(title)) if len(w)>5][:3]
+    if title and tw and not any(w in norm(chosen[0]) for w in tw) and len(title)<110:
+        # ALL CAPS artık sentence-case'dir.
+        chosen[0]=title.rstrip('.;')+'. '+chosen[0]
 
-    text=' '.join(chosen)
-    # Başlık somut özneyi taşıyorsa ve özet onsuz anlamsızsa başlığı öne al.
-    if title and title_key(title) not in title_key(text) and len(text)<260:
-        text=f"{title.rstrip('.')} kapsamında {text[0].lower()+text[1:] if text else ''}"
-
+    text=' '.join(_v66_formalize_sentence_endings(x) for x in chosen)
     text=_clean_note_text(text)
-    text=_v66_formalize_sentence_endings(text)
-    # Gerçek örnekteki yoğunluğa yaklaşmak için 420 karakter tavanı.
-    if len(text)>420:
-        cut=text[:420]
-        for sep in ['. ','; ', ', ']:
-            k=cut.rfind(sep)
-            if k>=300:
-                cut=cut[:k+1]
-                break
-        text=cut.rstrip(' ,;.-')+'.'
-    return text.strip()
+    # En az iki cümleyi koru; 4 satır hedefi için 620 karakter üst sınırı.
+    sents=_sentence_split_tr(text)
+    kept=[]; total=0
+    for sent in sents:
+        if len(kept)>=2 and total+len(sent)+1>620: break
+        kept.append(sent); total+=len(sent)+1
+        if total>=620: break
+    return ' '.join(kept[:3]).strip()
 
 def make_important_basket_docx(basket_df):
     """V80: Gerçek STB Önemli Gelişmeler Notu dil/üslup ve yoğunluğuna göre."""
@@ -4732,6 +4717,29 @@ def _v80_clear_presentation():
     except Exception:
         return 0
 
+def _v81_remove_presentation_ids(ids):
+    ids=[int(x) for x in ids if str(x).isdigit()]
+    if not ids: return 0
+    try:
+        with _history_connect() as conn:
+            marks=','.join('?' for _ in ids)
+            cur=conn.execute(f"DELETE FROM presentation_basket WHERE id IN ({marks})",ids)
+            conn.commit()
+            return cur.rowcount
+    except Exception:
+        return 0
+
+def _v81_basket_to_rows(bdf):
+    rows=[]
+    if bdf is None or bdf.empty: return rows
+    for _,r in bdf.iterrows():
+        rows.append({'Tarih':_clean_note_text(r.get('news_time','')),'Kaynak':_clean_note_text(r.get('source','')),
+        'Başlık':_clean_note_text(r.get('title','')),'İçerik_Özeti':_clean_note_text(r.get('summary','')),
+        'URL':str(r.get('url','') or ''),'Kategori':_clean_note_text(r.get('category','')),
+        'Risk_Skoru':r.get('risk_score',0),'Risk_Durumu':_clean_note_text(r.get('risk_status',''))})
+    return rows
+
+
 def _v73_main_selected(selected_keys):
     """
     Ana tarama DataFrame'ini yalnız kullanıcı gerçekten bir işlem butonuna bastığında oluşturur/eşleştirir.
@@ -4788,14 +4796,10 @@ def _section_select_table(section_key, data, columns, height=420):
             key=f'v75_section_editor_{section_key}'
         )
         a1,a2,a3,a4=st.columns(4)
-        with a1:
-            do_imp=st.form_submit_button('📌 Önemli Gelişmelere Ekle',use_container_width=True)
-        with a2:
-            do_akt=st.form_submit_button('🗂️ AKT Sepetine Ekle',use_container_width=True)
-        with a3:
-            do_note=st.form_submit_button('📝 Bilgi Notu Oluştur',use_container_width=True)
-        with a4:
-            do_pres=st.form_submit_button('🖥️ Sunuma Ekle',use_container_width=True)
+        with a1: do_imp=st.form_submit_button('📌 Önemli Gelişmelere Ekle',use_container_width=True)
+        with a2: do_akt=st.form_submit_button('🗂️ AKT Sepetine Ekle',use_container_width=True)
+        with a3: do_pres=st.form_submit_button('🖥️ Sunum Sepetine Ekle',use_container_width=True)
+        with a4: do_note=st.form_submit_button('📝 Bilgi Notu Oluştur',use_container_width=True)
 
     selected_keys=set(edited.loc[edited['Seç'].astype(bool),'_row_key'].astype(str))
     st.session_state.section_selections[section_key]={k:(k in selected_keys) for k in edited['_row_key'].astype(str)}
@@ -5745,14 +5749,10 @@ else:
 
                 st.markdown('### ⚡ Seçilen Haberlerle Hızlı İşlem')
                 c1,c2,c3,c4=st.columns(4)
-                with c1:
-                    do_imp=st.form_submit_button('📌 Önemli Gelişmelere Ekle',use_container_width=True)
-                with c2:
-                    do_akt=st.form_submit_button('🗂️ AKT Sepetine Ekle',use_container_width=True)
-                with c3:
-                    do_note=st.form_submit_button('📝 Detaylı Bilgi Notu Oluştur',use_container_width=True)
-                with c4:
-                    do_pres=st.form_submit_button('🖥️ Sunuma Ekle',use_container_width=True)
+                with c1: do_imp=st.form_submit_button('📌 Önemli Gelişmelere Ekle',use_container_width=True)
+                with c2: do_akt=st.form_submit_button('🗂️ AKT Sepetine Ekle',use_container_width=True)
+                with c3: do_pres=st.form_submit_button('🖥️ Sunum Sepetine Ekle',use_container_width=True)
+                with c4: do_note=st.form_submit_button('📝 Detaylı Bilgi Notu Oluştur',use_container_width=True)
 
             if do_imp or do_akt or do_note or do_pres:
                 selected_mask=edited['Seç'].astype(bool).to_numpy()
@@ -6000,6 +6000,10 @@ else:
                     key='v78_ogn_note_download'
                 )
 
+            if selected_label and st.button('🖥️ SEÇİLEN ÖNEMLİ GELİŞMEYİ SUNUM SEPETİNE EKLE',use_container_width=True,key='v81_ogn_to_pres'):
+                _one=basket[basket['id'].astype(int)==int(label_to_id[selected_label])].head(1)
+                st.success(f"✅ {_v80_add_presentation(_v81_basket_to_rows(_one))} haber Sunum Sepeti’ne eklenmiştir.")
+
             b1,b2=st.columns(2)
             with b1:
                 st.session_state.basket_docx_bytes=make_important_basket_docx(basket)
@@ -6089,6 +6093,13 @@ else:
                     'Yayıncı':_clean_note_text(r.get('source','')),
                     'Yayıncı_URL':''
                 })
+
+            _akt_pres_opts={f"{_clean_note_text(r.get('title',''))} — {_clean_note_text(r.get('source',''))}":int(r.get('id')) for _,r in osint_basket.iterrows()}
+            _akt_pres_label=st.selectbox('Sunuma eklenecek AKT haberi',list(_akt_pres_opts.keys()),key='v81_akt_pres_select') if _akt_pres_opts else None
+            if st.button('🖥️ SEÇİLEN AKT HABERİNİ SUNUM SEPETİNE EKLE',use_container_width=True,key='v81_akt_to_pres'):
+                if _akt_pres_label:
+                    _one=osint_basket[osint_basket['id'].astype(int)==_akt_pres_opts[_akt_pres_label]].head(1)
+                    st.success(f"✅ {_v80_add_presentation(_v81_basket_to_rows(_one))} haber Sunum Sepeti’ne eklenmiştir.")
 
             ob1,ob2=st.columns(2)
             with ob1:
@@ -6186,6 +6197,43 @@ else:
 
 
         st.markdown('---')
+        st.subheader('🖥️ Sunum Sepeti')
+        st.caption('Önemli Gelişmeler ve AKT sepetlerinin hemen altında yer almaktadır.')
+        _pb=_v80_load_presentation()
+        if _pb.empty:
+            st.info('Sunum sepeti boş.')
+        else:
+            _pv=_pb[['id','news_time','source','title','url']].copy(); _pv.insert(0,'Seç',False)
+            with st.form('v81_presentation_basket_form',clear_on_submit=False):
+                _ped=st.data_editor(_pv,column_config={'Seç':st.column_config.CheckboxColumn('Seç'),'url':st.column_config.LinkColumn('Haber Linki')},
+                    disabled=[c for c in _pv.columns if c!='Seç'],hide_index=True,use_container_width=True,height=min(420,80+36*len(_pv)))
+                p1,p2,p3,p4=st.columns(4)
+                with p1: _toimp=st.form_submit_button('📌 Önemli Gelişmelere Ekle',use_container_width=True)
+                with p2: _toakt=st.form_submit_button('🗂️ AKT Sepetine Ekle',use_container_width=True)
+                with p3: _pnote=st.form_submit_button('📝 Bilgi Notu Oluştur',use_container_width=True)
+                with p4: _prem=st.form_submit_button('🗑️ Sepetten Çıkar',use_container_width=True)
+            _ids=_ped.loc[_ped['Seç']==True,'id'].astype(int).tolist()
+            _sel=_pb[_pb['id'].astype(int).isin(_ids)]
+            _rows=_v81_basket_to_rows(_sel)
+            if _toimp:
+                if _rows: st.success(f"✅ {_v74_fast_add_important(_rows)} haber Önemli Gelişmeler Sepeti’ne eklenmiştir.")
+                else: st.warning('Önce haber seçin.')
+            if _toakt:
+                if _rows: st.success(f"✅ {_v74_fast_add_osint(_rows)} haber AKT Sepeti’ne eklenmiştir.")
+                else: st.warning('Önce haber seçin.')
+            if _prem:
+                st.success(f"✅ {_v81_remove_presentation_ids(_ids)} haber çıkarılmıştır.")
+            if _pnote:
+                if len(_rows)!=1: st.warning('Detaylı bilgi notu için yalnızca bir haber seçin.')
+                else:
+                    with st.spinner('Seçilen sunum haberinden detaylı bilgi notu hazırlanıyor...'):
+                        st.session_state['v81_pres_note_bytes']=make_analyst_docx(pd.DataFrame(_rows).head(1),title='SANAYİ & TEKNOLOJİ BİLGİ NOTU')
+            if st.session_state.get('v81_pres_note_bytes'):
+                st.download_button('⬇️ SUNUM SEPETİ BİLGİ NOTUNU İNDİR',st.session_state['v81_pres_note_bytes'],
+                    file_name=f'Sunum_Sepeti_Bilgi_Notu_{date.today()}.docx',mime='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                    use_container_width=True,key='v81_pres_note_download')
+
+        st.markdown('---')
         st.subheader('🏛️ Resmî Kaynak Radarı')
         st.caption('Sanayi ve Teknoloji Bakanlığı, TÜBİTAK, KOSGEB, TÜRKPATENT, TSE, SSB, TÜİK ve diğer birincil kamu kaynaklarından gelen içerikleri ayrı gösterir.')
         official_radar=_official_radar_rows(df)
@@ -6235,22 +6283,6 @@ else:
                 height=min(700,100+40*len(lifecycle))
             )
 
-
-        st.markdown('---')
-        st.subheader('🖥️ Sunum Sepeti')
-        st.caption('Her bölümün altındaki “Sunuma Ekle” butonuyla seçtiğiniz gelişmeler burada birikir.')
-        _pb=_v80_load_presentation()
-        if _pb.empty:
-            st.info('Sunum sepeti boş.')
-        else:
-            st.dataframe(
-                _pb[['news_time','source','title','url']],
-                column_config={'url':st.column_config.LinkColumn('Haber Linki')},
-                hide_index=True,use_container_width=True,height=min(380,80+35*len(_pb))
-            )
-            if st.button('🧹 SUNUM SEPETİNİ TEMİZLE',key='v80_clear_presentation'):
-                n=_v80_clear_presentation()
-                st.success(f'{n} kayıt silinmiştir.')
 
         st.markdown('---')
         st.subheader('📋 Gün Sonu Performans Özeti')
