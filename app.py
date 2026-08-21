@@ -2872,6 +2872,8 @@ def _remove_osint_basket_ids(ids):
             q="DELETE FROM osint_report_basket WHERE id IN (" + ",".join("?" for _ in ids) + ")"
             cur=conn.execute(q,ids)
             conn.commit()
+            if cur.rowcount:
+                _v73_invalidate_status_cache()
             return cur.rowcount
     except Exception:
         return 0
@@ -2881,6 +2883,8 @@ def _clear_osint_basket():
         with _history_connect() as conn:
             cur=conn.execute("DELETE FROM osint_report_basket")
             conn.commit()
+            if cur.rowcount:
+                _v73_invalidate_status_cache()
             return cur.rowcount
     except Exception:
         return 0
@@ -2903,6 +2907,8 @@ def _clear_important_basket():
         with _history_connect() as conn:
             cur=conn.execute("DELETE FROM important_basket")
             conn.commit()
+            if cur.rowcount:
+                _v73_invalidate_status_cache()
             return cur.rowcount
     except Exception:
         return 0
@@ -4432,6 +4438,57 @@ def _v73_row_keys(df):
     fallback=titles.map(title_key)
     return urls.where(urls.ne(''),fallback)
 
+
+def _v74_bulk_add_basket(rows,table_name):
+    """
+    V74: Kronoloji hızlı işlemleri için tek SQLite executemany çağrısı.
+    Satır satır execute yerine toplu INSERT OR IGNORE kullanır.
+    """
+    if rows is None or len(rows)==0 or not _init_history_db():
+        return 0
+    if table_name not in ('important_basket','osint_report_basket'):
+        return 0
+    payload=[]
+    now_iso=datetime.now().astimezone().isoformat()
+    for row in rows:
+        title=str(row.get('Başlık','') or '').strip()
+        if not title:
+            continue
+        payload.append((
+            now_iso,
+            str(row.get('Tarih','') or ''),
+            title,
+            str(row.get('Kaynak','') or ''),
+            str(row.get('URL','') or '').strip(),
+            str(row.get('Kategori','') or ''),
+            int(row.get('Risk_Skoru',0) or 0),
+            str(row.get('Risk_Durumu','') or ''),
+            str(row.get('İçerik_Özeti','') or '')[:8000]
+        ))
+    if not payload:
+        return 0
+    try:
+        with _history_connect() as conn:
+            before=conn.total_changes
+            conn.executemany(f"""
+                INSERT OR IGNORE INTO {table_name}(
+                    added_at,news_time,title,source,url,category,risk_score,risk_status,summary
+                ) VALUES(?,?,?,?,?,?,?,?,?)
+            """,payload)
+            conn.commit()
+            added=conn.total_changes-before
+        if added:
+            _v73_invalidate_status_cache()
+        return int(added)
+    except Exception:
+        return 0
+
+def _v74_fast_add_important(rows):
+    return _v74_bulk_add_basket(rows,'important_basket')
+
+def _v74_fast_add_osint(rows):
+    return _v74_bulk_add_basket(rows,'osint_report_basket')
+
 def _v73_main_selected(selected_keys):
     """
     Ana tarama DataFrame'ini yalnız kullanıcı gerçekten bir işlem butonuna bastığında oluşturur/eşleştirir.
@@ -4448,10 +4505,9 @@ def _v73_main_selected(selected_keys):
 
 def _section_select_table(section_key, data, columns, height=420):
     """
-    V73 HIZLI SEÇİM:
-    - checkbox değişiminde yalnız görünür tablo işlenir,
-    - ana tarama tablosu yalnız işlem butonuna basılırsa eşleştirilir,
-    - sepet rozetleri SQLite'dan her bölüm için tekrar okunmaz.
+    V75 ULTRA HIZ:
+    Tüm bölüm tablolarında checkbox değişikliği form içinde kalır.
+    Streamlit yalnız kullanıcı işlem düğmesine bastığında rerun yapar.
     """
     if data is None or data.empty:
         return pd.DataFrame()
@@ -4464,78 +4520,79 @@ def _section_select_table(section_key, data, columns, height=420):
 
     tbl['_row_key']=_v73_row_keys(tbl).values
     selected_map=st.session_state.section_selections.get(section_key,{})
+    tbl.insert(0,'Seç',[bool(selected_map.get(k,False)) for k in tbl['_row_key']]) if 'Seç' not in tbl.columns else None
     if 'Seç' in tbl.columns:
         tbl['Seç']=[bool(selected_map.get(k,bool(v))) for k,v in zip(tbl['_row_key'],tbl['Seç'].tolist())]
-    else:
-        tbl.insert(0,'Seç',[bool(selected_map.get(k,False)) for k in tbl['_row_key']])
 
-    show_cols=['Seç']+[c for c in columns if c in tbl.columns]
-    edited=st.data_editor(
-        tbl[show_cols+['_row_key']],
-        column_config={
-            'Seç':st.column_config.CheckboxColumn('Seç'),
-            'URL':st.column_config.LinkColumn('Haber Linki'),
-            'Medya_URL':st.column_config.LinkColumn('Medya'),
-            'Resmî_URL':st.column_config.LinkColumn('Resmî Açıklama'),
-            'Eşleşme':st.column_config.NumberColumn('Eşleşme',format='%d%%'),
-            'Değer_Skoru':st.column_config.ProgressColumn('Değer Skoru',min_value=0,max_value=100,format='%d/100'),
-            'Risk':st.column_config.NumberColumn('Risk',format='%d/100'),
-            'Risk_Skoru':st.column_config.NumberColumn('Risk',format='%d/100'),
-            '_row_key':None
-        },
-        disabled=[c for c in show_cols if c!='Seç']+['_row_key'],
-        hide_index=True,use_container_width=True,height=height,
-        key=f'section_editor_{section_key}'
-    )
+    show_cols=['Seç']+[c for c in columns if c in tbl.columns and c!='Seç']
 
-    st.session_state.section_selections[section_key]=dict(
-        zip(edited['_row_key'].astype(str),edited['Seç'].astype(bool))
-    )
-    selected_keys=set(edited.loc[edited['Seç'].astype(bool),'_row_key'].astype(str))
-    selected=data[_v73_row_keys(data).isin(selected_keys)].copy()
-
-    if selected_keys:
+    with st.form(key=f'v75_fast_section_form_{section_key}',clear_on_submit=False):
+        edited=st.data_editor(
+            tbl[show_cols+['_row_key']],
+            column_config={
+                'Seç':st.column_config.CheckboxColumn('Seç'),
+                'URL':st.column_config.LinkColumn('Haber Linki'),
+                'Medya_URL':st.column_config.LinkColumn('Medya'),
+                'Resmî_URL':st.column_config.LinkColumn('Resmî Açıklama'),
+                'Eşleşme':st.column_config.NumberColumn('Eşleşme',format='%d%%'),
+                'Değer_Skoru':st.column_config.ProgressColumn('Değer Skoru',min_value=0,max_value=100,format='%d/100'),
+                'Risk':st.column_config.NumberColumn('Risk',format='%d/100'),
+                'Risk_Skoru':st.column_config.NumberColumn('Risk',format='%d/100'),
+                '_row_key':None
+            },
+            disabled=[c for c in show_cols if c!='Seç']+['_row_key'],
+            hide_index=True,use_container_width=True,height=height,
+            key=f'v75_section_editor_{section_key}'
+        )
         a1,a2,a3=st.columns(3)
         with a1:
-            do_imp=st.button('📌 Önemli Gelişmelere Ekle',key=f'imp_{section_key}',use_container_width=True)
+            do_imp=st.form_submit_button('📌 Önemli Gelişmelere Ekle',use_container_width=True)
         with a2:
-            do_akt=st.button('🗂️ Açık Kaynak Sepetine Ekle',key=f'akt_{section_key}',use_container_width=True)
+            do_akt=st.form_submit_button('🗂️ AKT Sepetine Ekle',use_container_width=True)
         with a3:
-            do_note=st.button('📌 BİLGİ NOTU HAZIRLA / WORD',key=f'note_{section_key}',use_container_width=True)
+            do_note=st.form_submit_button('📝 Bilgi Notu Oluştur',use_container_width=True)
 
-        # Ağır ana tablo eşleştirmesi sadece gerçek işlem anında yapılır.
-        if do_imp or do_akt or do_note:
-            main_selected=_v73_main_selected(selected_keys)
-            if main_selected.empty:
-                st.warning('Seçilen haber ana tarama kayıtlarıyla eşleştirilemedi.')
-            elif do_imp:
-                n=_add_rows_to_important_basket(main_selected.to_dict('records'))
-                st.success(f'{n} haber önemli gelişmeler sepetine eklendi.')
+    selected_keys=set(edited.loc[edited['Seç'].astype(bool),'_row_key'].astype(str))
+    st.session_state.section_selections[section_key]={k:(k in selected_keys) for k in edited['_row_key'].astype(str)}
+    selected=data[_v73_row_keys(data).isin(selected_keys)].copy()
+
+    if do_imp or do_akt or do_note:
+        if not selected_keys:
+            st.warning('Önce en az bir haberi işaretleyin.')
+        else:
+            # Önce görünür bölüm verisini kullan: ana dataframe eşleştirmesine çoğu işlemde gerek yok.
+            action_rows=selected.copy()
+            if do_imp:
+                n=_v74_fast_add_important(action_rows.to_dict('records'))
+                st.success(f'✅ {n} yeni haber Önemli Gelişmeler Sepeti’ne eklenmiştir.')
             elif do_akt:
-                n=_add_rows_to_osint_basket(main_selected.to_dict('records'))
-                st.success(f'{n} haber açık kaynak tarama sepetine eklendi.')
+                n=_v74_fast_add_osint(action_rows.to_dict('records'))
+                st.success(f'✅ {n} yeni haber AKT Sepeti’ne eklenmiştir.')
             elif do_note:
-                with st.spinner(f'{len(main_selected)} seçili haberin tam metni okunuyor ve ayrıntılı bilgi notu hazırlanıyor...'):
+                # Bilgi notunda tam içerik gerekiyorsa yalnız burada ana tabloya dön.
+                full=_v73_main_selected(selected_keys)
+                if full.empty: full=action_rows
+                with st.spinner(f'{len(full)} seçili haber için bilgi notu hazırlanmaktadır...'):
                     try:
                         st.session_state[f'section_note_bytes_{section_key}']=make_analyst_docx(
-                            main_selected,title='SANAYİ & TEKNOLOJİ BİLGİ NOTU'
+                            full,title='SANAYİ & TEKNOLOJİ BİLGİ NOTU'
                         )
-                        _v63_mark_notes(main_selected.to_dict('records'))
+                        _v63_mark_notes(full.to_dict('records'))
                         _v73_invalidate_status_cache()
                     except Exception as e:
                         st.session_state[f'section_note_bytes_{section_key}']=None
                         st.error(f'Bilgi notu hazırlanamadı: {e}')
 
-        section_note_bytes=st.session_state.get(f'section_note_bytes_{section_key}')
-        if section_note_bytes:
-            st.download_button(
-                '⬇️ Hazırlanan Bilgi Notunu İndir',
-                data=section_note_bytes,
-                file_name=f'Sanayi_Teknoloji_Bilgi_Notu_{section_key}_{date.today()}.docx',
-                mime='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-                use_container_width=True,
-                key=f'note_download_{section_key}'
-            )
+    section_note_bytes=st.session_state.get(f'section_note_bytes_{section_key}')
+    if section_note_bytes:
+        st.download_button(
+            '⬇️ Hazırlanan Bilgi Notunu İndir',
+            data=section_note_bytes,
+            file_name=f'Sanayi_Teknoloji_Bilgi_Notu_{section_key}_{date.today()}.docx',
+            mime='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            use_container_width=True,
+            key=f'v75_note_download_{section_key}'
+        )
     return selected
 
 def _collect_section_selected_from_main_df(df):
@@ -5098,7 +5155,7 @@ st.markdown('---')
 # ============================================================
 # V68 — ANALİST KOMUTA MERKEZİ
 # ============================================================
-st.caption('⚡ V73 performans modu: ağır geçmiş-zincir analizleri kaldırılmış, sepet işlemleri hızlandırılmıştır.')
+st.caption('⚡ V75 ultra hızlı mod: checkbox işlemleri form içinde tutulmakta; tik atmak tek başına uygulamayı yeniden çalıştırmamaktadır.')
 st.subheader('🎛️ Analist Komuta Merkezi')
 st.caption(
     'Bu alan çalışma saatine ve içeriğin niteliğine göre işlem önermektedir: Bilgi Notu için veri/istatistik, '
@@ -5389,37 +5446,115 @@ else:
         cols=['Seç','Tarih','Kaynak_Grubu','Kaynak','Kategori','Başlık','İçerik_Özeti','Duygu','Risk_Skoru','Risk_Durumu','Kaynak_Güvenilirliği','Doğrulama','URL']
 
         if view=='📰 Kronolojik':
-            st.caption('☑️ Tüm haberler sistemde tutulur; hız için ekranda sayfa sayfa gösterilir.')
-            page_size=75
+            st.caption(
+                '☑️ Hızlı işlem modu: kutucuklara tıklarken sayfa yeniden çalıştırılmaz. '
+                'Seçiminizi yaptıktan sonra aşağıdaki işlem düğmelerinden birine basmanız yeterlidir.'
+            )
+            page_size=40
             total_pages=max(1,(len(df)+page_size-1)//page_size)
-            page_no=st.number_input('Sayfa',min_value=1,max_value=total_pages,value=1,step=1,key='news_page')
+            page_no=st.number_input(
+                'Sayfa',min_value=1,max_value=total_pages,value=1,step=1,
+                key='news_page'
+            )
             start_i=(int(page_no)-1)*page_size
             end_i=min(start_i+page_size,len(df))
             page_df=df.iloc[start_i:end_i].copy()
 
-            # Tarayıcıya çok uzun RSS özetleri göndermeyelim; tam içerik backend'de korunur.
-            page_df['İçerik_Özeti']=page_df['İçerik_Özeti'].astype(str).str.slice(0,320)
+            # Tarayıcı yükünü azalt: yalnız görünür sayfadaki kısa özet gönderilir.
+            page_df['İçerik_Özeti']=page_df['İçerik_Özeti'].astype(str).str.slice(0,220)
+
+            # Durum rozetleri tek cache okumasıyla eklenir.
+            page_df=_v63_add_status_badges(page_df)
+            chron_cols=[
+                'Seç','Tarih','Kaynak_Grubu','Kaynak','Kategori','Başlık','Durum',
+                'İçerik_Özeti','Duygu','Risk_Skoru','Risk_Durumu',
+                'Kaynak_Güvenilirliği','Doğrulama','URL'
+            ]
+            chron_cols=[c for c in chron_cols if c in page_df.columns]
 
             st.caption(f'{start_i+1}-{end_i} / {len(df)} haber')
-            with st.form(key=f'selection_form_{st.session_state.scan_time}_{int(page_no)}', clear_on_submit=False):
+
+            # FORM: checkbox tıklamaları rerun yapmaz. Yalnız işlem butonuna basınca tek rerun olur.
+            with st.form(
+                key=f'v74_chronology_fast_form_{int(page_no)}',
+                clear_on_submit=False
+            ):
                 edited=st.data_editor(
-                    page_df[cols],
+                    page_df[chron_cols],
                     column_config={
                         'Seç':st.column_config.CheckboxColumn('Seç'),
                         'URL':st.column_config.LinkColumn('Haber Linki'),
                         'İçerik_Özeti':st.column_config.TextColumn('Kısa İçerik',width='large'),
-                        'Risk_Skoru':st.column_config.NumberColumn('Risk',format='%d/100')
+                        'Risk_Skoru':st.column_config.NumberColumn('Risk',format='%d/100'),
+                        'Durum':st.column_config.TextColumn('Durum',width='medium')
                     },
-                    disabled=[x for x in cols if x!='Seç'],
-                    hide_index=True,use_container_width=True,height=560,
-                    key=f'editor_{st.session_state.scan_time}_{int(page_no)}'
+                    disabled=[x for x in chron_cols if x!='Seç'],
+                    hide_index=True,
+                    use_container_width=True,
+                    height=535,
+                    key=f'v74_chron_editor_{int(page_no)}'
                 )
-                save_selection=st.form_submit_button('✅ BU SAYFADAKİ SEÇİMLERİ KAYDET',use_container_width=True)
-            if save_selection:
-                original_indices=df.index[start_i:end_i]
-                df.loc[original_indices,'Seç']=edited['Seç'].astype(bool).to_numpy()
-                st.session_state.rows=df.to_dict('records')
-                st.success(f'✅ Toplam {int(df["Seç"].sum())} haber seçili.')
+
+                st.markdown('### ⚡ Seçilen Haberlerle Hızlı İşlem')
+                c1,c2,c3=st.columns(3)
+                with c1:
+                    do_imp=st.form_submit_button(
+                        '📌 Önemli Gelişmelere Ekle',
+                        use_container_width=True
+                    )
+                with c2:
+                    do_akt=st.form_submit_button(
+                        '🗂️ AKT Sepetine Ekle',
+                        use_container_width=True
+                    )
+                with c3:
+                    do_note=st.form_submit_button(
+                        '📝 Detaylı Bilgi Notu Oluştur',
+                        use_container_width=True
+                    )
+
+            if do_imp or do_akt or do_note:
+                selected_mask=edited['Seç'].astype(bool).to_numpy()
+                selected_page=page_df.loc[selected_mask].copy()
+
+                if selected_page.empty:
+                    st.warning('Önce en az bir haberi işaretleyin.')
+                elif do_imp:
+                    n=_v74_fast_add_important(selected_page.to_dict('records'))
+                    st.success(f'✅ {n} yeni haber Önemli Gelişmeler Sepeti’ne eklenmiştir.')
+                elif do_akt:
+                    n=_v74_fast_add_osint(selected_page.to_dict('records'))
+                    st.success(f'✅ {n} yeni haber Açık Kaynak Tarama Sepeti’ne eklenmiştir.')
+                elif do_note:
+                    with st.spinner(
+                        f'{len(selected_page)} seçili haber için ayrıntılı bilgi notu hazırlanmaktadır...'
+                    ):
+                        try:
+                            # Tam içerik için kısa page_df yerine ana df'deki aynı URL'leri kullan.
+                            selected_urls=set(selected_page['URL'].fillna('').astype(str))
+                            full_selected=df[df['URL'].fillna('').astype(str).isin(selected_urls)].copy()
+                            if full_selected.empty:
+                                full_selected=selected_page.copy()
+                            st.session_state['v74_chron_note_bytes']=make_analyst_docx(
+                                full_selected,
+                                title='SANAYİ & TEKNOLOJİ BİLGİ NOTU'
+                            )
+                            _v63_mark_notes(full_selected.to_dict('records'))
+                            _v73_invalidate_status_cache()
+                            st.success('✅ Bilgi notu hazırlanmıştır.')
+                        except Exception as e:
+                            st.session_state['v74_chron_note_bytes']=None
+                            st.error(f'Bilgi notu hazırlanamadı: {e}')
+
+            if st.session_state.get('v74_chron_note_bytes'):
+                st.download_button(
+                    '⬇️ KRONOLOJİDEN HAZIRLANAN BİLGİ NOTUNU İNDİR',
+                    data=st.session_state['v74_chron_note_bytes'],
+                    file_name=f'Sanayi_Teknoloji_Bilgi_Notu_{date.today()}.docx',
+                    mime='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                    use_container_width=True,
+                    key='v74_chron_note_download'
+                )
 
         elif view=='⚠️ Negatif':
             _section_select_table(
@@ -5499,7 +5634,8 @@ else:
         st.subheader('📌 24 Saatlik Önemli Gelişmeler Sepeti')
         st.caption('Gün boyunca önemli gördüğünüz haberleri burada biriktirin; vardiya sonunda Word olarak alın.')
 
-        selected_now=df[df.get('Seç',False)==True] if 'Seç' in df.columns else pd.DataFrame()
+        # V74: Kronoloji artık kendi hızlı işlem düğmelerine sahiptir.
+        # Burada yalnız diğer bölümlerdeki seçili kayıtlar toplanır.
         selected_from_sections=_collect_section_selected_from_main_df(df)
 
         if st.button('➕ BÖLÜMLERDE İŞARETLEDİKLERİMİ ÖNEMLİ GELİŞMELER SEPETİNE EKLE',use_container_width=True):
@@ -5507,12 +5643,6 @@ else:
                 st.warning('Önce herhangi bir bölümde haberlerin yanındaki kutucuklardan seçim yapın.')
             else:
                 added=_add_rows_to_important_basket(selected_from_sections.to_dict('records'))
-                st.success(f'{added} yeni gelişme sepete eklendi.')
-        if st.button('➕ SEÇİLİ HABERLERİ ÖNEMLİ GELİŞMELER SEPETİNE EKLE',use_container_width=True):
-            if selected_now.empty:
-                st.warning('Önce kronolojik görünümden haber seçin ve seçimleri kaydedin.')
-            else:
-                added=_add_rows_to_important_basket(selected_now.to_dict('records'))
                 st.success(f'{added} yeni gelişme sepete eklendi.')
 
         basket=_load_important_basket()
