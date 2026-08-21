@@ -3564,7 +3564,7 @@ def _v87_ogn_summary(title, body, fallback):
     return out or (fallback[:520].strip() if fallback else title[:520].strip())
 
 
-V90_OGN_ENGINE_VERSION='v92_ogn_20260821_1'
+V90_OGN_ENGINE_VERSION='v93_ogn_20260821_1'
 
 def _v90_clean_title(title,source=''):
     t=_v87_safe_tr(title)
@@ -3911,6 +3911,168 @@ def _v92_summary(title, source, body, fallback):
             out=_v92_formal_sentence(fb)
 
     return _v87_safe_tr(out).strip()
+
+
+def _v93_sentence_split(text):
+    t=_v92_clean_news_text(text)
+    # Noktalı virgülü cümle gibi bölme; kurumsal örneklerde bağlı bilgi olabilir.
+    return [x.strip() for x in re.split(r'(?<=[.!?])\s+',t) if x.strip()]
+
+def _v93_is_noise(s):
+    n=norm(s)
+    bad=[
+        'sıralamayı değiştirmek','kartları yukarı','benzer haber','ilgili haber',
+        'devamını oku','son dakika','reklam','çerez','cookie','instagram',
+        'facebook','twitter','whatsapp','youtube','google news',
+        'tıklayın','abone ol','yorumlar','etiketler'
+    ]
+    return len(s)<30 or any(x in n for x in bad) or any(x in s for x in ('Ã','Ä','Å',' '))
+
+def _v93_content_score(s, title_words):
+    n=norm(s)
+    words=set(re.findall(r'[a-zçğıöşü0-9]+',n))
+    score=0
+    score += 5*len(words & title_words)
+    # Örnek notlarda öne çıkan unsurlar: kurum/kişi, tarih, rakam, oran, yer, karar/eylem.
+    if re.search(r'\b\d+(?:[.,]\d+)?\b|%|yüzde|milyon|milyar|bin\b',n): score+=5
+    if re.search(r'\b20\d{2}\b|\b\d{1,2}\s+(?:ocak|şubat|mart|nisan|mayıs|haziran|temmuz|ağustos|eylül|ekim|kasım|aralık)\b',n): score+=3
+    if any(x in n for x in ['açıklad','duyur','yayımla','başlat','tamamla','imzala','seçilecek',
+                             'gerçekleştir','üret','ihrac','yatırım','satın al','devreye al',
+                             'denize indir','entegre','belirlen','güncellen','başvuru']): score+=4
+    if any(x in n for x in ['bakanlık','tübitak','tüik','aselsan','roketsan','tusaş','havelsan',
+                             'cumhurbaşkan','başkanlığı','ajansı','üniversitesi','şirketi','ofisi']): score+=3
+    return score
+
+def _v93_build_summary(title, source, body, fallback):
+    """
+    Tek haber -> tek olay anlatısı.
+    Cümleler haberin başından/ortasından rastgele seçilmez:
+    ana olay cümlesi bulunur ve yalnız onun çevresindeki aynı bağlam kullanılır.
+    """
+    title=_v90_clean_title(title,source)
+    text=_v92_clean_news_text(body or fallback)
+    sentences=[s for s in _v93_sentence_split(text) if not _v93_is_noise(s)]
+    if not sentences:
+        sentences=[s for s in _v93_sentence_split(fallback) if not _v93_is_noise(s)]
+    if not sentences:
+        return ''
+
+    stop={'haber','haberi','son','dakika','bugün','yeni','ile','ve','bir','için','olan',
+          'oldu','olacak','dedi','türkiye','türk','tarafından','kapsamında'}
+    title_words={w for w in re.findall(r'[a-zçğıöşü0-9]+',norm(title)) if len(w)>=4 and w not in stop}
+
+    # Ana olay cümlesi: yalnız ilk 7 cümle içinde aranır.
+    # Böylece sayfanın sonundan/başka haberlerden içerik çekilmez.
+    pool=sentences[:7]
+    scores=[_v93_content_score(s,title_words) for s in pool]
+    anchor=max(range(len(pool)),key=lambda i:(scores[i],-i)) if pool else 0
+
+    # Başlangıç cümlesi başlıkla anlamlı örtüşüyorsa girişten başla.
+    first_overlap=len(set(re.findall(r'[a-zçğıöşü0-9]+',norm(pool[0]))) & title_words) if pool else 0
+    if first_overlap>=1:
+        anchor=0
+
+    chosen=[pool[anchor]]
+    # Ana olayın hemen devamındaki en fazla iki cümleyi kullan.
+    # Uzak cümle avlama kesinlikle yapılmaz.
+    for s in sentences[anchor+1:anchor+3]:
+        # Çok bariz biçimde yeni bir haber/konu başlıyorsa kes.
+        ov=len(set(re.findall(r'[a-zçğıöşü0-9]+',norm(s))) & title_words)
+        if ov==0 and len(chosen)>=2 and _v93_content_score(s,title_words)<5:
+            break
+        chosen.append(s)
+
+    formal=[]
+    for s in chosen:
+        fs=_v92_formal_sentence(s).strip()
+        if not fs:
+            continue
+        if fs[-1] not in '.!?':
+            fs+='.'
+        formal.append(fs)
+
+    # 4 satır hedefi: yaklaşık 520 karakter; ASLA kelime/cümle ortasından kesme.
+    result=[]
+    for s in formal:
+        candidate=' '.join(result+[s])
+        if result and len(candidate)>520:
+            break
+        result.append(s)
+
+    out=' '.join(result).strip()
+
+    # Çok kısa ise yalnız bir sonraki ARDIŞIK cümleyi eklemeyi dene.
+    if len(out)<170:
+        next_i=anchor+len(result)
+        if next_i<len(sentences):
+            fs=_v92_formal_sentence(sentences[next_i]).strip()
+            if fs and fs[-1] not in '.!?': fs+='.'
+            if fs and len(out+' '+fs)<=520:
+                out=(out+' '+fs).strip()
+
+    # Başlık veya link asla eklenmez.
+    out=re.sub(r'https?://\S+','',out)
+    out=re.sub(r'\s+',' ',out).strip()
+    return _v87_safe_tr(out)
+
+def make_important_basket_docx_v93(basket_df):
+    """STB referansına göre sıfırdan yazılmış Önemli Gelişmeler Word motoru."""
+    doc=Document()
+    sec=doc.sections[0]
+    sec.top_margin=Cm(2); sec.bottom_margin=Cm(2)
+    sec.left_margin=Cm(2.5); sec.right_margin=Cm(2.5)
+
+    style=doc.styles['Normal']
+    style.font.name='Times New Roman'
+    style.font.size=Pt(12)
+    style._element.rPr.rFonts.set(qn('w:eastAsia'),'Times New Roman')
+
+    now=datetime.now().astimezone()
+    p=doc.add_paragraph()
+    p.alignment=WD_ALIGN_PARAGRAPH.RIGHT
+    p.add_run(now.strftime('%d/%m/%Y'))
+
+    p=doc.add_paragraph()
+    p.add_run('Konu: ').bold=True
+    p.add_run('STB Temsilciliği Önemli Gelişmeler Notu')
+
+    rows=[] if basket_df is None else basket_df.to_dict('records')
+
+    def one(r):
+        title=_v87_safe_tr(r.get('title',''))
+        source=_v87_safe_tr(r.get('source',''))
+        fallback=_v87_safe_tr(r.get('summary',''))
+        url=str(r.get('url','') or '')
+        news_time=_v87_safe_tr(r.get('news_time',''))
+        try:
+            d=_v90_fetch_detail(title,source,url,fallback,news_time)
+            body=_v87_safe_tr((d or {}).get('text','') or fallback)
+        except Exception:
+            body=fallback
+        return _v93_build_summary(title,source,body,fallback)
+
+    summaries=['']*len(rows)
+    if rows:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(8,len(rows))) as ex:
+            jobs={ex.submit(one,r):i for i,r in enumerate(rows)}
+            for f in concurrent.futures.as_completed(jobs):
+                i=jobs[f]
+                try: summaries[i]=f.result()
+                except Exception: summaries[i]=''
+
+    for text in summaries:
+        if not text:
+            continue
+        p=doc.add_paragraph()
+        p.alignment=WD_ALIGN_PARAGRAPH.JUSTIFY
+        p.paragraph_format.space_after=Pt(6)
+        p.paragraph_format.line_spacing=1.0
+        # Başlık yok, URL yok, madde imi yok.
+        p.add_run(text.rstrip(' .;')+' (STB).')
+
+    doc.add_paragraph('Arz olunur.')
+    bio=BytesIO(); doc.save(bio); bio.seek(0)
+    return bio.getvalue()
 
 def make_important_basket_docx_v92(basket_df):
     """
@@ -7026,12 +7188,12 @@ else:
                     # Her basışta eski çıktı silinir ve V90 motoruyla baştan hazırlanır.
                     st.session_state.pop('v90_ogn_docx_bytes',None)
                     with st.spinner('Önemli gelişmeler gerçek haber içeriklerinden resmî biçimde özetleniyor...'):
-                        st.session_state['v90_ogn_docx_bytes']=make_important_basket_docx_v92(basket)
+                        st.session_state['v90_ogn_docx_bytes']=make_important_basket_docx_v93(basket)
                 if st.session_state.get('v90_ogn_docx_bytes'):
                     st.download_button(
-                        '⬇️ 24 SAATLİK ÖNEMLİ GELİŞMELER / WORD — V92',
+                        '⬇️ 24 SAATLİK ÖNEMLİ GELİŞMELER / WORD — V93',
                         st.session_state['v90_ogn_docx_bytes'],
-                        file_name=f'24_Saatlik_Onemli_Gelismeler_V92_{date.today()}.docx',
+                        file_name=f'24_Saatlik_Onemli_Gelismeler_V93_{date.today()}.docx',
                         mime='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
                         use_container_width=True,
                         key='v90_download_ogn_word'
