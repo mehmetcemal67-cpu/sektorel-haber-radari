@@ -3564,7 +3564,7 @@ def _v87_ogn_summary(title, body, fallback):
     return out or (fallback[:520].strip() if fallback else title[:520].strip())
 
 
-V90_OGN_ENGINE_VERSION='v99_ogn_20260821_1'
+V90_OGN_ENGINE_VERSION='v100_ogn_20260821_1'
 
 def _v90_clean_title(title,source=''):
     t=_v87_safe_tr(title)
@@ -4716,6 +4716,315 @@ def _v99_analyst_ogn(title, source, body, fallback_summary=''):
         text+='.'
     return text
 
+
+# ========================= V100: KONU BÜTÜNLÜĞÜ =========================
+
+def _v100_title_topic(title, source=''):
+    """
+    Başlıktan yalnızca konu/özne çekirdeğini çıkarır.
+    Başlığı aynen basmaz; ALL CAPS ve site adını temizler.
+    """
+    t=_v98_safe_tr(title)
+    t=_v98_strip_site_name(t,source)
+    t=re.sub(r'\s*[-–—|]\s*[\w.-]+\.(?:com|com\.tr|net|org|gov\.tr|edu\.tr)\s*$','',t,flags=re.I)
+    t=re.sub(r'!+$','',t).strip()
+
+    # Tamamı büyük harfliyse normal cümle görünümüne getir.
+    letters=''.join(ch for ch in t if ch.isalpha())
+    if letters and sum(ch.isupper() for ch in letters)/max(1,len(letters)) > 0.72:
+        t=t.lower()
+        t=t[:1].upper()+t[1:]
+
+    return t.strip(' -–—|:;')
+
+def _v100_subject_hint(title, source=''):
+    """
+    Başlıktan self-contained paragraf için özne/konu ipucu çıkarır.
+    Örn: 'KAAN...' -> 'KAAN projesi'
+         'Antalya'da Savunma Sanayine Yatırım Fırsatı' -> 'Antalya'daki savunma sanayii yatırımları'
+    """
+    t=_v100_title_topic(title,source)
+    n=norm(t)
+
+    # Bilinen kalıplar.
+    mappings=[
+        (r'\bkaan\b', 'KAAN projesi'),
+        (r'\bbayraktar kalkan\b', 'Bayraktar Kalkan DİHA'),
+        (r'\bt10x\b|\bt10f\b|\btogg\b', 'Togg’un T10X ve T10F modelleri'),
+        (r'\belektrikli araç.*şarj\b|\bşarj altyap', 'Türkiye’de elektrikli araç şarj altyapısı'),
+        (r'\bkapasite kullanım\b', 'imalat sanayisi kapasite kullanım oranı'),
+        (r'\bkardemir\b', 'Kardemir Çelik’in 2026 yılı ilk yarı finansal sonuçları'),
+        (r'\bgezeravcı\b', 'Alper Gezeravcı’nın Amasya’daki görevi'),
+        (r'\bgoogle.*ai plus\b|\bai plus\b', 'Google’ın üniversite öğrencilerine yönelik AI Plus programı'),
+        (r'\bmoğolistan.*mühimmat\b|\bmke.*moğolistan\b', 'MKE’nin Moğolistan’daki mühimmat üretim tesisi'),
+        (r'\btekno.*mavi vatan\b|\balkü\b|\bzeronetech\b', 'TEKNOFEST Mavi Vatan kapsamında ALKÜ Zeronetech Takımı'),
+        (r'\bsavunma sanay.*yatırım.*antalya\b|\bantalya.*savunma sanay', 'Antalya’daki savunma sanayii yatırım fırsatları'),
+        (r'\byapay zeka olimpiyat\b|\bbilim olimpiyat', 'TÜBİTAK Bilim Olimpiyatları kapsamında Türkiye’yi temsil eden öğrenciler'),
+        (r'\btürk telekom\b|\bdijitalde hayat kolay\b', 'Türk Telekom’un Dijitalde Hayat Kolay projesi'),
+        (r'\b5g.*robotik cerrahi\b|\btcg anadolu.*5g\b', 'TCG ANADOLU’da 5G destekli uzaktan robotik cerrahi uygulaması'),
+    ]
+    for pat,label in mappings:
+        if re.search(pat,n,re.I):
+            return label
+
+    # Genel başlık: ilk 8-10 anlamlı kelimeyi konu ipucu olarak kullan.
+    words=t.split()
+    if not words:
+        return ''
+    return ' '.join(words[:10]).strip(' ,;:-')
+
+def _v100_is_fragment(s):
+    """Özne/bağlam içermeyen kırık veya yarım cümleleri tespit eder."""
+    s=_v98_safe_tr(s).strip()
+    if not s:
+        return True
+    n=norm(s)
+
+    # Açık yarım cümleler / UI artıkları.
+    if s.endswith((' ve',' ile',' için',' k',';',' :','...','…')):
+        return True
+    if re.search(r'\b(?:proje|program|şirket|kurum|bu kapsamda|bunun yanında|ayrıca)\b',n) and len(s.split())<7:
+        return True
+    if re.match(r'^(proje|program|şirket|kurum|bunun yanında|bu kapsamda|ayrıca)\b',n):
+        return True
+    if re.match(r'^\d+\s+(?:yıl|ay|gün)\b',n):
+        return True
+    return False
+
+def _v100_contextualize(sentence, subject):
+    """
+    Paragrafın ilk cümlesi kendi başına anlaşılmıyorsa başlıktan gelen konu çekirdeğiyle
+    bağlamı tamamlar. Başlığı olduğu gibi eklemez.
+    """
+    s=_v99_officialize(sentence).strip()
+    if not s:
+        return ''
+    n=norm(s)
+
+    weak_starts=(
+        'proje ','program ','şirket ','kurum ','bunun yanında ',
+        'bu kapsamda ','ayrıca ','ilk olarak ','daha sonra '
+    )
+    if any(n.startswith(x) for x in weak_starts) or _v100_is_fragment(s):
+        if subject:
+            # "Proje, Mart..." -> "KAAN projesinde üretim faaliyetleri Mart..."
+            if n.startswith('proje '):
+                s=re.sub(r'^\s*Proje\s*,?\s*', subject+' kapsamında ', s, flags=re.I)
+            elif n.startswith('program '):
+                s=re.sub(r'^\s*Program\s*,?\s*', subject+' kapsamında ', s, flags=re.I)
+            elif n.startswith('şirket '):
+                s=re.sub(r'^\s*Şirket\s*,?\s*', subject+' kapsamında ilgili şirket ', s, flags=re.I)
+            else:
+                s=subject.rstrip(' .')+' kapsamında '+s[:1].lower()+s[1:]
+    return s
+
+def _v100_pick_summary_sentences(title, source, body, fallback):
+    """
+    Self-contained analist özeti:
+    1) ilk cümle mutlaka konuyu/özneyi açıklar,
+    2) ikinci cümle kritik veri/rakam,
+    3) üçüncü cümle sonuç/hedef/takvim.
+    """
+    subject=_v100_subject_hint(title,source)
+    body=_v99_clean_article_text(body,source)
+    fallback=_v99_clean_article_text(fallback,source)
+
+    candidate=body
+    if not candidate or _v99_is_title_only(title,candidate):
+        candidate=fallback
+
+    sents=_v96_unique_sentences(title,candidate)
+    clean=[]
+    for s in sents:
+        s=_v99_clean_article_text(s,source)
+        if not s or _v100_is_fragment(s):
+            continue
+        if _v99_is_title_only(title,s):
+            continue
+        clean.append(s)
+
+    if not clean:
+        return ''
+
+    # 1) Ana olay: ilk 5 cümle içinde subject/title overlap + kurumsal eylem.
+    tw=set(re.findall(r'[a-zçğıöşü0-9]+',norm(subject or title)))
+    def overlap(s):
+        sw=set(re.findall(r'[a-zçğıöşü0-9]+',norm(s)))
+        return len(sw & tw)
+
+    action_terms=['açıkla','duyur','başlat','gerçekleştir','tamamla','imzala','üret',
+                  'satış','yatırım','test','görev','teslim','envanter','faaliyete','seç']
+    def intro_score(s,idx):
+        n=norm(s)
+        return 7*overlap(s)+4*sum(x in n for x in action_terms)+_sent_score(s)-idx
+
+    first_pool=list(enumerate(clean[:5]))
+    idx0, intro=max(first_pool,key=lambda z:intro_score(z[1],z[0]))
+    intro=_v100_contextualize(intro,subject)
+
+    # Eğer ilk cümlede subject hiç yoksa, doğal konu cümlesiyle bağla.
+    if subject and overlap(intro)==0:
+        # Başlıktan birebir kopya değil, konu bağlamı.
+        if intro:
+            intro=subject.rstrip(' .')+' hakkında, '+intro[:1].lower()+intro[1:]
+
+    selected=[intro] if intro else []
+    used={idx0}
+
+    # 2) Kritik veri/rakam.
+    critical=[]
+    for i,s in enumerate(clean):
+        if i in used:
+            continue
+        if _v96_has_critical_data(s):
+            critical.append((_v99_sentence_value(s)+3*overlap(s),i,s))
+    if critical:
+        _,i,s=max(critical,key=lambda x:(x[0],-x[1]))
+        fs=_v99_officialize(s)
+        if fs and not _v100_is_fragment(fs):
+            selected.append(fs); used.add(i)
+
+    # 3) Sonuç/hedef/takvim.
+    result_terms=['hedef','beklen','plan','başvuru','teslim','envanter','rekor',
+                  'katkı','artış','azalış','faaliyete','tamamlan','başlam','uygulan']
+    results=[]
+    for i,s in enumerate(clean):
+        if i in used:
+            continue
+        n=norm(s)
+        sc=4*sum(x in n for x in result_terms)+_sent_score(s)+2*overlap(s)
+        if sc>3:
+            results.append((sc,i,s))
+    if results:
+        _,i,s=max(results,key=lambda x:(x[0],-x[1]))
+        fs=_v99_officialize(s)
+        if fs and not _v100_is_fragment(fs):
+            selected.append(fs)
+
+    # Tekrarlı sayısal cümleleri azalt.
+    final=[]
+    seen_nums=[]
+    for s in selected[:3]:
+        s=_v98_safe_tr(_v99_officialize(s)).strip()
+        if not s:
+            continue
+        nums=set(re.findall(r'\d+(?:[.,]\d+)?',s))
+        duplicate=False
+        for prev,prev_nums in zip(final,seen_nums):
+            if nums and nums==prev_nums and len(nums)>=1 and title_key(s)==title_key(prev):
+                duplicate=True
+                break
+        if duplicate:
+            continue
+        if s[-1] not in '.!?':
+            s+='.'
+        final.append(s)
+        seen_nums.append(nums)
+
+    # 4 satır hedefi ~560 karakter; tam cümle kesilmez.
+    out=[]
+    for s in final:
+        cand=' '.join(out+[s])
+        if out and len(cand)>560:
+            break
+        out.append(s)
+
+    text=' '.join(out).strip()
+    text=_v99_clean_article_text(text,source)
+    text=_v99_officialize(text)
+    text=_v98_strip_site_name(text,source)
+    text=_v98_safe_tr(text)
+
+    # Son güvenlik: paragraf yine başlık seviyesindeyse geçersiz say.
+    if _v99_is_title_only(title,text):
+        return ''
+    return text
+
+def make_important_basket_docx_v100(basket_df):
+    """
+    V100: Her haber kendi içinde anlamlı bir bütün oluşturur.
+    Başlıktan konu bağlamı alınır ama başlık Word'e ayrı yazılmaz.
+    'Proje...' gibi bağlamsız başlangıçlar düzeltilir.
+    """
+    doc=Document()
+    sec=doc.sections[0]
+    sec.top_margin=Cm(2); sec.bottom_margin=Cm(2)
+    sec.left_margin=Cm(2.5); sec.right_margin=Cm(2.5)
+
+    normal=doc.styles['Normal']
+    normal.font.name='Times New Roman'
+    normal.font.size=Pt(12)
+    normal._element.rPr.rFonts.set(qn('w:eastAsia'),'Times New Roman')
+
+    now=datetime.now().astimezone()
+    p=doc.add_paragraph()
+    p.alignment=WD_ALIGN_PARAGRAPH.RIGHT
+    p.add_run(now.strftime('%d/%m/%Y'))
+
+    p=doc.add_paragraph()
+    p.add_run('Konu: ').bold=True
+    p.add_run('STB Temsilciliği Önemli Gelişmeler Notu')
+
+    rows=[] if basket_df is None else basket_df.to_dict('records')
+
+    def process_row(r):
+        title=_v98_safe_tr(r.get('title',''))
+        source=_v98_safe_tr(r.get('source',''))
+        summary=_v98_safe_tr(r.get('summary',''))
+        url=str(r.get('url','') or '')
+        news_time=_v98_safe_tr(r.get('news_time',''))
+
+        detail={}
+        try:
+            detail=article_detail({
+                'Başlık':title,'Kaynak':source,'URL':url,'Yayıncı_URL':url,
+                'İçerik_Özeti':summary,'Tarih':news_time
+            }) or {}
+        except Exception:
+            pass
+
+        body=detail.get('text') or ''
+        text=_v100_pick_summary_sentences(title,source,body,summary)
+
+        # Tam metin sorunluysa yalnız kayıtlı özetle tekrar dene.
+        if not text and summary:
+            text=_v100_pick_summary_sentences(title,source,summary,summary)
+
+        # Son çare: başlığı "başlık" olarak değil, konu cümlesine dönüştür.
+        if not text:
+            subject=_v100_subject_hint(title,source)
+            if subject:
+                text=f'{subject} kapsamında gelişmenin ayrıntılarına ilişkin haber içeriği sınırlı olduğundan, mevcut açık kaynak metninden doğrulanabilir ek bilgi çıkarılamamıştır.'
+                text=_v99_officialize(text)
+        return text
+
+    outputs=['']*len(rows)
+    if rows:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(6,len(rows))) as ex:
+            jobs={ex.submit(process_row,r):i for i,r in enumerate(rows)}
+            for fut in concurrent.futures.as_completed(jobs):
+                idx=jobs[fut]
+                try:
+                    outputs[idx]=fut.result()
+                except Exception:
+                    outputs[idx]=''
+
+    for idx,r in enumerate(rows):
+        text=_v98_safe_tr(outputs[idx] if idx<len(outputs) else '')
+        if not text:
+            continue
+
+        p=doc.add_paragraph()
+        p.alignment=WD_ALIGN_PARAGRAPH.JUSTIFY
+        p.paragraph_format.line_spacing=1.0
+        p.paragraph_format.space_after=Pt(7)
+        p.add_run(text.rstrip(' .;')+' (STB).')
+
+    doc.add_paragraph('Arz olunur.')
+    bio=BytesIO(); doc.save(bio); bio.seek(0)
+    return bio.getvalue()
+
+# ======================= /V100: KONU BÜTÜNLÜĞÜ =========================
 def make_important_basket_docx_v99(basket_df):
     """
     V99 ÖGN Word:
@@ -8439,12 +8748,12 @@ else:
                     # Her basışta eski çıktı silinir ve V90 motoruyla baştan hazırlanır.
                     st.session_state.pop('v90_ogn_docx_bytes',None)
                     with st.spinner('Önemli gelişmeler gerçek haber içeriklerinden resmî biçimde özetleniyor...'):
-                        st.session_state['v90_ogn_docx_bytes']=make_important_basket_docx_v99(basket)
+                        st.session_state['v90_ogn_docx_bytes']=make_important_basket_docx_v100(basket)
                 if st.session_state.get('v90_ogn_docx_bytes'):
                     st.download_button(
-                        '⬇️ 24 SAATLİK ÖNEMLİ GELİŞMELER / WORD — V99',
+                        '⬇️ 24 SAATLİK ÖNEMLİ GELİŞMELER / WORD — V100',
                         st.session_state['v90_ogn_docx_bytes'],
-                        file_name=f'24_Saatlik_Onemli_Gelismeler_V99_{date.today()}.docx',
+                        file_name=f'24_Saatlik_Onemli_Gelismeler_V100_{date.today()}.docx',
                         mime='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
                         use_container_width=True,
                         key='v90_download_ogn_word'
