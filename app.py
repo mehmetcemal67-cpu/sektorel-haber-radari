@@ -3039,25 +3039,26 @@ def _v81_sentence_case_title(title):
         t=t[:1].upper()+t[1:]
     return t
 
-def _v82_clean_article_sentences(text):
-    """Haber gövdesinden menü/reklam/başka haber parçalarını ayıklar."""
+def _v83_clean_article_sentences(text):
+    """Haber gövdesini kurumsal özetlemeye uygun cümlelere ayırır."""
     garbage=[
-        'çerez','cookie','reklam','devamını oku','tıklayın','anasayfa',
-        'son dakika','benzer haber','ilgili haber','foto galeri','video galeri',
-        'sıralamayı değiştirmek','kartları yukarı','abone ol','bildirimleri aç',
-        'google news','whatsapp kanal','instagram','facebook','twitter'
+        'çerez','cookie','reklam','devamını oku','tıklayın','anasayfa','son dakika',
+        'benzer haber','ilgili haber','foto galeri','video galeri','sıralamayı değiştirmek',
+        'kartları yukarı','abone ol','bildirimleri aç','google news','whatsapp kanal',
+        'instagram','facebook','twitter','ekonomi gazetesi »','doğru şarj alışkanlıklarını',
+        'haberler (','bugün kocaeli gazetesi'
     ]
     out=[]; seen=set()
     for s in _sentence_split_tr(_clean_note_text(text)):
         s=_clean_note_text(s).strip(" ;:-[]'\"")
         ns=norm(s)
-        if len(s)<35 or len(s)>420:
+        if len(s)<38 or len(s)>500 or any(g in ns for g in garbage):
             continue
-        if any(g in ns for g in garbage):
+        # Kesilmiş haber/snippet cümleleri.
+        if s.endswith(('…','...')) or re.search(r'\bve k$',s,re.I):
             continue
-        # Navigasyon / başlık kırıntısı niteliğindeki aşırı kısa büyük harf dizilerini alma.
         letters=''.join(c for c in s if c.isalpha())
-        if letters and len(s)<120 and sum(c.isupper() for c in letters)/max(1,len(letters))>.75:
+        if letters and len(s)<130 and sum(c.isupper() for c in letters)/max(1,len(letters))>.78:
             continue
         k=title_key(s)
         if not k or k in seen:
@@ -3065,92 +3066,121 @@ def _v82_clean_article_sentences(text):
         seen.add(k); out.append(s)
     return out
 
-def _v82_formal_sentence(s):
-    """Kaynak cümlesinin anlamını bozmadan kurumsal yüklem biçimini uygular."""
+def _v83_formalize(s):
+    """Haber dili kalıntılarını mümkün olduğunca resmî kurum diline dönüştürür."""
     s=_clean_note_text(s).strip()
-    s=_v66_formalize_sentence_endings(s)
-    # Yaygın haber dili kalıntıları.
-    repl=[
-        (r'\bifade ediyor\b','ifade etmektedir'),
-        (r'\bbelirtiyor\b','belirtmektedir'),
-        (r'\baçıklıyor\b','açıklamaktadır'),
-        (r'\bduyuruyor\b','duyurmaktadır'),
-        (r'\bgösteriyor\b','göstermektedir'),
-        (r'\bsağlıyor\b','sağlamaktadır'),
-        (r'\bhedefliyor\b','hedeflemektedir'),
-        (r'\bplanlıyor\b','planlamaktadır'),
+    pairs=[
+        (r'\bifade etti\b','ifade etmiştir'),(r'\bifade ediyor\b','ifade etmektedir'),
+        (r'\bbelirtti\b','belirtmiştir'),(r'\bbelirtiyor\b','belirtmektedir'),
+        (r'\baçıkladı\b','açıklamıştır'),(r'\baçıklıyor\b','açıklamaktadır'),
+        (r'\bduyurdu\b','duyurmuştur'),(r'\bduyuruyor\b','duyurmaktadır'),
+        (r'\bgösterdi\b','göstermiştir'),(r'\bgösteriyor\b','göstermektedir'),
+        (r'\bsağladı\b','sağlamıştır'),(r'\bsağlıyor\b','sağlamaktadır'),
+        (r'\bhedefliyor\b','hedeflemektedir'),(r'\bplanlıyor\b','planlamaktadır'),
+        (r'\bbaşladı\b','başlamıştır'),(r'\bbaşlıyor\b','başlamaktadır'),
+        (r'\btamamladı\b','tamamlamıştır'),(r'\bkazandı\b','kazanmıştır'),
+        (r'\bgerçekleşti\b','gerçekleşmiştir'),(r'\byükseldi\b','yükselmiştir'),
+        (r'\bgeriledi\b','gerilemiştir'),(r'\barttı\b','artmıştır'),(r'\bazaldı\b','azalmıştır'),
+        (r'\bolacak\b','olacaktır'),(r'\byapılacak\b','yapılacaktır'),
+        (r'\bsağlanacak\b','sağlanacaktır'),(r'\bbaşlayacak\b','başlayacaktır')
     ]
-    for pat,val in repl:
+    for pat,val in pairs:
         s=re.sub(pat,val,s,flags=re.I)
-    return s
+    s=_v66_formalize_sentence_endings(s)
+    # Kötü haber dili örneği: "ifade ettiği ifade etti"
+    s=re.sub(r'\bifade ettiği ifade etmiştir\b','ifade etmiştir',s,flags=re.I)
+    return _clean_note_text(s)
+
+def _v83_extract_entities(text):
+    """Kim/nerede/ne zaman/rakam için görünür ipuçlarını çıkarır."""
+    t=_clean_note_text(text)
+    numbers=re.findall(r'(?:% ?\d+(?:[.,]\d+)?|\d+(?:[.,]\d+)?\s*(?:milyar|milyon|bin|MW|GWh|MWh|km|adet|TL|dolar|avro|euro|kron|puan|yıl|ay|gün))',t,re.I)
+    dates=re.findall(r'\b(?:\d{1,2}\s+(?:Ocak|Şubat|Mart|Nisan|Mayıs|Haziran|Temmuz|Ağustos|Eylül|Ekim|Kasım|Aralık)\s+\d{4}|(?:Ocak|Şubat|Mart|Nisan|Mayıs|Haziran|Temmuz|Ağustos|Eylül|Ekim|Kasım|Aralık)\s+\d{4}|20\d{2})\b',t,re.I)
+    return numbers[:8],dates[:4]
 
 def _v80_reference_important_summary(title,summary,full_text=''):
     """
-    V82: Kurum örneğine yakın ÖGN özeti.
-    Başlık kopyalanmaz. Haber gövdesinden olayın özü + kritik veri/detay +
-    sonuç/gelecek adımı seçilerek 2-3 cümlelik, yaklaşık dört Word satırlık
+    V83 ÖGN: 5N1K odaklı kurumsal özet.
+    Kim? Nerede? Ne zaman? Ne oldu? Nasıl/hangi kapsamda? Neden/sonuç ne?
+    Haber bunları desteklediği ölçüde, 3-4 cümlelik ve yaklaşık 4 Word satırlık
     anlamlı tek paragraf oluşturulur.
     """
     title=_v81_sentence_case_title(title)
     body=_clean_note_text(full_text or summary)
-    good=_v82_clean_article_sentences(body)
-    if len(good)<2 and full_text:
-        good=_v82_clean_article_sentences(str(summary)+' '+str(full_text))
+    good=_v83_clean_article_sentences(body)
+    if len(good)<3:
+        good=_v83_clean_article_sentences(str(summary)+' '+str(full_text))
     if not good:
-        return _v82_formal_sentence(title)
+        return _v83_formalize(title)
 
-    # Rol puanları: olay/kurum, sayısal kritik detay, sonuç/gelecek adımı.
-    fact_terms=['açıklad','duyur','başlat','gerçekleştir','tamamla','imzala','yayımla',
-                'üret','geliştir','test','düzenlen','başvuru','yatırım','proje']
-    data_terms=['%','yüzde','milyon','milyar','trilyon','bin ','adet','km','mw','gwh',
-                'oran','endeks','kapasite','ciro','ihracat','üretim','satış','başvuru']
-    result_terms=['art','azal','gerile','yüksel','ulaş','hedef','plan','beklen','başlay',
-                  'sağla','imkân','kazandır','devreye','pilot','uygulan','kullanıl']
-    official_terms=['tüik','tübitak','bakanlık','bakan','tse','türkpatent','ssb','nasa',
-                    'ibm','cumhurbaşkan','başkanlık','enstitü']
+    fact=['açıklad','duyur','başlat','gerçekleştir','tamamla','imzala','yayımla','düzenlen',
+          'üret','geliştir','test','ziyaret','başvuru','yatırım','göreve','satış']
+    actor=['tüik','tübitak','bakanlık','bakan','cumhurbaşkan','tcmb','tse','türkpatent','ssb',
+           'valili','üniversite','şirket','başkan','nasa','ibm','türk telekom']
+    place=['ankara','istanbul','kocaeli','antalya','amasya','astana','pekin','türkiye','gölcük',
+           'abd','çin','kazakistan','avustralya','almanya','isveç']
+    result=['art','azal','gerile','yüksel','ulaş','hedef','plan','beklen','sağla','kazandır',
+            'devreye','pilot','kullanıl','satış','ihracat','kapasite','rekor','destek']
+    nums,dates=_v83_extract_entities(body)
 
-    def score(s,terms):
-        ns=norm(s)
-        return sum(1 for t in terms if t in ns)
+    def has(s,terms): return sum(t in norm(s) for t in terms)
+    def numscore(s):
+        return len(re.findall(r'%|\d',s))
 
-    # İlk cümle: ilk 4 temiz cümle içinden olayı en iyi tanımlayanı seç.
-    first_pool=good[:4]
-    first=max(first_pool,key=lambda s:(2*score(s,fact_terms)+score(s,official_terms)+score(s,data_terms),-good.index(s)))
-    chosen=[first]
+    # 1. cümle = kim + ne yaptı + mümkünse nerede/ne zaman.
+    intro_pool=good[:7]
+    intro=max(intro_pool,key=lambda s:(3*has(s,fact)+2*has(s,actor)+has(s,place)+min(numscore(s),2),-good.index(s)))
+    chosen=[intro]
 
-    # İkinci: mümkünse rakam/ölçek/teknik kritik ayrıntı.
-    remaining=[s for s in good if s not in chosen]
-    if remaining:
-        second=max(remaining,key=lambda s:(3*score(s,data_terms)+score(s,official_terms)+score(s,fact_terms),-good.index(s)))
-        if score(second,data_terms)>0 or len(chosen)<2:
-            chosen.append(second)
+    # 2. cümle = en kritik sayı/ölçek/teknik ayrıntı.
+    rem=[s for s in good if s not in chosen]
+    if rem:
+        detail=max(rem,key=lambda s:(4*min(numscore(s),3)+2*has(s,actor)+has(s,fact),-good.index(s)))
+        if numscore(detail)>0 or len(chosen)<2:
+            chosen.append(detail)
 
-    # Üçüncü: sonuç, hedef, takvim veya anlamı tamamlayan cümle.
-    remaining=[s for s in good if s not in chosen]
-    if remaining:
-        third=max(remaining,key=lambda s:(3*score(s,result_terms)+score(s,data_terms)+score(s,fact_terms),-good.index(s)))
-        if score(third,result_terms)>0 or len(chosen)<2:
-            chosen.append(third)
+    # 3. cümle = sonuç / amaç / sonraki adım / önem.
+    rem=[s for s in good if s not in chosen]
+    if rem:
+        consequence=max(rem,key=lambda s:(4*has(s,result)+has(s,fact)+min(numscore(s),2),-good.index(s)))
+        if has(consequence,result)>0 or len(chosen)<3:
+            chosen.append(consequence)
 
-    # Haber akışını koru.
+    # 4. cümle yalnız gerçekten yeni kritik bilgi taşıyorsa.
+    rem=[s for s in good if s not in chosen]
+    if rem:
+        fourth=max(rem,key=lambda s:(2*has(s,result)+2*min(numscore(s),3)+has(s,place),-good.index(s)))
+        if (numscore(fourth)>=2 or has(fourth,result)>=2) and len(' '.join(chosen))<520:
+            chosen.append(fourth)
+
     chosen=sorted(chosen,key=lambda s:good.index(s))
-    formal=[_v82_formal_sentence(s) for s in chosen[:3]]
-    text=_clean_note_text(' '.join(formal))
+    formal=[]
+    for s in chosen[:4]:
+        fs=_v83_formalize(s)
+        if fs and title_key(fs) not in {title_key(x) for x in formal}:
+            formal.append(fs)
 
-    # Yaklaşık 4 satır: cümleyi ortadan kesmeden 680 karaktere kadar.
+    text=_clean_note_text(' '.join(formal))
+    # Başlık metnini bağımsız cümle olarak basma; yalnız haber gövdesi yetersizse kullan.
+    if len(formal)<2 and title:
+        text=_clean_note_text(_v83_formalize(title)+'. '+text)
+
+    # 4 Word satırı hedefi: 3-4 tam cümle, cümle ortasında kesme yok.
     sents=_sentence_split_tr(text)
     kept=[]; total=0
     for sent in sents:
-        n=len(sent)+(1 if kept else 0)
-        if len(kept)>=2 and total+n>680:
+        add=len(sent)+(1 if kept else 0)
+        if len(kept)>=3 and total+add>760:
             break
-        kept.append(sent); total+=n
-        if len(kept)>=3:
+        if total+add>820 and len(kept)>=2:
+            break
+        kept.append(sent); total+=add
+        if len(kept)>=4:
             break
     return ' '.join(kept).strip()
 
 def make_important_basket_docx(basket_df):
-    """V80: Gerçek STB Önemli Gelişmeler Notu dil/üslup ve yoğunluğuna göre."""
+    """V83: 5N1K + kritik veri + kurumsal dil esaslı Önemli Gelişmeler Notu."""
     doc=Document(); sec=doc.sections[0]
     sec.top_margin=Cm(2); sec.bottom_margin=Cm(2); sec.left_margin=Cm(2.5); sec.right_margin=Cm(2.5)
     normal=doc.styles['Normal']
