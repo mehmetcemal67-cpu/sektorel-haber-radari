@@ -3564,7 +3564,7 @@ def _v87_ogn_summary(title, body, fallback):
     return out or (fallback[:520].strip() if fallback else title[:520].strip())
 
 
-V90_OGN_ENGINE_VERSION='v101_ogn_20260821_1'
+V90_OGN_ENGINE_VERSION='v102_status_20260821_1'
 
 def _v90_clean_title(title,source=''):
     t=_v87_safe_tr(title)
@@ -7349,6 +7349,7 @@ def _v63_mark_notes(rows):
                     (datetime.now().astimezone().isoformat(),title,str(row.get('URL','') or '').strip())
                 )
             conn.commit()
+        _v73_invalidate_status_cache()
     except Exception:
         pass
 
@@ -7357,39 +7358,52 @@ def _v73_invalidate_status_cache():
 
 def _v63_status_sets():
     """
-    V73 performans: aynı Streamlit rerun'ında/her bölümde SQLite'ı tekrar tekrar okumaz.
-    Sepet durumları session cache'den gelir; sepet değiştiğinde cache temizlenir.
+    V102 — Tek sorguda dört işlem durumunu okur:
+    Önemli Gelişmeler, AKT, Sunum ve hazırlanmış Bilgi Notu.
     """
     cached=st.session_state.get('_v73_status_sets_cache')
     if cached is not None:
         return cached
 
-    imp=set(); akt=set(); notes=set()
+    imp=set(); akt=set(); notes=set(); pres=set()
     if not _init_history_db():
-        return imp,akt,notes
+        return imp,akt,notes,pres
     try:
         with _history_connect() as conn:
-            for table,target in [('important_basket',imp),('osint_report_basket',akt),('note_history',notes)]:
+            for table,target in [
+                ('important_basket',imp),
+                ('osint_report_basket',akt),
+                ('note_history',notes),
+                ('presentation_basket',pres)
+            ]:
                 rows=conn.execute(f"SELECT title,url FROM {table}").fetchall()
                 for title,url in rows:
                     target.add(str(url).strip() if str(url or '').strip() else title_key(str(title or '')))
     except Exception:
         pass
-    result=(imp,akt,notes)
+    result=(imp,akt,notes,pres)
     st.session_state['_v73_status_sets_cache']=result
     return result
 
 def _v63_add_status_badges(df):
-    if df is None or df.empty: return df
+    """Her haber tablosuna tek bir Durum sütunu ekler."""
+    if df is None or df.empty:
+        return df
     out=df.copy()
-    imp,akt,notes=_v63_status_sets()
+    imp,akt,notes,pres=_v63_status_sets()
+
     def badge(r):
-        k=str(r.get('URL','')).strip() or title_key(str(r.get('Başlık','')))
+        # Ana tarama tabloları Türkçe; sepet tabloları İngilizce kolon adları kullanır.
+        url=str(r.get('URL',r.get('url','')) or '').strip()
+        title=str(r.get('Başlık',r.get('title','')) or '')
+        k=url or title_key(title)
         b=[]
-        if k in imp: b.append('📌 Önemli Gelişmelerde')
-        if k in akt: b.append('📁 AKT’de')
-        if k in notes: b.append('📝 Bilgi Notu Hazırlandı')
+        if k in pres:  b.append('🖥️ Sunum Sepetinde')
+        if k in imp:   b.append('📌 Önemli Gelişmelerde')
+        if k in notes: b.append('📝 Bilgi Notu Yapıldı')
+        if k in akt:   b.append('📁 AKT Sepetinde')
         return ' • '.join(b) if b else '—'
+
     out['Durum']=out.apply(badge,axis=1)
     return out
 
@@ -7398,7 +7412,7 @@ def _v63_missed_candidates(df,limit=12):
     if df is None or df.empty: return pd.DataFrame()
     value=_v52_event_value_table(df,max(30,limit*2))
     if value.empty: return value
-    imp,akt,notes=_v63_status_sets()
+    imp,akt,notes,pres=_v63_status_sets()
     rows=[]
     for _,v in value.iterrows():
         url=str(v.get('URL','') or '').strip()
@@ -7499,7 +7513,7 @@ def _v68_analyst_command_center(df,limit=8):
     if value.empty:
         return pd.DataFrame(columns=cols),phase,phase_hint
 
-    imp,akt,notes=_v63_status_sets()
+    imp,akt,notes,pres=_v63_status_sets()
     actions=[]
 
     data_terms=[
@@ -7703,7 +7717,10 @@ def _v80_add_presentation(rows):
                 ) VALUES(?,?,?,?,?,?,?)
             """,payload)
             conn.commit()
-            return int(conn.total_changes-before)
+            added=int(conn.total_changes-before)
+        if added:
+            _v73_invalidate_status_cache()
+        return added
     except Exception:
         return 0
 
@@ -7723,7 +7740,10 @@ def _v80_clear_presentation():
         with _history_connect() as conn:
             cur=conn.execute("DELETE FROM presentation_basket")
             conn.commit()
-            return cur.rowcount
+            removed=cur.rowcount
+        if removed:
+            _v73_invalidate_status_cache()
+        return removed
     except Exception:
         return 0
 
@@ -7735,7 +7755,10 @@ def _v81_remove_presentation_ids(ids):
             marks=','.join('?' for _ in ids)
             cur=conn.execute(f"DELETE FROM presentation_basket WHERE id IN ({marks})",ids)
             conn.commit()
-            return cur.rowcount
+            removed=cur.rowcount
+        if removed:
+            _v73_invalidate_status_cache()
+        return removed
     except Exception:
         return 0
 
@@ -7799,6 +7822,7 @@ def _section_select_table(section_key, data, columns, height=420):
                 'Değer_Skoru':st.column_config.ProgressColumn('Değer Skoru',min_value=0,max_value=100,format='%d/100'),
                 'Risk':st.column_config.NumberColumn('Risk',format='%d/100'),
                 'Risk_Skoru':st.column_config.NumberColumn('Risk',format='%d/100'),
+                'Durum':st.column_config.TextColumn('Durum',width='large'),
                 '_row_key':None
             },
             disabled=[c for c in show_cols if c!='Seç']+['_row_key'],
@@ -8923,6 +8947,7 @@ else:
             # V78 — ÖGN SEPETİ: SİLME ve BİLGİ NOTU TAMAMEN AYRI
             # -----------------------------------------------------
             basket_view=basket[['id','news_time','source','category','title','risk_score','risk_status','url']].copy()
+            basket_view=_v63_add_status_badges(basket_view)
 
             # A) Sadece silme işlemi için checkbox.
             delete_view=basket_view.copy()
@@ -8933,7 +8958,8 @@ else:
                     column_config={
                         'Sil':st.column_config.CheckboxColumn('Sil'),
                         'url':st.column_config.LinkColumn('Haber Linki'),
-                        'risk_score':st.column_config.NumberColumn('Risk',format='%d/100')
+                        'risk_score':st.column_config.NumberColumn('Risk',format='%d/100'),
+                        'Durum':st.column_config.TextColumn('Durum',width='large')
                     },
                     disabled=[c for c in delete_view.columns if c!='Sil'],
                     hide_index=True,use_container_width=True,
@@ -9045,9 +9071,9 @@ else:
                         st.session_state['v90_ogn_docx_bytes']=make_important_basket_docx_v101(basket)
                 if st.session_state.get('v90_ogn_docx_bytes'):
                     st.download_button(
-                        '⬇️ 24 SAATLİK ÖNEMLİ GELİŞMELER / WORD — V101',
+                        '⬇️ 24 SAATLİK ÖNEMLİ GELİŞMELER / WORD — V102',
                         st.session_state['v90_ogn_docx_bytes'],
-                        file_name=f'24_Saatlik_Onemli_Gelismeler_V101_{date.today()}.docx',
+                        file_name=f'24_Saatlik_Onemli_Gelismeler_V102_{date.today()}.docx',
                         mime='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
                         use_container_width=True,
                         key='v90_download_ogn_word'
@@ -9089,6 +9115,7 @@ else:
             # V79 — AKT SEPETİ: ÖGN İLE AYNI TEK HABER BİLGİ NOTU MANTIĞI
             # -----------------------------------------------------
             osint_view=osint_basket[['id','news_time','source','category','title','risk_score','risk_status','url']].copy()
+            osint_view=_v63_add_status_badges(osint_view)
 
             # A) Silme işlemi ayrı checkbox formunda kalır.
             delete_osint_view=osint_view.copy()
@@ -9099,7 +9126,8 @@ else:
                     column_config={
                         'Sil':st.column_config.CheckboxColumn('Sil'),
                         'url':st.column_config.LinkColumn('Haber Linki'),
-                        'risk_score':st.column_config.NumberColumn('Risk',format='%d/100')
+                        'risk_score':st.column_config.NumberColumn('Risk',format='%d/100'),
+                        'Durum':st.column_config.TextColumn('Durum',width='large')
                     },
                     disabled=[c for c in delete_osint_view.columns if c!='Sil'],
                     hide_index=True,use_container_width=True,
@@ -9241,9 +9269,15 @@ else:
         if _pb.empty:
             st.info('Sunum sepeti boş.')
         else:
-            _pv=_pb[['id','news_time','source','title','url']].copy(); _pv.insert(0,'Seç',False)
+            _pv=_pb[['id','news_time','source','title','url']].copy()
+            _pv=_v63_add_status_badges(_pv)
+            _pv.insert(0,'Seç',False)
             with st.form('v81_presentation_basket_form',clear_on_submit=False):
-                _ped=st.data_editor(_pv,column_config={'Seç':st.column_config.CheckboxColumn('Seç'),'url':st.column_config.LinkColumn('Haber Linki')},
+                _ped=st.data_editor(_pv,column_config={
+                    'Seç':st.column_config.CheckboxColumn('Seç'),
+                    'url':st.column_config.LinkColumn('Haber Linki'),
+                    'Durum':st.column_config.TextColumn('Durum',width='large')
+                },
                     disabled=[c for c in _pv.columns if c!='Seç'],hide_index=True,use_container_width=True,height=min(420,80+36*len(_pv)))
                 p1,p2,p3,p4=st.columns(4)
                 with p1: _toimp=st.form_submit_button('📌 Önemli Gelişmelere Ekle',use_container_width=True)
