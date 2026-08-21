@@ -308,7 +308,7 @@ def critical_industrial_incident(title, snippet=''):
     """
     t=norm(f'{title} {snippet}')
     has_location=any(term in t for term in INDUSTRIAL_LOCATION_TERMS)
-    has_incident=any(term in t for term in CRITICAL_INCIDENT_TERMS)
+    has_incident=any(_v89_has_term(t,term) for term in CRITICAL_INCIDENT_TERMS)
     if not (has_location and has_incident):
         return None
 
@@ -563,13 +563,31 @@ V48_DIRECTION_PATTERNS = [
     r'\b(?:geçen yıla|önceki yıla|geçen aya|önceki aya)\s+göre.{0,70}\b(?:düştü|azaldı|geriledi|daraldı)\b'
 ]
 
+
+def _v89_has_term(text, term):
+    """
+    Negatif terimleri alt-dize ile değil kelime/ifade sınırıyla arar.
+    Böylece 'kaza' -> 'kazandı/kazanç/kazanım' eşleşmesi oluşmaz.
+    """
+    t=norm(text)
+    term=norm(term)
+    if not term:
+        return False
+    # _term_regex mevcut negatif analiz motorunun güvenli eşleştiricisidir.
+    try:
+        return bool(_term_regex(term).search(t))
+    except Exception:
+        # Fallback: tek kelimede Unicode kelime sınırı, çok kelimede sınırlandırılmış ifade.
+        return bool(re.search(r'(?<!\w)'+re.escape(term)+r'(?!\w)',t,re.I))
+
 def _v48_extra_negative_signals(text):
     t=norm(text)
     found=set()
     for phrase in V48_NEGATIVE_PHRASES:
-        if phrase in t:
+        if _v89_has_term(t,phrase):
             # "düşmedi / azalmadı / gerilemedi" gibi açık olumsuzlamaları alma.
-            pos=t.find(phrase)
+            m=_term_regex(phrase).search(t)
+            pos=m.start() if m else -1
             ctx=t[max(0,pos-60):pos+len(phrase)+60] if pos>=0 else t
             if any(x in ctx for x in [
                 'düşmedi','azalmadı','gerilemedi','daralmadı','iptal edilmedi',
@@ -777,6 +795,23 @@ def classify(title,snippet,source_domain=''):
         reasons=['açık başarı veya normal test/program ilerlemesi; negatif değildir']
 
     return sentiment,score,status,neg,risk,cat,reasons
+
+def _v89_negative_selfcheck():
+    """Basit regresyon kontrolleri; panelde gösterilmez."""
+    cases=[
+        ('Türk öğrenciler uluslararası yarışmada 15 madalya kazandı','Nötr'),
+        ('Şirket yılın ilk yarısında güçlü kazanç açıkladı','Nötr'),
+        ('Yeni teknoloji kazanımı ihracat kapasitesini artırdı','Nötr'),
+    ]
+    for h,expected in cases:
+        try:
+            sent,_,_,_,_,_,_=classify(h,'')
+            if sent!=expected:
+                return False
+        except Exception:
+            return False
+    return True
+
 
 def rss(query, timeout=7):
     try:
@@ -1285,7 +1320,7 @@ def _v58_open_questions_for_group(g):
     ))
     qs=[]
 
-    if any(x in text for x in ['yangın','patlama','infilak','kaza']):
+    if any(_v89_has_term(text,x) for x in ['yangın','patlama','infilak','kaza']):
         qs += [
             'Olayın kesin nedeni ve teknik inceleme sonucu',
             'Can kaybı/yaralı ve maddi hasarın resmî bilançosu',
@@ -3348,102 +3383,141 @@ def _v88_formal(s):
         s=s[0].upper()+s[1:]
     return s
 
-def _v88_summary(title,source,body,fallback):
+def _v89_normalize_source_title(title,source):
+    """Başlıktaki yayıncı/portal eklerini temizler; başlığı çıktı olarak kullanmaz."""
+    t=_v88_title_core(title,source)
+    t=re.sub(r'\s+[A-Za-zÇĞİÖŞÜçğıöşü0-9_.-]+\.(?:com|com\.tr|net|org|tr)\s*$','',t,flags=re.I)
+    return _v87_safe_tr(t).strip(' -–—|')
+
+def _v89_clause_from_sentence(s):
     """
-    2-3 complete sentences:
-      1) who/what/where/time introduction
-      2) most critical figure/detail
-      3) result/target if useful
-    Never inserts unrelated article snippets.
+    İkinci bir haber cümlesini ana resmî cümleye eklenebilir bilgi cümleciğine çevirir.
+    Tam cümleyi parçalamaz; yalnız son noktayı kaldırır.
     """
-    title=_v88_title_core(title,source)
+    s=_v88_formal(_v87_safe_tr(s)).strip()
+    return s.rstrip(' .;:')
+
+def _v89_single_official_sentence(title,source,body,fallback):
+    """
+    Gerçek STB örneği mantığı:
+    Her gelişme için TEK, TAM ve RESMÎ cümle.
+    - kim/kurum + ne oldu ana cümlesi,
+    - en kritik rakam/yer/tarih aynı cümlede,
+    - gerekiyorsa sonuç/hedef ikinci cümlecik olarak noktalı virgülle bağlanır,
+    - haber başlığı tek başına çıktı olmaz.
+    """
+    title=_v89_normalize_source_title(title,source)
     text=_v87_safe_tr(body or fallback)
     sents=_v88_clean_sentences(text)
     if len(sents)<2:
         sents=_v88_clean_sentences(fallback)
 
     if not sents:
+        # Son çare: kaydedilmiş özet varsa onu kullan; sırf başlığı basma.
         fb=_v87_safe_tr(fallback)
-        if fb:
-            fb=_v88_formal(fb)
-            return fb[:500].rstrip(' ,;')
-        return _v88_formal(title)
+        if len(fb)>=60:
+            return _v88_formal(fb).rstrip(' .;')+'.'
+        return ''
 
-    kw=_v88_keywords(title)
+    keywords=_v88_keywords(title)
     actor_terms=['cumhurbaşkan','bakan','bakanlık','başkan','tüik','tübitak','tcmb','tse',
                  'türkpatent','ssb','valili','üniversite','şirket','genel müdür','türk telekom',
-                 'kardemir','togg','aselsan','roketsan','gezeravcı','zeytinoğlu']
+                 'kardemir','togg','aselsan','roketsan','gezeravcı','zeytinoğlu','kurum','takım']
     action_terms=['açıkla','duyur','başlat','gerçekleştir','tamamla','imzala','kazan','yatırım',
-                  'test','görev','üret','satış','başvuru','düzenlen']
+                  'test','görev','üret','satış','başvuru','düzenlen','ulaş','art','azal','gerile']
     detail_terms=['%','yüzde','milyon','milyar','bin ','adet','mw','gwh','mwh','km','puan',
-                  'kapasite','ihracat','üretim','satış','hibe','öğrenci','madalya','rekor']
-    result_terms=['hedef','beklen','sağla','katkı','devreye','art','azal','ulaş','rekor',
-                  'başarı','destek','plan','başvuru']
+                  'kapasite','ihracat','üretim','satış','hibe','öğrenci','madalya','rekor','tarih']
+    result_terms=['hedef','beklen','sağla','katkı','devreye','plan','başarı','destek','başvuru',
+                  'artış','azalış','yüksel','gerile','ulaş']
 
-    def overlap(s):
-        sw=set(re.findall(r'[a-zçğıöşü0-9]+',norm(s)))
-        return len(kw & sw)
-    def intro_score(s):
-        n=norm(s)
-        return 5*overlap(s)+3*sum(x in n for x in actor_terms)+3*sum(x in n for x in action_terms)
-    def detail_score(s):
-        n=norm(s)
-        return 4*overlap(s)+3*sum(x in n for x in detail_terms)+min(len(re.findall(r'\d',s)),5)
-    def result_score(s):
-        n=norm(s)
-        return 3*overlap(s)+3*sum(x in n for x in result_terms)+sum(x in n for x in detail_terms)
+    def overlap(sent):
+        ws=set(re.findall(r'[a-zçğıöşü0-9]+',norm(sent)))
+        return len(keywords & ws)
 
-    # Restrict to topic-related sentences when possible.
-    related=[s for s in sents if overlap(s)>0]
-    pool=related if len(related)>=2 else sents[:10]
+    # Konuyla ilişkisiz "Samsung / TÜVTÜRK / başka haber" parçalarını devreden çıkar.
+    related=[x for x in sents if overlap(x)>0]
+    pool=related if related else sents[:8]
 
-    intro=max(pool[:8],key=lambda s:(intro_score(s),-sents.index(s)))
-    chosen=[intro]
+    def intro_score(x):
+        n=norm(x)
+        return 7*overlap(x)+4*sum(k in n for k in actor_terms)+4*sum(k in n for k in action_terms)
 
-    rem=[s for s in pool if s not in chosen]
+    intro=max(pool[:8],key=lambda x:(intro_score(x),-sents.index(x)))
+    intro_formal=_v89_clause_from_sentence(intro)
+
+    # Başlıkla neredeyse aynıysa, başka giriş ara.
+    if title_key(intro_formal)==title_key(title):
+        alternatives=[x for x in pool if title_key(x)!=title_key(title)]
+        if alternatives:
+            intro=max(alternatives,key=lambda x:(intro_score(x),-sents.index(x)))
+            intro_formal=_v89_clause_from_sentence(intro)
+
+    rem=[x for x in pool if x!=intro]
+    detail=None
     if rem:
-        d=max(rem,key=lambda s:(detail_score(s),-sents.index(s)))
-        if detail_score(d)>0:
-            chosen.append(d)
+        def detail_score(x):
+            n=norm(x)
+            return 6*overlap(x)+5*sum(k in n for k in detail_terms)+min(len(re.findall(r'\d',x)),6)
+        cand=max(rem,key=lambda x:(detail_score(x),-sents.index(x)))
+        if detail_score(cand)>0:
+            detail=cand
 
-    rem=[s for s in pool if s not in chosen]
+    rem=[x for x in rem if x!=detail]
+    result=None
     if rem:
-        r=max(rem,key=lambda s:(result_score(s),-sents.index(s)))
-        if result_score(r)>0:
-            chosen.append(r)
+        def result_score(x):
+            n=norm(x)
+            return 5*overlap(x)+4*sum(k in n for k in result_terms)+2*sum(k in n for k in detail_terms)
+        cand=max(rem,key=lambda x:(result_score(x),-sents.index(x)))
+        if result_score(cand)>0:
+            result=cand
 
-    if len(chosen)<2:
-        for s in pool:
-            if s not in chosen:
-                chosen.append(s); break
+    # Ana cümle doğal biçimde zaten gerekli rakamları içeriyorsa gereksiz tekrar ekleme.
+    clauses=[intro_formal]
+    intro_digits=set(re.findall(r'\d+(?:[.,]\d+)?',intro_formal))
 
-    chosen=sorted(chosen,key=lambda s:sents.index(s))
-    formal=[]
-    for s in chosen[:3]:
-        fs=_v88_formal(s)
-        if fs and not _v88_sentence_bad(fs):
-            formal.append(fs)
-
-    # Remove direct headline duplicates.
-    core=title_key(title)
-    formal=[x for x in formal if title_key(x)!=core] or formal
-
-    # Approx 4 Word lines: max 2-3 complete sentences / ~480 chars.
-    kept=[]; total=0
-    for s in formal:
-        if s and s[-1] not in '.!?':
-            s+='.'
-        add=len(s)+(1 if kept else 0)
-        if kept and total+add>480:
-            break
-        kept.append(s); total+=add
-        if len(kept)>=3:
+    for extra in [detail,result]:
+        if not extra:
+            continue
+        ef=_v89_clause_from_sentence(extra)
+        if not ef or _v88_sentence_bad(ef):
+            continue
+        # Aynı olayı/rakamı tekrar eden cümleyi alma.
+        nums=set(re.findall(r'\d+(?:[.,]\d+)?',ef))
+        if nums and nums.issubset(intro_digits) and title_key(ef)[:80] in title_key(intro_formal):
+            continue
+        # Başlıkla ilişki şartı: unrelated site snippets cannot enter.
+        if keywords and overlap(ef)==0:
+            continue
+        clauses.append(ef)
+        if len(clauses)>=2:  # tek cümlede iki ana bilgi bloğu yeterli
             break
 
-    out=' '.join(kept).strip()
-    if not out:
-        out=_v88_formal(fallback or title)
-    return _v87_safe_tr(out)
+    # Tek resmî cümle: ilk tam cümle + ikinci bilgi bloğu noktalı virgülle.
+    if len(clauses)==1:
+        out=clauses[0]
+    else:
+        second=clauses[1]
+        # İkinci bloğu küçük harfle doğal bağla; özel isimleri bozma.
+        connector='; ayrıca, '
+        out=clauses[0]+connector+second
+
+    out=_v87_safe_tr(out).strip(' ;:.')
+    # 4 satır hedefi: cümleyi kesmeden 500 karaktere yaklaş.
+    if len(out)>500 and len(clauses)>1:
+        out=clauses[0].strip(' ;:.')
+    if len(out)>520:
+        # Çok uzun tek giriş varsa noktalı virgül/virgül sınırından kısalt.
+        cut=out[:520]
+        candidates=[cut.rfind('; '),cut.rfind(', ')]
+        k=max(candidates)
+        if k>=300:
+            out=cut[:k].rstrip(' ,;')
+    return _v87_safe_tr(out)+'.'
+
+# Keep name used by make_important_basket_docx, but route to V89.
+def _v88_summary(title,source,body,fallback):
+    return _v89_single_official_sentence(title,source,body,fallback)
 
 def _v87_ogn_summary(title, body, fallback):
     """
@@ -3500,7 +3574,7 @@ def make_important_basket_docx(basket_df):
     doc=Document(); sec=doc.sections[0]
     sec.top_margin=Cm(2); sec.bottom_margin=Cm(2); sec.left_margin=Cm(2.5); sec.right_margin=Cm(2.5)
     normal=doc.styles['Normal']
-    normal.font.name='Times New Roman'; normal.font.size=Pt(11)
+    normal.font.name='Times New Roman'; normal.font.size=Pt(12)
     normal._element.rPr.rFonts.set(qn('w:eastAsia'),'Times New Roman')
 
     now=datetime.now().astimezone()
