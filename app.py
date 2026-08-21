@@ -3564,7 +3564,7 @@ def _v87_ogn_summary(title, body, fallback):
     return out or (fallback[:520].strip() if fallback else title[:520].strip())
 
 
-V90_OGN_ENGINE_VERSION='v96_ogn_20260821_1'
+V90_OGN_ENGINE_VERSION='v97_ogn_20260821_1'
 
 def _v90_clean_title(title,source=''):
     t=_v87_safe_tr(title)
@@ -3642,76 +3642,122 @@ def _v90_formalize(s):
         s=s[0].upper()+s[1:]
     return s
 
-def _v90_item_summary(title, source, body, fallback):
+def _v90_item_summary(title,source,body,fallback):
     """
-    Haber metninden en iyi tek bir cümle seçerek resmî, veri/rakam odaklı bir özet oluşturur.
-    Çıktı tek cümledir, yaklaşık 350 karakterle sınırlıdır (≈4 Word satırı).
+    Kurum örneğine yakın TEK, TAM, RESMÎ cümle:
+    ana olay + kritik rakam/yer/tarih/kişi + gerekiyorsa tek tamamlayıcı bilgi.
+    Başlık doğrudan Word'e yazılmaz.
     """
-    title = _v90_clean_title(title, source)
-    text = _v87_safe_tr(body or fallback)
-    sents = _v90_sentences(text)
-    if len(sents) < 2:
-        sents = _v90_sentences(fallback)
+    title=_v90_clean_title(title,source)
+    text=_v87_safe_tr(body or fallback)
+    sents=_v90_sentences(text)
+    if len(sents)<2:
+        sents=_v90_sentences(fallback)
 
+    # Başlık dışında gerçek içerik yoksa fallback'i kullan; yine başlığı tek başına basma.
     if not sents:
-        clean_title = _v90_clean_title(title, source)
-        if source and clean_title:
-            return _v90_formalize(f"{source} sitesinde yayımlanan haberde {clean_title} konusu ele alınmıştır.").rstrip(' .;') + '.'
-        elif clean_title:
-            return _v90_formalize(f"{clean_title} başlıklı gelişme açık kaynaklarda yer almıştır.").rstrip(' .;') + '.'
-        return _v90_formalize("Konuya ilişkin açık kaynak içeriği tespit edilmiştir.").rstrip(' .;') + '.'
+        fb=_v87_safe_tr(fallback)
+        if len(fb)>=80 and title_key(fb)!=title_key(title):
+            return _v90_formalize(fb).rstrip(' .;')+'.'
+        return ''
 
-    tw = _v90_title_words(title)
+    tw=_v90_title_words(title)
 
-    actor_terms = [
-        'cumhurbaşkan', 'bakan', 'bakanlık', 'başkan', 'tüik', 'tübitak', 'tcmb', 'tse',
-        'türkpatent', 'ssb', 'valili', 'üniversite', 'şirket', 'genel müdür', 'türk telekom',
-        'kardemir', 'togg', 'aselsan', 'roketsan', 'gezeravcı', 'zeytinoğlu', 'takım'
+    actor_terms=[
+        'cumhurbaşkan','bakan','bakanlık','başkan','tüik','tübitak','tcmb','tse',
+        'türkpatent','ssb','valili','üniversite','şirket','genel müdür','türk telekom',
+        'kardemir','togg','aselsan','roketsan','gezeravcı','zeytinoğlu','takım'
     ]
-    action_terms = [
-        'açıkla', 'duyur', 'başlat', 'gerçekleştir', 'tamamla', 'imzala', 'kazan', 'yatırım',
-        'test', 'görev', 'üret', 'satış', 'başvuru', 'düzenlen', 'ulaş', 'art', 'azal', 'gerile'
+    action_terms=[
+        'açıkla','duyur','başlat','gerçekleştir','tamamla','imzala','kazan','yatırım',
+        'test','görev','üret','satış','başvuru','düzenlen','ulaş','art','azal','gerile'
     ]
-    detail_terms = [
-        '%', 'yüzde', 'milyon', 'milyar', 'bin ', 'adet', 'mw', 'gwh', 'mwh', 'km', 'puan',
-        'kapasite', 'ihracat', 'üretim', 'satış', 'hibe', 'öğrenci', 'madalya', 'rekor',
-        '2025', '2026', '2027'
+    detail_terms=[
+        '%','yüzde','milyon','milyar','bin ','adet','mw','gwh','mwh','km','puan',
+        'kapasite','ihracat','üretim','satış','hibe','öğrenci','madalya','rekor',
+        '2025','2026','2027'
     ]
 
     def overlap(s):
-        words = set(re.findall(r'[a-zçğıöşü0-9]+', norm(s)))
+        words=set(re.findall(r'[a-zçğıöşü0-9]+',norm(s)))
         return len(words & tw)
 
-    related = [s for s in sents if overlap(s) > 0]
-    pool = related if related else sents[:8]
+    # Yalnız haberle ilişkili cümleleri tercih et.
+    related=[s for s in sents if overlap(s)>0]
+    pool=related if related else sents[:8]
 
-    def combined_score(s):
-        n = norm(s)
-        return (8 * overlap(s) +
-                4 * sum(x in n for x in actor_terms) +
-                4 * sum(x in n for x in action_terms) +
-                5 * sum(x in n for x in detail_terms) +
-                min(len(re.findall(r'\d', s)), 5))
+    def intro_score(s):
+        n=norm(s)
+        return (
+            8*overlap(s)
+            + 4*sum(x in n for x in actor_terms)
+            + 4*sum(x in n for x in action_terms)
+            + min(len(re.findall(r'\d',s)),3)
+        )
 
-    best_sentence = max(pool, key=lambda s: (combined_score(s), -sents.index(s)))
-    best_formal = _v90_formalize(best_sentence).rstrip(' .;')
+    # İlk cümle haberin ortasından değil, olayı tanımlayan cümle olsun.
+    intro=max(pool[:8],key=lambda s:(intro_score(s),-sents.index(s)))
+    intro=_v90_formalize(intro).rstrip(' .;')
 
-    if title_key(best_formal) == title_key(title):
-        alternatives = [s for s in pool if title_key(_v90_formalize(s)) != title_key(title)]
+    # Eğer intro başlıkla neredeyse aynıysa başka gövde cümlesi dene.
+    if title_key(intro)==title_key(title):
+        alternatives=[s for s in pool if title_key(s)!=title_key(title)]
         if alternatives:
-            best_sentence = max(alternatives, key=lambda s: (combined_score(s), -sents.index(s)))
-            best_formal = _v90_formalize(best_sentence).rstrip(' .;')
+            intro=_v90_formalize(
+                max(alternatives,key=lambda s:(intro_score(s),-sents.index(s)))
+            ).rstrip(' .;')
 
-    # 350 karakter sınırı (≈4 Word satırı), cümle bütünlüğünü koruyarak kısalt
-    if len(best_formal) > 350:
-        cut = best_formal[:350]
-        last_punct = max(cut.rfind('; '), cut.rfind(', '), cut.rfind(' ve '))
-        if last_punct > 200:
-            best_formal = cut[:last_punct].rstrip(' ,;')
-        else:
-            best_formal = best_formal[:350].rsplit(' ', 1)[0]
+    # En kritik ikinci bilgi: rakam/tarih/ölçek; aynı olayla ilişkili olmak zorunda.
+    remaining=[s for s in pool if title_key(_v90_formalize(s))!=title_key(intro)]
+    detail=''
+    if remaining:
+        def detail_score(s):
+            n=norm(s)
+            return (
+                7*overlap(s)
+                + 5*sum(x in n for x in detail_terms)
+                + min(len(re.findall(r'\d',s)),6)
+            )
+        cand=max(remaining,key=lambda s:(detail_score(s),-sents.index(s)))
+        if detail_score(cand)>=5:
+            detail=_v90_formalize(cand).rstrip(' .;')
 
-    return best_formal.rstrip(' .;') + '.'
+    # Tek resmî cümle oluştur.
+    out=intro
+    if detail:
+        # Aynı rakamları tekrar eden ayrıntıyı ekleme.
+        n1=set(re.findall(r'\d+(?:[.,]\d+)?',intro))
+        n2=set(re.findall(r'\d+(?:[.,]\d+)?',detail))
+        if not (n2 and n2.issubset(n1) and len(detail)<180):
+            out += '; ayrıca, ' + detail[0].lower()+detail[1:] if detail else ''
+
+    out=_v87_safe_tr(out).strip(' ;:.')
+
+    # Örnekteki yoğunluk: yaklaşık 4 Word satırı; cümleyi ortadan kesme.
+    if len(out)>500 and detail:
+        out=intro
+    if len(out)>520:
+        # Giriş tek başına çok uzunsa en yakın anlamlı virgül/noktalı virgül sınırında kısalt.
+        cut=out[:520]
+        k=max(cut.rfind('; '),cut.rfind(', '))
+        if k>=330:
+            out=cut[:k].rstrip(' ,;')
+
+    return out.rstrip(' .;')+'.'
+
+@st.cache_data(ttl=3600,show_spinner=False)
+def _v90_fetch_detail(title,source,url,fallback,news_time):
+    try:
+        return article_detail({
+            'Başlık':title,
+            'Kaynak':source,
+            'URL':url,
+            'Yayıncı_URL':url,
+            'İçerik_Özeti':fallback,
+            'Tarih':news_time
+        })
+    except Exception:
+        return {'title':title,'source':source,'text':fallback,'canonical':url,'images':[]}
 
 
 def _v92_clean_news_text(text):
@@ -4202,6 +4248,209 @@ def _v96_short_information_note(title, body):
     return out
 
 
+
+def _v97_compact_sentence(s,max_chars=260):
+    """Çok uzun tek cümleyi, ana özne/eylem ve kritik sayısal parçaları koruyarak kısaltır."""
+    s=_repair_mojibake_utf8(_clean_note_text(s)).strip()
+    if len(s)<=max_chars:
+        return s
+
+    # Virgül/noktalı virgül ile ayrılmış anlamlı parçaları değerlendir.
+    parts=[x.strip(' ,;:.') for x in re.split(r'\s*[;,]\s*',s) if x.strip()]
+    if not parts:
+        return s[:max_chars].rsplit(' ',1)[0].rstrip(' ,;:.')+'.'
+
+    chosen=[parts[0]]
+    # Kritik veri/rakam içeren parçaları öncelikle koru.
+    critical=[x for x in parts[1:] if _v96_has_critical_data(x)]
+    for x in critical:
+        cand=', '.join(chosen+[x])
+        if len(cand)<=max_chars:
+            chosen.append(x)
+
+    # Hâlâ çok kısa ise ikinci parçayı bağlam için ekle.
+    if len(chosen)==1 and len(parts)>1:
+        cand=', '.join(chosen+[parts[1]])
+        if len(cand)<=max_chars:
+            chosen.append(parts[1])
+
+    out=', '.join(chosen).strip()
+    if out and out[-1] not in '.!?':
+        out+='.'
+    return out
+
+def _v97_analyst_summary(title,body):
+    """
+    Gerçek analist mantığıyla kısa ÖGN:
+    - tek paragraf,
+    - yaklaşık 4 Word satırı,
+    - 2-3 tam cümle,
+    - ana gelişme + kritik rakam/veri + sonuç/son durum,
+    - bilgi notunun kısaltılmış hali.
+    """
+    uniq=_v96_unique_sentences(title,body)
+    if not uniq:
+        fallback=_repair_mojibake_utf8(_clean_note_text(body or title))
+        fallback=_v66_formalize_sentence_endings(fallback)
+        return _v97_compact_sentence(fallback,480)
+
+    # 1) Ana gelişme: haberin ilk anlamlı cümlesi.
+    intro=_v66_formalize_sentence_endings(uniq[0]).strip()
+    intro=_v97_compact_sentence(intro,260)
+
+    chosen=[intro] if intro else []
+    used={0}
+
+    # 2) En kritik veri/rakam/istatistik:
+    critical=[]
+    for i,s in enumerate(uniq[1:],start=1):
+        if _v96_has_critical_data(s):
+            # Rakam + kurumsal/sonuç bilgisi daha yüksek puan.
+            score=_sent_score(s)
+            score+=min(len(re.findall(r'\d+(?:[.,]\d+)?',s)),4)*2
+            critical.append((score,i,s))
+    if critical:
+        _,idx,s=max(critical,key=lambda x:(x[0],-x[1]))
+        fs=_v66_formalize_sentence_endings(s).strip()
+        fs=_v97_compact_sentence(fs,250)
+        if fs and title_key(fs)!=title_key(intro):
+            chosen.append(fs); used.add(idx)
+
+    # 3) Sonuç/hedef/sonraki adım taşıyan cümle.
+    result_terms=[
+        'hedef','beklen','plan','sonuç','başlayacak','tamamlanacak','uygulanacak',
+        'sağlanacak','öngör','katkı','etki','devam','rekor','artış','azalış',
+        'başvuru','tarih','takvim','yüksel','gerile'
+    ]
+    result_candidates=[]
+    for i,s in enumerate(uniq[1:],start=1):
+        if i in used:
+            continue
+        n=norm(s)
+        score=sum(x in n for x in result_terms)*3 + _sent_score(s)
+        if score>0:
+            result_candidates.append((score,i,s))
+    if result_candidates:
+        _,idx,s=max(result_candidates,key=lambda x:(x[0],-x[1]))
+        fs=_v66_formalize_sentence_endings(s).strip()
+        fs=_v97_compact_sentence(fs,220)
+        if fs and all(title_key(fs)!=title_key(x) for x in chosen):
+            chosen.append(fs)
+
+    # Haber sırasını korumak için seçilen cümleleri tekrar orijinal sıraya koymuyoruz:
+    # intro daima ilk, ardından kritik veri, ardından sonuç.
+    # Bu, bilgi notunun kısa analist akışıdır.
+
+    # Tek paragraf ve yaklaşık 4 satır: tam cümleyi kesmeden 500 karakter.
+    final=[]
+    for s in chosen[:3]:
+        s=_repair_mojibake_utf8(_clean_note_text(s)).strip()
+        if not s:
+            continue
+        if s[-1] not in '.!?':
+            s+='.'
+        cand=' '.join(final+[s])
+        if final and len(cand)>500:
+            break
+        final.append(s)
+
+    out=' '.join(final).strip()
+
+    # İlk cümle tek başına çok uzunsa güvenli biçimde sıkıştır.
+    if len(out)>500:
+        out=_v97_compact_sentence(out,490)
+
+    return _repair_mojibake_utf8(_clean_note_text(out)).strip()
+
+
+def make_important_basket_docx_v97(basket_df):
+    """
+    Önemli Gelişmeler Word:
+    Her haber TEK paragraf, yaklaşık 4 satır.
+    Ana gelişme + kritik veri/rakam + sonuç.
+    Başlık ve haber linki yazılmaz.
+    """
+    doc=Document()
+    sec=doc.sections[0]
+    sec.top_margin=Cm(2); sec.bottom_margin=Cm(2)
+    sec.left_margin=Cm(2.5); sec.right_margin=Cm(2.5)
+
+    normal=doc.styles['Normal']
+    normal.font.name='Times New Roman'
+    normal.font.size=Pt(12)
+    normal._element.rPr.rFonts.set(qn('w:eastAsia'),'Times New Roman')
+
+    now=datetime.now().astimezone()
+    p=doc.add_paragraph()
+    p.alignment=WD_ALIGN_PARAGRAPH.RIGHT
+    p.add_run(now.strftime('%d/%m/%Y'))
+
+    p=doc.add_paragraph()
+    p.add_run('Konu: ').bold=True
+    p.add_run('STB Temsilciliği Önemli Gelişmeler Notu')
+
+    rows=[] if basket_df is None else basket_df.to_dict('records')
+
+    def process_row(r):
+        title=_clean_note_text(r.get('title',''))
+        source=_clean_note_text(r.get('source',''))
+        summary=_clean_note_text(r.get('summary',''))
+        url=str(r.get('url','') or '')
+        news_time=_clean_note_text(r.get('news_time',''))
+
+        try:
+            detail=article_detail({
+                'Başlık':title,
+                'Kaynak':source,
+                'URL':url,
+                'Yayıncı_URL':url,
+                'İçerik_Özeti':summary,
+                'Tarih':news_time
+            })
+        except Exception:
+            detail={}
+
+        body=_clean_note_text(detail.get('text') or summary or title)
+        out=_v97_analyst_summary(title,body)
+
+        if not out:
+            out=_v97_analyst_summary(title,summary or title)
+
+        return out
+
+    outputs=['']*len(rows)
+    if rows:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(6,len(rows))) as ex:
+            jobs={ex.submit(process_row,r):i for i,r in enumerate(rows)}
+            for fut in concurrent.futures.as_completed(jobs):
+                idx=jobs[fut]
+                try:
+                    outputs[idx]=fut.result()
+                except Exception:
+                    r=rows[idx]
+                    outputs[idx]=_v97_analyst_summary(
+                        r.get('title',''),
+                        r.get('summary','') or r.get('title','')
+                    )
+
+    for text in outputs:
+        text=_repair_mojibake_utf8(_clean_note_text(text)).strip()
+        if not text:
+            continue
+        p=doc.add_paragraph()
+        p.alignment=WD_ALIGN_PARAGRAPH.JUSTIFY
+        p.paragraph_format.line_spacing=1.0
+        p.paragraph_format.space_after=Pt(7)
+        # Her haber tek bütünleşik paragraf.
+        p.add_run(text.rstrip(' .;')+' (STB).')
+
+    doc.add_paragraph('Arz olunur.')
+
+    bio=BytesIO()
+    doc.save(bio)
+    bio.seek(0)
+    return bio.getvalue()
+
 def make_important_basket_docx_v96(basket_df):
     """
     Önemli Gelişmeler Word = her haber için ayrı ayrı kısaltılmış bilgi notu.
@@ -4297,112 +4546,96 @@ def make_important_basket_docx_v96(basket_df):
     bio.seek(0)
     return bio.getvalue()
 
-def make_important_basket_docx_final(basket_df):
+def make_important_basket_docx_v95(basket_df):
     """
-    Önemli Gelişmeler Word – nihai sürüm.
-    Her haber için tek, resmî, bilgi dolu bir cümle üretir.
+    Önemli Gelişmeler Word:
+    - Haber işleme: Bilgi Notu gibi article_detail()
+    - Özetleme: AKT gibi _akt_formal_summary()
+    - Dil: mevcut V66 resmî dil normalizasyonu
+    - Çıktı: başlıksız, linksiz, yaklaşık 4 satır.
     """
-    from concurrent.futures import ThreadPoolExecutor
-    doc = Document()
-    sec = doc.sections[0]
-    sec.top_margin = Cm(2)
-    sec.bottom_margin = Cm(2)
-    sec.left_margin = Cm(2.5)
-    sec.right_margin = Cm(2.5)
-    normal = doc.styles['Normal']
-    normal.font.name = 'Times New Roman'
-    normal.font.size = Pt(12)
-    normal._element.rPr.rFonts.set(qn('w:eastAsia'), 'Times New Roman')
+    doc=Document()
+    sec=doc.sections[0]
+    sec.top_margin=Cm(2); sec.bottom_margin=Cm(2)
+    sec.left_margin=Cm(2.5); sec.right_margin=Cm(2.5)
 
-    now = datetime.now().astimezone()
-    p = doc.add_paragraph()
-    p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-    run = p.add_run(now.strftime('%d/%m/%Y'))
-    run.bold = True
+    normal=doc.styles['Normal']
+    normal.font.name='Times New Roman'
+    normal.font.size=Pt(12)
+    normal._element.rPr.rFonts.set(qn('w:eastAsia'),'Times New Roman')
 
-    p = doc.add_paragraph()
-    p.add_run('Konu: ').bold = True
+    now=datetime.now().astimezone()
+    p=doc.add_paragraph()
+    p.alignment=WD_ALIGN_PARAGRAPH.RIGHT
+    p.add_run(now.strftime('%d/%m/%Y'))
+
+    p=doc.add_paragraph()
+    p.add_run('Konu: ').bold=True
     p.add_run('STB Temsilciliği Önemli Gelişmeler Notu')
 
-    records = [] if basket_df is None else basket_df.to_dict('records')
-    if not records:
-        doc.add_paragraph('Kayıtlı önemli gelişme bulunmamaktadır.')
-    else:
-        def process_one(item):
-            title = _v87_safe_tr(item.get('title', ''))
-            source = _v87_safe_tr(item.get('source', ''))
-            fallback = _v87_safe_tr(item.get('summary', ''))
-            url = str(item.get('url', '') or '')
-            news_time = _v87_safe_tr(item.get('news_time', ''))
+    rows=[] if basket_df is None else basket_df.to_dict('records')
 
-            # 1) Gerçek haber metnini al (article_detail zaten dosyada mevcut)
-            detail = article_detail({
-                'Başlık': title,
-                'Kaynak': source,
-                'URL': url,
-                'Yayıncı_URL': url,
-                'İçerik_Özeti': fallback,
-                'Tarih': news_time
+    def process_row(r):
+        title=_clean_note_text(r.get('title',''))
+        source=_clean_note_text(r.get('source',''))
+        summary=_clean_note_text(r.get('summary',''))
+        url=str(r.get('url','') or '')
+        news_time=_clean_note_text(r.get('news_time',''))
+
+        # Bilgi Notu ile aynı yaklaşım: mümkünse gerçek haber metnini al.
+        try:
+            detail=article_detail({
+                'Başlık':title,
+                'Kaynak':source,
+                'URL':url,
+                'Yayıncı_URL':url,
+                'İçerik_Özeti':summary,
+                'Tarih':news_time
             })
-            body = _v87_safe_tr(detail.get('text', '') or fallback)
+        except Exception:
+            detail={}
 
-            # 2) Önce _v89_single_official_sentence dene (bu fonksiyon tek cümle üretir)
-            result = _v89_single_official_sentence(title, source, body, fallback)
+        body=_clean_note_text(detail.get('text') or summary or title)
 
-            # 3) Eğer boş veya çok kısaysa, _akt_formal_summary ile alternatif özet üret
-            if not result or len(result) < 50:
-                result = _akt_formal_summary(title, body, max_sentences=3, max_chars=500)
-                if result:
-                    result = _v66_formalize_sentence_endings(result)
-                    if result[-1] not in '.!?':
-                        result += '.'
+        # AKT'nin çalışan özet motorunu doğrudan kullan.
+        result=_v95_ogn_from_existing_engines(title,body)
 
-            # 4) Hâlâ boş veya çok kısaysa, başlıktan anlamlı bir cümle oluştur (asla "başlıklı gelişme" kalıbı kullanma)
-            if not result or len(result) < 40:
-                clean_title = _v90_clean_title(title, source)
-                if source and clean_title:
-                    result = _v90_formalize(f"{source} sitesinde yayımlanan haberde {clean_title} konusu ele alınmıştır.").rstrip(' .;') + '.'
-                elif clean_title:
-                    result = _v90_formalize(f"{clean_title} başlıklı gelişme açık kaynaklarda yer almıştır.").rstrip(' .;') + '.'
-                else:
-                    result = "Konuya ilişkin açık kaynak içeriği tespit edilmiştir."
+        # Tam metin tarafı sonuç vermezse AKT motorunu kayıtlı özet üzerinde çalıştır.
+        if not result or len(result)<50:
+            result=_v95_ogn_from_existing_engines(title,summary or title)
 
-            # 5) 4 satırı geçmemesi için ~500 karakter sınırı (cümle bütünlüğü korunarak)
-            if len(result) > 500:
-                cut = result[:500]
-                last_punct = max(cut.rfind('; '), cut.rfind(', '), cut.rfind(' ve '))
-                if last_punct > 200:
-                    result = cut[:last_punct].rstrip(' ,;') + '.'
-                else:
-                    result = result[:500].rsplit(' ', 1)[0] + '.'
+        return result
 
-            return result
-
-        summaries = [''] * len(records)
-        workers = min(6, max(1, len(records)))
-        with ThreadPoolExecutor(max_workers=workers) as ex:
-            futures = {ex.submit(process_one, r): i for i, r in enumerate(records)}
-            for fut in futures:
-                idx = futures[fut]
+    # Bilgi notu/AKT içerik yaklaşımı korunurken Word beklemesini azaltmak için paralel oku.
+    outputs=['']*len(rows)
+    if rows:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(6,len(rows))) as ex:
+            jobs={ex.submit(process_row,r):i for i,r in enumerate(rows)}
+            for fut in concurrent.futures.as_completed(jobs):
+                idx=jobs[fut]
                 try:
-                    summaries[idx] = fut.result()
+                    outputs[idx]=fut.result()
                 except Exception:
-                    summaries[idx] = "Gelişmeye ilişkin içerik özetlenememiştir."
+                    r=rows[idx]
+                    outputs[idx]=_v95_ogn_from_existing_engines(
+                        r.get('title',''),
+                        r.get('summary','') or r.get('title','')
+                    )
 
-        for txt in summaries:
-            if not txt:
-                txt = "Gelişmeye ilişkin içerik özetlenememiştir."
-            p = doc.add_paragraph()
-            p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
-            p.paragraph_format.space_after = Pt(6)
-            p.paragraph_format.line_spacing = 1.0
-            p.add_run(_v87_safe_tr(txt).rstrip(' .;') + ' (STB).')
+    for text in outputs:
+        text=_clean_note_text(text)
+        if not text:
+            continue
+        p=doc.add_paragraph()
+        p.alignment=WD_ALIGN_PARAGRAPH.JUSTIFY
+        p.paragraph_format.space_after=Pt(6)
+        p.paragraph_format.line_spacing=1.0
+        # Haber başlığı, kaynak adı veya URL ayrıca yazılmaz.
+        p.add_run(text.rstrip(' .;')+' (STB).')
 
-    p = doc.add_paragraph()
-    p.paragraph_format.space_before = Pt(8)
-    p.add_run('Arz olunur.')
+    doc.add_paragraph('Arz olunur.')
 
-    bio = BytesIO()
+    bio=BytesIO()
     doc.save(bio)
     bio.seek(0)
     return bio.getvalue()
@@ -4615,90 +4848,142 @@ def make_important_basket_docx_v92(basket_df):
 
 def make_important_basket_docx_v90(basket_df):
     """
-    Önemli Gelişmeler Word motoru – V90 (güncellenmiş).
-    Her haber için tek, resmî, bilgi dolu bir cümle üretir (≈4 satır).
+    V90 ÖGN motoru. Eski Word baytlarını/fonksiyonlarını kullanmaz.
+    Her haber için gerçek metni paralel alır, sırayı korur.
     """
-    doc = Document()
-    sec = doc.sections[0]
-    sec.top_margin = Cm(2)
-    sec.bottom_margin = Cm(2)
-    sec.left_margin = Cm(2.5)
-    sec.right_margin = Cm(2.5)
-    normal = doc.styles['Normal']
-    normal.font.name = 'Times New Roman'
-    normal.font.size = Pt(12)
-    normal._element.rPr.rFonts.set(qn('w:eastAsia'), 'Times New Roman')
+    doc=Document(); sec=doc.sections[0]
+    sec.top_margin=Cm(2); sec.bottom_margin=Cm(2)
+    sec.left_margin=Cm(2.5); sec.right_margin=Cm(2.5)
+    normal=doc.styles['Normal']
+    normal.font.name='Times New Roman'; normal.font.size=Pt(12)
+    normal._element.rPr.rFonts.set(qn('w:eastAsia'),'Times New Roman')
 
-    now = datetime.now().astimezone()
-    p = doc.add_paragraph()
-    p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-    p.add_run(now.strftime('%d/%m/%Y')).bold = True
-
-    p = doc.add_paragraph()
-    p.add_run('Konu: ').bold = True
+    now=datetime.now().astimezone()
+    p=doc.add_paragraph(); p.alignment=WD_ALIGN_PARAGRAPH.RIGHT
+    p.add_run(now.strftime('%d/%m/%Y')).bold=True
+    p=doc.add_paragraph()
+    p.add_run('Konu: ').bold=True
     p.add_run('STB Temsilciliği Önemli Gelişmeler Notu')
 
-    records = [] if basket_df is None else basket_df.to_dict('records')
+    records=[] if basket_df is None else basket_df.to_dict('records')
     if not records:
         doc.add_paragraph('Kayıtlı önemli gelişme bulunmamaktadır.')
     else:
         def process(item):
-            title = _v87_safe_tr(item.get('title', ''))
-            source = _v87_safe_tr(item.get('source', ''))
-            fallback = _v87_safe_tr(item.get('summary', ''))
-            url = str(item.get('url', '') or '')
-            news_time = _v87_safe_tr(item.get('news_time', ''))
+            title=_v87_safe_tr(item.get('title',''))
+            source=_v87_safe_tr(item.get('source',''))
+            fallback=_v87_safe_tr(item.get('summary',''))
+            url=str(item.get('url','') or '')
+            news_time=_v87_safe_tr(item.get('news_time',''))
 
-            # Gerçek haber metnini al (aynı Bilgi Notu mantığı)
-            detail = _v90_fetch_detail(title, source, url, fallback, news_time)
-            body = _v87_safe_tr((detail or {}).get('text', '') or fallback)
+            detail=_v90_fetch_detail(title,source,url,fallback,news_time)
+            body=_v87_safe_tr((detail or {}).get('text','') or fallback)
+            txt=_v90_item_summary(title,source,body,fallback)
 
-            # Ana özet: _v89_single_official_sentence kullan
-            txt = _v89_single_official_sentence(title, source, body, fallback)
-
-            # Eğer boş veya çok kısaysa, başlıktan anlamlı bir cümle oluştur
-            if not txt or len(txt) < 60:
-                clean_title = _v90_clean_title(title, source)
-                if clean_title:
-                    txt = _v90_formalize(
-                        f"{source} sitesinde yayımlanan haberde {clean_title} konusu ele alınmıştır."
-                    ).rstrip(' .;') + '.'
-                else:
-                    txt = "Konuya ilişkin açık kaynak içeriği tespit edilmiştir."
-
+            # Asla eski başlık-çıktı davranışına dönme.
+            if not txt:
+                # fallback gövdesinden tek resmî cümle oluşturmayı tekrar dene.
+                txt=_v90_item_summary(title,source,fallback,fallback)
+            if not txt:
+                # Son çare: başlığı değil, açıklayıcı bir kurum cümlesi oluştur.
+                clean_title=_v90_clean_title(title,source)
+                txt=f'{clean_title} konusuna ilişkin gelişme açık kaynaklarda yer almıştır.'
+                txt=_v90_formalize(txt)
             return txt
 
-        summaries = [''] * len(records)
-        workers = min(8, max(1, len(records)))
+        summaries=['']*len(records)
+        workers=min(8,max(1,len(records)))
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
-            fmap = {ex.submit(process, r): i for i, r in enumerate(records)}
+            fmap={ex.submit(process,r):i for i,r in enumerate(records)}
             for fut in concurrent.futures.as_completed(fmap):
-                idx = fmap[fut]
+                idx=fmap[fut]
                 try:
-                    summaries[idx] = fut.result()
+                    summaries[idx]=fut.result()
                 except Exception:
-                    rr = records[idx]
-                    fallback_title = _v90_clean_title(rr.get('title', ''), rr.get('source', ''))
-                    summaries[idx] = _v90_formalize(
-                        f"{fallback_title} başlıklı gelişme değerlendirilmiştir."
-                    ).rstrip(' .;') + '.'
+                    summaries[idx]=''
 
-        for rr, txt in zip(records, summaries):
+        for rr,txt in zip(records,summaries):
             if not txt:
-                txt = "Gelişmeye ilişkin içerik özetlenememiştir."
-            p = doc.add_paragraph()
-            p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
-            p.paragraph_format.space_after = Pt(6)
-            p.paragraph_format.line_spacing = 1.0
-            p.add_run(_v87_safe_tr(txt).rstrip(' .;') + ' (STB).')
+                continue
+            p=doc.add_paragraph()
+            p.alignment=WD_ALIGN_PARAGRAPH.JUSTIFY
+            p.paragraph_format.space_after=Pt(6)
+            p.paragraph_format.line_spacing=1.0
+            p.add_run(_v87_safe_tr(txt).rstrip(' .;')+' (STB).')
 
-    p = doc.add_paragraph()
-    p.paragraph_format.space_before = Pt(8)
+    p=doc.add_paragraph()
+    p.paragraph_format.space_before=Pt(8)
     p.add_run('Arz olunur.')
 
-    bio = BytesIO()
-    doc.save(bio)
-    bio.seek(0)
+    bio=BytesIO(); doc.save(bio); bio.seek(0)
+    return bio.getvalue()
+def make_important_basket_docx(basket_df):
+    """
+    V88:
+    - article fetches run in parallel instead of one-by-one,
+    - results cached for 1 hour,
+    - output order remains basket order,
+    - no item is silently dropped.
+    """
+    doc=Document(); sec=doc.sections[0]
+    sec.top_margin=Cm(2); sec.bottom_margin=Cm(2); sec.left_margin=Cm(2.5); sec.right_margin=Cm(2.5)
+    normal=doc.styles['Normal']
+    normal.font.name='Times New Roman'; normal.font.size=Pt(12)
+    normal._element.rPr.rFonts.set(qn('w:eastAsia'),'Times New Roman')
+
+    now=datetime.now().astimezone()
+    p=doc.add_paragraph(); p.alignment=WD_ALIGN_PARAGRAPH.RIGHT
+    p.add_run(now.strftime('%d/%m/%Y')).bold=True
+    p=doc.add_paragraph(); p.add_run('Konu: ').bold=True
+    p.add_run('STB Temsilciliği Önemli Gelişmeler Notu')
+
+    if basket_df is None or basket_df.empty:
+        doc.add_paragraph('Kayıtlı önemli gelişme bulunmamaktadır.')
+    else:
+        records=basket_df.to_dict('records')
+
+        def fetch_one(item):
+            title=_v87_safe_tr(item.get('title',''))
+            source=_v87_safe_tr(item.get('source',''))
+            fallback=_v87_safe_tr(item.get('summary',''))
+            url=str(item.get('url','') or '')
+            news_time=_v87_safe_tr(item.get('news_time',''))
+
+            # If saved summary is already substantial, don't delay Word just to fetch again.
+            # Full article is requested mainly for short/snippet-like summaries.
+            detail={}
+            if len(fallback)<380:
+                detail=_v88_cached_article_detail(title,source,url,fallback,news_time)
+            body=_v87_safe_tr((detail or {}).get('text','') or fallback)
+            return _v88_summary(title,source,body,fallback)
+
+        summaries=['']*len(records)
+        max_workers=min(6,max(1,len(records)))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as ex:
+            futmap={ex.submit(fetch_one,r):idx for idx,r in enumerate(records)}
+            for fut in concurrent.futures.as_completed(futmap):
+                idx=futmap[fut]
+                try:
+                    summaries[idx]=fut.result()
+                except Exception:
+                    rr=records[idx]
+                    summaries[idx]=_v88_summary(
+                        rr.get('title',''),rr.get('source',''),
+                        rr.get('summary',''),rr.get('summary','')
+                    )
+
+        for rr,txt in zip(records,summaries):
+            if not txt:
+                txt=_v88_formal(_v87_safe_tr(rr.get('summary','') or rr.get('title','')))
+            p=doc.add_paragraph()
+            p.alignment=WD_ALIGN_PARAGRAPH.JUSTIFY
+            p.paragraph_format.space_after=Pt(5)
+            p.paragraph_format.line_spacing=1.0
+            p.add_run(_v87_safe_tr(txt).rstrip(' .;')+' (STB).')
+
+    p=doc.add_paragraph(); p.paragraph_format.space_before=Pt(8)
+    p.add_run('Arz olunur.')
+    bio=BytesIO(); doc.save(bio); bio.seek(0)
     return bio.getvalue()
 
 # -----------------------------
@@ -7604,12 +7889,12 @@ else:
                     # Her basışta eski çıktı silinir ve V90 motoruyla baştan hazırlanır.
                     st.session_state.pop('v90_ogn_docx_bytes',None)
                     with st.spinner('Önemli gelişmeler gerçek haber içeriklerinden resmî biçimde özetleniyor...'):
-                        st.session_state['v90_ogn_docx_bytes'] = make_important_basket_docx_final(basket)
+                        st.session_state['v90_ogn_docx_bytes']=make_important_basket_docx_v97(basket)
                 if st.session_state.get('v90_ogn_docx_bytes'):
                     st.download_button(
-                        '⬇️ 24 SAATLİK ÖNEMLİ GELİŞMELER / WORD — V96',
+                        '⬇️ 24 SAATLİK ÖNEMLİ GELİŞMELER / WORD — V97',
                         st.session_state['v90_ogn_docx_bytes'],
-                        file_name=f'24_Saatlik_Onemli_Gelismeler_V96_{date.today()}.docx',
+                        file_name=f'24_Saatlik_Onemli_Gelismeler_V97_{date.today()}.docx',
                         mime='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
                         use_container_width=True,
                         key='v90_download_ogn_word'
