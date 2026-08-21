@@ -5683,6 +5683,45 @@ else:
                     removed=_clear_important_basket()
                     st.success(f'{removed} kayıt silindi.')
 
+            st.markdown('**📝 Önemli Gelişmeler Sepetinden Bilgi Notu**')
+            if st.button(
+                '📝 ÖNEMLİ GELİŞMELER SEPETİNDEN BİLGİ NOTU OLUŞTUR',
+                use_container_width=True,
+                key='v76_important_basket_note'
+            ):
+                important_note_rows=pd.DataFrame([{
+                    'Tarih':r.get('news_time',''),
+                    'Kaynak':r.get('source',''),
+                    'Başlık':r.get('title',''),
+                    'İçerik_Özeti':r.get('summary',''),
+                    'URL':r.get('url',''),
+                    'Kategori':r.get('category',''),
+                    'Risk_Skoru':r.get('risk_score',0),
+                    'Risk_Durumu':r.get('risk_status','')
+                } for _,r in basket.iterrows()])
+                with st.spinner('Önemli gelişmeler sepetindeki haberlerden ayrıntılı bilgi notu hazırlanıyor...'):
+                    try:
+                        st.session_state['v76_important_basket_note_bytes']=make_analyst_docx(
+                            important_note_rows,
+                            title='SANAYİ & TEKNOLOJİ BİLGİ NOTU'
+                        )
+                        _v63_mark_notes(important_note_rows.to_dict('records'))
+                        _v73_invalidate_status_cache()
+                        st.success('✅ Bilgi notu hazırlanmıştır.')
+                    except Exception as e:
+                        st.session_state['v76_important_basket_note_bytes']=None
+                        st.error(f'Bilgi notu hazırlanamadı: {e}')
+
+            if st.session_state.get('v76_important_basket_note_bytes'):
+                st.download_button(
+                    '⬇️ ÖNEMLİ GELİŞMELERDEN HAZIRLANAN BİLGİ NOTUNU İNDİR',
+                    data=st.session_state['v76_important_basket_note_bytes'],
+                    file_name=f'Onemli_Gelismeler_Bilgi_Notu_{date.today()}.docx',
+                    mime='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                    use_container_width=True,
+                    key='v76_important_basket_note_download'
+                )
+
         st.markdown('---')
         st.subheader('🗂️ Açık Kaynak Tarama Çalışması Sepeti')
         st.caption('14:00 açık kaynak tarama raporuna girecek haberleri gün boyunca ayrı bir sepette biriktirin.')
@@ -5762,21 +5801,36 @@ else:
                     removed=_clear_osint_basket()
                     st.success(f'{removed} kayıt silindi.')
 
+            st.markdown('**📝 Açık Kaynak Tarama Sepetinden Bilgi Notu**')
+            if st.button(
+                '📝 AKT SEPETİNDEN BİLGİ NOTU OLUŞTUR',
+                use_container_width=True,
+                key='v76_akt_basket_note'
+            ):
+                akt_note_df=pd.DataFrame(osint_rows)
+                with st.spinner('AKT sepetindeki haberlerden ayrıntılı bilgi notu hazırlanıyor...'):
+                    try:
+                        st.session_state['v76_akt_basket_note_bytes']=make_analyst_docx(
+                            akt_note_df,
+                            title='SANAYİ & TEKNOLOJİ BİLGİ NOTU'
+                        )
+                        _v63_mark_notes(akt_note_df.to_dict('records'))
+                        _v73_invalidate_status_cache()
+                        st.success('✅ Bilgi notu hazırlanmıştır.')
+                    except Exception as e:
+                        st.session_state['v76_akt_basket_note_bytes']=None
+                        st.error(f'Bilgi notu hazırlanamadı: {e}')
 
-        # ---------------------------------------------------------
-        st.markdown('---')
-        st.subheader('📊 Bugün Yayımlanan Önemli Veriler')
-        st.caption('Sanayi üretimi, kapasite kullanımı, ihracat, otomotiv, savunma ihracatı, enerji, yatırım teşvikleri ve Ar-Ge/teknoloji verilerini öne çıkarır.')
-        stats_radar=_important_statistics_rows(df)
-        if stats_radar.empty:
-            st.info('Bugünkü taramada sayısal veri taşıyan önemli bir istatistik yayını tespit edilmedi.')
-        else:
-            _section_select_table(
-                'important_statistics',
-                stats_radar,
-                ['Tarih','Birincil_Kaynak','Kaynak','Kategori','Başlık','Kritik_Sayı','Risk_Skoru','URL'],
-                height=min(500,80+38*len(stats_radar))
-            )
+            if st.session_state.get('v76_akt_basket_note_bytes'):
+                st.download_button(
+                    '⬇️ AKT SEPETİNDEN HAZIRLANAN BİLGİ NOTUNU İNDİR',
+                    data=st.session_state['v76_akt_basket_note_bytes'],
+                    file_name=f'AKT_Sepeti_Bilgi_Notu_{date.today()}.docx',
+                    mime='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                    use_container_width=True,
+                    key='v76_akt_basket_note_download'
+                )
+
 
         st.markdown('---')
         st.subheader('🏛️ Resmî Kaynak Radarı')
