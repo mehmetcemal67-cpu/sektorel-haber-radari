@@ -3564,7 +3564,7 @@ def _v87_ogn_summary(title, body, fallback):
     return out or (fallback[:520].strip() if fallback else title[:520].strip())
 
 
-V90_OGN_ENGINE_VERSION='v98_ogn_20260821_1'
+V90_OGN_ENGINE_VERSION='v99_ogn_20260821_1'
 
 def _v90_clean_title(title,source=''):
     t=_v87_safe_tr(title)
@@ -4500,6 +4500,308 @@ def _v98_exact_four_line_summary(title, source, body):
     return out
 
 
+
+# ========================= V99: ÖGN ANALİST FİLTRESİ =========================
+_V99_UI_NOISE = [
+    r'sıralamayı değiştirmek için kartları',
+    r'kartları yukarı',
+    r'kartları aşağı',
+    r'view more',
+    r'daha fazla göster',
+    r'devamını oku',
+    r'cookie',
+    r'çerez',
+    r'reklam',
+    r'abone ol',
+    r'bildirimleri aç',
+    r'ana sayfa',
+    r'son dakika',
+    r'galeri',
+    r'foto galeri',
+    r'video galeri',
+    r'yorumlar',
+    r'paylaş',
+]
+
+_V99_NEWS_SPEECH = [
+    (r'\bbaşladı\b', 'başlamıştır'),
+    (r'\bbaşladıktan\b', 'başladıktan'),
+    (r'\baçıkladı\b', 'açıklamıştır'),
+    (r'\bbelirtti\b', 'belirtmiştir'),
+    (r'\bkaydetti\b', 'kaydetmiştir'),
+    (r'\bduyurdu\b', 'duyurmuştur'),
+    (r'\bbildirdi\b', 'bildirmiştir'),
+    (r'\bifade etti\b', 'ifade etmiştir'),
+    (r'\bsöyledi\b', 'belirtmiştir'),
+    (r'\bgerçekleşti\b', 'gerçekleşmiştir'),
+    (r'\byükseldi\b', 'yükselmiştir'),
+    (r'\bgeriledi\b', 'gerilemiştir'),
+    (r'\barttı\b', 'artmıştır'),
+    (r'\bazaldı\b', 'azalmıştır'),
+    (r'\bkırıldı\b', 'kırılmıştır'),
+    (r'\btamamlandı\b', 'tamamlanmıştır'),
+    (r'\bgirdi\b', 'girmiştir'),
+    (r'\bbaşlıyor\b', 'başlamaktadır'),
+    (r'\bdevam ediyor\b', 'devam etmektedir'),
+    (r'\bhedefliyor\b', 'hedeflemektedir'),
+    (r'\bbekleniyor\b', 'beklenmektedir'),
+    (r'\bsürüyor\b', 'sürmektedir'),
+    (r'\bulaştı\b', 'ulaşmıştır'),
+    (r'\bçıktı\b', 'çıkmıştır'),
+    (r'\byapıldı\b', 'yapılmıştır'),
+    (r'\bseçilecek\b', 'seçilecektir'),
+    (r'\byetiştireceğiz\b', 'yetiştirilmesi planlanmaktadır'),
+    (r'\bkazandıracağız\b', 'kazandırılması hedeflenmektedir'),
+]
+
+def _v99_clean_article_text(text, source=''):
+    t=_v98_safe_tr(text)
+    t=t.replace('»',' ').replace('›',' ').replace('',"'").replace('','ş').replace('¢','â')
+    t=re.sub(r'\s+',' ',t).strip()
+
+    # Web arayüzü / sayfa gürültüsü taşıyan cümleleri tamamen at.
+    kept=[]
+    for s in _sentence_chunks(t):
+        n=norm(s)
+        if any(re.search(p,n,re.I) for p in _V99_UI_NOISE):
+            continue
+        # Kaynak/site navigasyonu gibi çok kısa satırları at.
+        if len(s.split()) < 4 and not re.search(r'\d',s):
+            continue
+        kept.append(s.strip())
+    t=' '.join(kept)
+
+    # Kaynak adını cümle başından/sonundan temizle.
+    if source:
+        ss=re.escape(_v98_safe_tr(source))
+        t=re.sub(r'^\s*'+ss+r'\s*[-:»|]*\s*','',t,flags=re.I)
+        t=re.sub(r'\s*[-:»|]*\s*'+ss+r'\s*$','',t,flags=re.I)
+
+    # Genel domainleri ve tipik gazete navigasyonunu kaldır.
+    t=re.sub(r'\b[\w.-]+\.(?:com\.tr|com|net|org|gov\.tr|edu\.tr)\b',' ',t,flags=re.I)
+    t=re.sub(r'^[^.!?]{0,80}\b(?:Gazetesi|Gazete|Haber|Haberleri)\s*[»|:-]+\s*','',t,flags=re.I)
+    t=re.sub(r'\s+',' ',t).strip()
+    return t
+
+def _v99_is_title_only(title, text):
+    a=set(norm(title).split())
+    b=set(norm(text).split())
+    if not a or not b:
+        return False
+    return len(a & b)/max(1,len(a | b)) >= 0.72 and len(text) < 220
+
+def _v99_officialize(text):
+    t=_v98_safe_tr(text).strip()
+    for pat,repl in _V99_NEWS_SPEECH:
+        t=re.sub(pat,repl,t,flags=re.I)
+    # Haber dilindeki doğrudan alıntı kalıplarını kurumsallaştır.
+    t=re.sub(r'\bifadelerini kullandı\b','belirtmiştir',t,flags=re.I)
+    t=re.sub(r'\bşunları kaydetti\b','açıklamada bulunmuştur',t,flags=re.I)
+    t=re.sub(r'\bşöyle\b\s*:?', '', t, flags=re.I)
+    t=_v66_formalize_sentence_endings(t)
+    t=re.sub(r'\s+',' ',t).strip()
+    return t
+
+def _v99_sentence_value(s):
+    n=norm(s)
+    score=_sent_score(s)
+    nums=len(re.findall(r'\b\d+(?:[.,]\d+)?\b|%',s))
+    score += min(nums,5)*3
+    # Kurumsal/stratejik bilgi yoğunluğu
+    for term in [
+        'tüik','tcmb','epdk','bakanlık','cumhurbaşkanı','tübitak','kosgeb','tse','türkpatent',
+        'üretim','ihracat','ithalat','yatırım','kapasite','oran','yüzde','milyon','milyar',
+        'teslimat','envanter','program','proje','hibe','destek','menzil','adet','öğrenci',
+        'araştırmacı','tesis','fabrika','teknoloji','savunma','uzay','yapay zeka'
+    ]:
+        if term in n:
+            score += 2
+    return score
+
+def _v99_analyst_ogn(title, source, body, fallback_summary=''):
+    """
+    İşyeri ÖGN örneğine göre:
+    somut özne/kurum + gelişme + kritik rakam/ölçek + sonuç.
+    Tek paragraf, 2-3 tam cümle, yaklaşık dört Word satırı.
+    """
+    title=_v98_safe_tr(title)
+    source=_v98_safe_tr(source)
+    body=_v99_clean_article_text(body,source)
+    fallback_summary=_v99_clean_article_text(fallback_summary,source)
+
+    # Gerçek içerik yoksa başlığı Word'e basmak yerine kayıtlı özeti dene.
+    candidate_body=body
+    if not candidate_body or _v99_is_title_only(title,candidate_body):
+        candidate_body=fallback_summary
+
+    # Hâlâ yalnız başlıksa bunu geçerli ÖGN sayma.
+    if not candidate_body or _v99_is_title_only(title,candidate_body):
+        return ''
+
+    sentences=_v96_unique_sentences(title,candidate_body)
+    clean=[]
+    for s in sentences:
+        s=_v99_clean_article_text(s,source)
+        if not s or _v99_is_title_only(title,s):
+            continue
+        if any(re.search(p,norm(s),re.I) for p in _V99_UI_NOISE):
+            continue
+        clean.append(s)
+
+    if not clean:
+        return ''
+
+    # İlk cümle: haberin gerçek ana gelişmesi. İlk 4 cümlede en yüksek değerli olanı seç.
+    first_pool=list(enumerate(clean[:4]))
+    first_idx, first=max(first_pool,key=lambda x:(_v99_sentence_value(x[1]),-x[0]))
+
+    selected=[(first_idx,first)]
+
+    # Kritik rakam/veri: ana cümlede yoksa ayrıca seç.
+    critical=[]
+    for i,s in enumerate(clean):
+        if i==first_idx:
+            continue
+        if _v96_has_critical_data(s):
+            critical.append((_v99_sentence_value(s),i,s))
+    if critical:
+        _,i,s=max(critical,key=lambda x:(x[0],-x[1]))
+        selected.append((i,s))
+
+    # Sonuç/hedef/son durum: yalnız kaynakta varsa.
+    result_terms=['hedef','plan','beklen','öngör','teslim','envanter','başvuru','hibe',
+                  'artış','azalış','rekor','üretim','faaliyete','tamamlan','başlam']
+    results=[]
+    used={i for i,_ in selected}
+    for i,s in enumerate(clean):
+        if i in used:
+            continue
+        sc=sum(x in norm(s) for x in result_terms)*4 + _v99_sentence_value(s)
+        if sc>3:
+            results.append((sc,i,s))
+    if results:
+        _,i,s=max(results,key=lambda x:(x[0],-x[1]))
+        selected.append((i,s))
+
+    # Analist akışı: ana gelişme -> veri -> sonuç. En fazla 3 cümle.
+    out=[]
+    for _,s in selected[:3]:
+        s=_v99_officialize(s)
+        s=_v98_strip_site_name(s,source)
+        s=re.sub(r'^[A-ZÇĞİÖŞÜ0-9\s\-–—:]{8,80}(?=[A-ZÇĞİÖŞÜ][a-zçğıöşü])','',s).strip()
+        if not s:
+            continue
+        if s[-1] not in '.!?':
+            s+='.'
+        if all(title_key(s)!=title_key(x) for x in out):
+            out.append(s)
+
+    # Dört satır hedefi: yaklaşık 560 karakter; cümle ortasında kesme yok.
+    chosen=[]
+    for s in out:
+        cand=' '.join(chosen+[s])
+        if chosen and len(cand)>560:
+            break
+        chosen.append(s)
+
+    text=' '.join(chosen).strip()
+    text=_v99_clean_article_text(text,source)
+    text=_v99_officialize(text)
+    text=_v98_strip_site_name(text,source)
+    text=_v98_safe_tr(text)
+
+    if _v99_is_title_only(title,text):
+        return ''
+    if text and text[-1] not in '.!?':
+        text+='.'
+    return text
+
+def make_important_basket_docx_v99(basket_df):
+    """
+    V99 ÖGN Word:
+    - sepetteki her haber ayrı işlenir;
+    - web sayfası/UI gürültüsü atılır;
+    - başlık/site adı basılmaz;
+    - içerik bulunamayan haber başlık olarak Word'e sokulmaz;
+    - resmî, analitik, 4 satıra yakın özet üretilir;
+    - Türkçe mojibake temizliği son katmanda tekrar uygulanır.
+    """
+    doc=Document()
+    sec=doc.sections[0]
+    sec.top_margin=Cm(2); sec.bottom_margin=Cm(2)
+    sec.left_margin=Cm(2.5); sec.right_margin=Cm(2.5)
+
+    normal=doc.styles['Normal']
+    normal.font.name='Times New Roman'
+    normal.font.size=Pt(12)
+    normal._element.rPr.rFonts.set(qn('w:eastAsia'),'Times New Roman')
+
+    now=datetime.now().astimezone()
+    p=doc.add_paragraph()
+    p.alignment=WD_ALIGN_PARAGRAPH.RIGHT
+    p.add_run(now.strftime('%d/%m/%Y'))
+
+    p=doc.add_paragraph()
+    p.add_run('Konu: ').bold=True
+    p.add_run('STB Temsilciliği Önemli Gelişmeler Notu')
+
+    rows=[] if basket_df is None else basket_df.to_dict('records')
+
+    def process_row(r):
+        title=_v98_safe_tr(r.get('title',''))
+        source=_v98_safe_tr(r.get('source',''))
+        summary=_v98_safe_tr(r.get('summary',''))
+        url=str(r.get('url','') or '')
+        news_time=_v98_safe_tr(r.get('news_time',''))
+
+        detail={}
+        try:
+            detail=article_detail({
+                'Başlık':title,'Kaynak':source,'URL':url,'Yayıncı_URL':url,
+                'İçerik_Özeti':summary,'Tarih':news_time
+            }) or {}
+        except Exception:
+            pass
+
+        body=detail.get('text') or ''
+        text=_v99_analyst_ogn(title,source,body,summary)
+
+        # İçerik çekilememişse bir kez daha mevcut summary ile dene.
+        if not text and summary:
+            text=_v99_analyst_ogn(title,source,summary,summary)
+
+        return text
+
+    outputs=['']*len(rows)
+    if rows:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(6,len(rows))) as ex:
+            jobs={ex.submit(process_row,r):i for i,r in enumerate(rows)}
+            for fut in concurrent.futures.as_completed(jobs):
+                idx=jobs[fut]
+                try:
+                    outputs[idx]=fut.result()
+                except Exception:
+                    outputs[idx]=''
+
+    for idx,r in enumerate(rows):
+        text=_v98_safe_tr(outputs[idx] if idx<len(outputs) else '')
+        if not text:
+            # Başlığı çıktı olarak kullanma. İçeriği olmayan haberi uyarı metniyle bozmak yerine atla.
+            continue
+
+        p=doc.add_paragraph()
+        p.alignment=WD_ALIGN_PARAGRAPH.JUSTIFY
+        p.paragraph_format.line_spacing=1.0
+        p.paragraph_format.space_after=Pt(7)
+        p.add_run(text.rstrip(' .;')+' (STB).')
+
+    doc.add_paragraph('Arz olunur.')
+
+    bio=BytesIO()
+    doc.save(bio)
+    bio.seek(0)
+    return bio.getvalue()
+# ======================= /V99: ÖGN ANALİST FİLTRESİ =========================
 def make_important_basket_docx_v98(basket_df):
     """
     ÖGN Word:
@@ -8137,12 +8439,12 @@ else:
                     # Her basışta eski çıktı silinir ve V90 motoruyla baştan hazırlanır.
                     st.session_state.pop('v90_ogn_docx_bytes',None)
                     with st.spinner('Önemli gelişmeler gerçek haber içeriklerinden resmî biçimde özetleniyor...'):
-                        st.session_state['v90_ogn_docx_bytes']=make_important_basket_docx_v98(basket)
+                        st.session_state['v90_ogn_docx_bytes']=make_important_basket_docx_v99(basket)
                 if st.session_state.get('v90_ogn_docx_bytes'):
                     st.download_button(
-                        '⬇️ 24 SAATLİK ÖNEMLİ GELİŞMELER / WORD — V98',
+                        '⬇️ 24 SAATLİK ÖNEMLİ GELİŞMELER / WORD — V99',
                         st.session_state['v90_ogn_docx_bytes'],
-                        file_name=f'24_Saatlik_Onemli_Gelismeler_V98_{date.today()}.docx',
+                        file_name=f'24_Saatlik_Onemli_Gelismeler_V99_{date.today()}.docx',
                         mime='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
                         use_container_width=True,
                         key='v90_download_ogn_word'
