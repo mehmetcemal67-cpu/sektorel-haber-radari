@@ -3798,10 +3798,12 @@ def make_important_basket_docx_v90(basket_df):
                 # fallback gövdesinden tek resmî cümle oluşturmayı tekrar dene.
                 txt=_v90_item_summary(title,source,fallback,fallback)
             if not txt:
-                # Son çare: başlığı değil, açıklayıcı bir kurum cümlesi oluştur.
-                clean_title=_v90_clean_title(title,source)
-                txt=f'{clean_title} konusuna ilişkin gelişme açık kaynaklarda yer almıştır.'
-                txt=_v90_formalize(txt)
+                # Son çare: kalıp cümle üretme. Kaydedilmiş içerikten kısa ve resmî bir özet oluştur.
+                fb=_v87_safe_tr(fallback)
+                if fb:
+                    txt=_v90_item_summary(title,source,fb,fb)
+                if not txt:
+                    txt=_v90_formalize(fb) if len(fb)>=60 else ''
             return txt
 
         summaries=['']*len(records)
