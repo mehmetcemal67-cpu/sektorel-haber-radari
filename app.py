@@ -22,6 +22,9 @@ st.set_page_config(page_title='Sanayi & Teknoloji OSINT Radarı', page_icon='�
 
 # ============================================================
 # V55 — ŞİFRE KORUMASI
+# V54 STABLE işlevlerine dokunmaz; yalnızca uygulama girişini korur.
+# Streamlit Secrets:
+# APP_PASSWORD = "guclu-sifreniz"
 # ============================================================
 def _v55_password_gate():
     try:
@@ -55,35 +58,45 @@ def _v55_password_gate():
 
 _v55_password_gate()
 
+
+
 HEADERS={'User-Agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/151 Safari/537.36'}
 
 # -----------------------------
 # KONU EVRENİ
 # -----------------------------
 TOPIC_TERMS = [
+    # Sanayi / üretim
     'sanayi','sanayi üretimi','imalat','üretim','fabrika','tesis','organize sanayi','OSB','endüstri',
     'makine','makine sanayii','endüstriyel otomasyon','otomasyon','robotik','endüstri 4.0','mesleki üretim',
     'kapasite','kapasite kullanım','yatırım','yatırım teşvik','yerli üretim','yerlileştirme','millileştirme',
     'tedarik zinciri','tedarikçi','lojistik','depo','depolama','tersane','gemi inşa','denizcilik',
+    # Teknoloji / dijital
     'teknoloji','teknolojik','Ar-Ge','Arge','araştırma geliştirme','inovasyon','patent','faydalı model',
     'dijital dönüşüm','endüstri 4.0','yapay zeka','yapay zekâ','makine öğrenmesi','derin öğrenme','yazılım',
     'siber güvenlik','siber saldırı','veri sızıntısı','veri merkezi','bulut','cloud','saas','yazılım şirketi',
     'çip','mikroçip','yarı iletken','semiconductor','işlemci','wafer','elektronik','pcb','sensör',
     'telekom','5G','6G','fiber','internet altyapısı','kuantum','blokzincir','blockchain','fintech',
+    # İleri teknoloji / sağlık teknolojileri
     'biyoteknoloji','biyomedikal','nanoteknoloji','medikal cihaz','sağlık teknolojisi','gen tedavisi',
     'malzeme','ileri malzeme','kompozit','karbon fiber','3D yazıcı','eklemeli imalat','batarya teknolojisi',
+    # Savunma / havacılık / uzay
     'savunma sanayii','savunma sanayi','savunma teknolojisi','ASELSAN','TUSAŞ','TUSAS','ROKETSAN','HAVELSAN',
     'Baykar','Bayraktar','İHA','SİHA','drone','insansız hava aracı','insansız deniz aracı','KAAN','Kızılelma',
     'HİSAR','SİPER','füze','roket','radar','elektronik harp','elektronik destek','komuta kontrol',
     'mühimmat','zırhlı araç','tank','denizaltı','fırkateyn','korvet','helikopter','havacılık','uçak',
     'havacılık sanayii','uzay','uydu','uydu teknolojisi','roket fırlatma','fırlatma sistemi','Türkiye Uzay Ajansı',
+    # Otomotiv / mobilite
     'otomotiv','TOGG','elektrikli araç','hibrit araç','otonom araç','sürücüsüz araç','batarya','şarj',
     'şarj istasyonu','mobilite','raylı sistem','lokomotif','metro','demiryolu','lastik','yan sanayi',
+    # Enerji / kimya / kaynak
     'enerji','enerji depolama','güneş enerjisi','solar','rüzgar enerjisi','hidrojen','yakıt hücresi',
     'nükleer enerji','nükleer santral','petrol','doğalgaz','LNG','elektrik üretimi','şebeke','kimya',
     'petrokimya','plastik','polimer','demir çelik','çelik','metal','alüminyum','bakır','madencilik','maden',
+    # Diğer üretim sektörleri
     'tekstil','hazır giyim','gıda teknolojisi','gıda sanayii','tarım teknolojisi','akıllı tarım','seracılık',
     'su ürünleri','inşaat teknolojisi','çimento','cam','seramik','kağıt','ambalaj','mobilya',
+    # Ekosistem / kamu / girişim
     'TÜBİTAK','KOSGEB','Sanayi ve Teknoloji Bakanlığı','TSE','TürkPatent','TEKNOFEST','teknopark',
     'girişim','girişimcilik','startup','start-up','venture capital','yatırım turu','teknoloji transferi',
     'teknoloji geliştirme bölgesi','Ar-Ge merkezi','tasarım merkezi','OSBÜK','ihracat','ithalat','yüksek teknoloji',
@@ -181,6 +194,7 @@ def parse_dt(v):
     except: return None
 
 def _to_utc_datetime(value):
+    """datetime / pandas.Timestamp / string değerlerini güvenli biçimde UTC-aware datetime'a çevirir."""
     if value is None:
         return None
     try:
@@ -213,6 +227,7 @@ def _to_utc_datetime(value):
     except Exception:
         return None
 
+
 def fmt_dt(d):
     d = _to_utc_datetime(d)
     return d.astimezone().strftime('%d.%m.%Y %H:%M:%S') if d else 'Tarih/saat bilinmiyor'
@@ -223,6 +238,7 @@ def infer_source(source_name='',source_url='',article_url=''):
     n=norm(source_name)
     for a,d in SOURCE_ALIASES.items():
         if a in n: return d
+    # domain adının yayıncı adına gömülü olması
     for d in TR_MAIN+TR_TECH+TR_OFFICIAL+GR:
         stem=d.split('.')[0]
         if stem and stem in re.sub(r'[^a-z0-9ğüşöçıİĞÜŞÖÇ]','',n): return d
@@ -258,6 +274,7 @@ def greek_defense(text):
     terms=['turkey','türkiye','turkish','türk','τουρκ','aselsan','tusaş','tusas','roketsan','havelsan','baykar','bayraktar','kaan','kızılelma','siper','hisar','iha','siha','drone','uav','missile','fighter','frigate','submarine','defense','defence','savunma','άμυνα']
     return any(x in t for x in terms)
 
+
 OSB_FIRE_LOCATION_TERMS = [
     'osb','organize sanayi','organize sanayi bölgesi','organize sanayi bölgesinde',
     'organize sanayi bölgesindeki','organize sanayi sitesinde'
@@ -274,6 +291,7 @@ CRITICAL_INCIDENT_TERMS = [
 ]
 
 def is_osb_fire(title, snippet=''):
+    """Geriye dönük uyumluluk: OSB + yangın bağlamı."""
     t=norm(f'{title} {snippet}')
     return (
         any(term in t for term in OSB_FIRE_LOCATION_TERMS)
@@ -281,6 +299,13 @@ def is_osb_fire(title, snippet=''):
     )
 
 def critical_industrial_incident(title, snippet=''):
+    """
+    Özel kırmızı alarm için:
+    - OSB içi yangın
+    - OSB içi patlama
+    - OSB dışı fabrika/tesis yangını
+    - OSB dışı fabrika/tesis patlaması
+    """
     t=norm(f'{title} {snippet}')
     has_location=any(term in t for term in INDUSTRIAL_LOCATION_TERMS)
     has_incident=any(_v89_has_term(t,term) for term in CRITICAL_INCIDENT_TERMS)
@@ -300,6 +325,7 @@ def critical_industrial_incident(title, snippet=''):
     if fire:
         return '🔥 FABRİKA/TESİS YANGINI'
     return '🚨 KRİTİK SANAYİ OLAYI'
+
 
 NEGATION_OR_RESOLUTION_PHRASES = [
     'olmadı','olmadığı','bulunmadı','bulunmadığı','yaşanmadı','gerçekleşmedi',
@@ -326,6 +352,7 @@ SEVERE_NEGATIVE_TERMS = {
 }
 
 def _term_regex(term):
+    # Alt-string kaynaklı "ceza/cezasız", "dava/davalar" vb. yanlış eşleşmeleri azalt.
     escaped=re.escape(term)
     if ' ' in term:
         return re.compile(escaped,re.I)
@@ -355,9 +382,13 @@ def _active_adverse_terms(terms, text):
             lo=max(0,m.start()-90); hi=min(len(t),m.end()+90)
             ctx=t[lo:hi]
 
+            # Fiziksel olay kelimesi yalnız kavramsal/önleyici bir kullanımdaysa alarm verme.
             if not _physical_incident_is_real(term,ctx):
                 continue
 
+            # "yaptırım kaldırıldı", "ihlal yaşanmadı", "üretim durmadı" gibi bağlamları bastır.
+            # Gerçekleşmiş yangın/patlama/can kaybı ise "kontrol altına alındı" gibi sonraki olumlu
+            # gelişmeler olayın negatif niteliğini ortadan kaldırmaz.
             if term not in {'yangın','patlama','can kaybı','ölüm'}:
                 if any(p in ctx for p in NEGATION_OR_RESOLUTION_PHRASES):
                     continue
@@ -377,6 +408,7 @@ def _sentence_chunks(text):
 
 def _negated_in_context(term, sentence):
     s=norm(sentence)
+    # Olumsuzluk/çözülme ifadeleri, ilgili risk kelimesinin yakın çevresindeyse baskılanır.
     negators=[
         'değil','değildir','olmadı','olmadığı','bulunmadı','bulunmadığı',
         'yaşanmadı','gerçekleşmedi','etkilenmedi','etkilenmediği',
@@ -398,6 +430,8 @@ def _positive_strength(text):
     ]
     return sum(1 for x in positive_terms if x in t)
 
+# V48 — Ekonomik/operasyonel haber dilinde sık görülen, önceki sözlükte kolay
+# kaçabilen negatif sinyaller. Bunlar tam sayfa indirmeden RSS içerik/özetinde aranır.
 V48_NEGATIVE_PHRASES = [
     'düştü','düşüş','azaldı','azalış','geriledi','gerileme','daraldı','daralma',
     'zarar açıkladı','zarar etti','net zarar','faaliyet zararı','kayıp yaşadı',
@@ -424,6 +458,9 @@ V48_NEGATIVE_PHRASES = [
     'kaza','yangın','patlama','yaralandı','can kaybı'
 ]
 
+
+# V49 — Yapısal / eleştirel negatiflik katmanı
+# Haber sayfasına gitmez; yalnızca eldeki Başlık + RSS içerik/özet üzerinde çalışır.
 V49_STRUCTURAL_NEGATIVE = [
     'tehlikeli gidiş','tehlikeli seyir','olumsuz gidiş','olumsuz seyir',
     'kötü gidiş','kötüye gidiş','kötüleşiyor','kötüleşme',
@@ -445,6 +482,11 @@ V49_STRUCTURAL_NEGATIVE = [
     'darboğaz','çıkmaz','kırılganlık','kırılgan hale geldi'
 ]
 
+
+# V50 — Geniş Negatif Bölümü
+# Kullanıcı açısından "Negatif" yalnızca gerçekleşmiş kötü olay değildir.
+# Eleştirel, uyarıcı, yetersizlik bildiren, politika/sektör performansını sorgulayan
+# ve yapısal sorun işaret eden haberler de aynı Negatif bölümüne girer.
 V50_CRITICAL_NEGATIVE = [
     'eleştirdi','eleştiri','eleştirildi','tepki gösterdi','tepki çekti',
     'itiraz etti','itiraz','uyarıda bulundu','uyarı yaptı','uyardı',
@@ -473,6 +515,7 @@ def _v50_critical_negative_signals(text):
     found = set()
     for phrase in V50_CRITICAL_NEGATIVE:
         if phrase in t:
+            # Açık biçimde reddedilen eleştirileri yanlış negatif yapma.
             idx = t.find(phrase)
             ctx = t[max(0, idx-65):idx+len(phrase)+65] if idx >= 0 else t
             if any(x in ctx for x in [
@@ -495,10 +538,15 @@ V49_PERSISTENCE_PATTERNS = [
 def _v49_structural_negative_signals(text):
     t = norm(text)
     found = set()
+
     for phrase in V49_STRUCTURAL_NEGATIVE:
         if phrase in t:
             found.add(phrase)
+
     persistent = any(re.search(pat, t, re.I) for pat in V49_PERSISTENCE_PATTERNS)
+
+    # Süre ifadesi tek başına negatif değildir. Ancak yapısal negatif bir ifade
+    # veya başka bir negatif sinyal ile birlikteyse ağırlık kazanır.
     return found, persistent
 
 V48_STRONG_NEGATIVE = [
@@ -515,14 +563,21 @@ V48_DIRECTION_PATTERNS = [
     r'\b(?:geçen yıla|önceki yıla|geçen aya|önceki aya)\s+göre.{0,70}\b(?:düştü|azaldı|geriledi|daraldı)\b'
 ]
 
+
 def _v89_has_term(text, term):
+    """
+    Negatif terimleri alt-dize ile değil kelime/ifade sınırıyla arar.
+    Böylece 'kaza' -> 'kazandı/kazanç/kazanım' eşleşmesi oluşmaz.
+    """
     t=norm(text)
     term=norm(term)
     if not term:
         return False
+    # _term_regex mevcut negatif analiz motorunun güvenli eşleştiricisidir.
     try:
         return bool(_term_regex(term).search(t))
     except Exception:
+        # Fallback: tek kelimede Unicode kelime sınırı, çok kelimede sınırlandırılmış ifade.
         return bool(re.search(r'(?<!\w)'+re.escape(term)+r'(?!\w)',t,re.I))
 
 def _v48_extra_negative_signals(text):
@@ -530,6 +585,7 @@ def _v48_extra_negative_signals(text):
     found=set()
     for phrase in V48_NEGATIVE_PHRASES:
         if _v89_has_term(t,phrase):
+            # "düşmedi / azalmadı / gerilemedi" gibi açık olumsuzlamaları alma.
             m=_term_regex(phrase).search(t)
             pos=m.start() if m else -1
             ctx=t[max(0,pos-60):pos+len(phrase)+60] if pos>=0 else t
@@ -549,6 +605,14 @@ def _v48_extra_negative_signals(text):
     return found,directional
 
 def _negative_sentence_analysis(title, snippet):
+    """
+    V48 hızlı hassas analiz:
+    - Başlık + RSS içerik/özet birlikte
+    - mevcut negatif/risk sözlükleri
+    - geniş ekonomik/operasyonel sözlük
+    - sayısal/yönsel düşüş tespiti
+    - olumsuzlama kontrolü
+    """
     title_n=norm(title)
     full=f"{title}. {snippet}"
     sentences=_sentence_chunks(full)
@@ -599,12 +663,16 @@ def _negative_sentence_analysis(title, snippet):
         if phrase!='sayısal/yönsel düşüş' and phrase in title_n:
             title_neg.add(phrase)
 
+    # V49: klasik düşüş/zarar kelimesi bulunmasa bile eleştirel ve yapısal
+    # kötüleşme dili ayrıca yakalanır.
     structural,persistent=_v49_structural_negative_signals(full)
     active_neg.update(structural)
     for phrase in structural:
         if phrase in title_n:
             title_neg.add(phrase)
 
+    # V50: eleştirel/uyarıcı/yetersizlik bildiren içerikler de doğrudan
+    # mevcut Negatif havuzuna eklenir. Ayrı kategori oluşturulmaz.
     critical_negative=_v50_critical_negative_signals(full)
     active_neg.update(critical_negative)
     for phrase in critical_negative:
@@ -647,6 +715,8 @@ def classify(title,snippet,source_domain=''):
         reasons.append('yapısal/eleştirel olumsuzluk')
 
     if critical_negative:
+        # Eleştirel yaklaşım doğrudan Negatif bölümüne girecek kadar ağırlık alır,
+        # fakat tek başına Yüksek Risk sayılmaz.
         score += min(15, 8 + 2*len(critical_negative))
         reasons.append('eleştirel/uyarıcı yaklaşım')
 
@@ -663,6 +733,7 @@ def classify(title,snippet,source_domain=''):
         score += 14
         reasons.append('doğrudan ağır olumsuz olay')
 
+    # Gerçek negatiflik varsa sektörel etki skoru eklenir.
     if neg or risk:
         if any(x in t for x in ['üretim','fabrika','tesis','istihdam','kapasite','ihracat','tedarik','satış','sipariş']):
             score += 6
@@ -674,12 +745,16 @@ def classify(title,snippet,source_domain=''):
     positive_count=_positive_strength(full)
     severe_active=strong_event or any(x in norm(full) for x in V48_STRONG_NEGATIVE)
 
+    # V48 farkı: olumlu sinyal gerçek negatifliği SİLMEZ.
+    # Yalnızca ağır risk yoksa skoru sınırlı ölçüde dengeler.
     if positive_count and neg and not severe_active:
         score=max(0,score-min(8,2*positive_count))
         reasons.append('karma/olumlu unsurlar mevcut')
 
     score=max(0,min(100,score))
 
+    # En kritik değişiklik: gerçek ve bağlamsal negatif sinyal bulunduysa,
+    # yüksek risk olmasa dahi haber Negatif olabilir.
     sentiment='Negatif' if neg else 'Nötr'
 
     if severe_active and (risk or score>=55):
@@ -696,6 +771,9 @@ def classify(title,snippet,source_domain=''):
     if status=='Normal' and not neg:
         reasons=['olumsuz risk sinyali tespit edilmedi']
 
+    # V87 — çok sınırlı yanlış-negatif koruması.
+    # Açık başarı/madalya/ödül ve normal test ilerlemesi haberleri,
+    # başlıkta gerçek bir olumsuzluk yoksa negatif değildir.
     _hn=norm(title)
     _positive_head=bool(re.search(
         r'(madalya\s+kazan|ödül\s+kazan|şampiyon|rekor\s+kır|başarıyla|'
@@ -717,6 +795,23 @@ def classify(title,snippet,source_domain=''):
         reasons=['açık başarı veya normal test/program ilerlemesi; negatif değildir']
 
     return sentiment,score,status,neg,risk,cat,reasons
+
+def _v89_negative_selfcheck():
+    """Basit regresyon kontrolleri; panelde gösterilmez."""
+    cases=[
+        ('Türk öğrenciler uluslararası yarışmada 15 madalya kazandı','Nötr'),
+        ('Şirket yılın ilk yarısında güçlü kazanç açıkladı','Nötr'),
+        ('Yeni teknoloji kazanımı ihracat kapasitesini artırdı','Nötr'),
+    ]
+    for h,expected in cases:
+        try:
+            sent,_,_,_,_,_,_=classify(h,'')
+            if sent!=expected:
+                return False
+        except Exception:
+            return False
+    return True
+
 
 def rss(query, timeout=7):
     try:
@@ -769,6 +864,8 @@ def _query_terms(user_query):
     return out
 
 def build_turkish_queries(when, user_query=''):
+    # Geniş arama evreni: tek dev sorgu yerine konu kümeleri paralel taranır.
+    # Böylece kapsam genişlerken Google News sorguları aşırı ağırlaşmaz.
     groups=[
         '(sanayi OR imalat OR üretim OR fabrika OR tesis OR OSB OR "organize sanayi" OR endüstri)',
         '(makine OR otomasyon OR robotik OR "endüstri 4.0" OR kapasite OR "kapasite kullanım")',
@@ -790,6 +887,10 @@ def build_turkish_queries(when, user_query=''):
         '(ihracat OR ithalat OR "yüksek teknoloji" OR "orta yüksek teknoloji" OR "kritik teknoloji" OR "stratejik ürün" OR yerlileştirme)'
     ]
     qs=[f'Türkiye {g} when:{when}' for g in groups]
+    # Kullanıcının kutuya eklediği ÖZEL terimler ayrıca taranır.
+    # Performans: varsayılan geniş evrende zaten bulunan terimleri ikinci kez sorgulamayız.
+    # Böylece normal kullanımda 38 civarı sorgu yerine yaklaşık 18 ana sorgu çalışır;
+    # kullanıcı gerçekten yeni bir terim eklerse yalnızca o terim(ler) ek sorgu olur.
     built_in={norm(x) for x in TOPIC_TERMS}
     generic={'sanayi','teknoloji','üretim','imalat','fabrika','türkiye','türk'}
     custom=[
@@ -800,6 +901,10 @@ def build_turkish_queries(when, user_query=''):
         qs.append(f'Türkiye ("{term}") when:{when}')
     return qs
 
+
+# -----------------------------
+# V41 — RESMÎ KAYNAK / İSTATİSTİK RADARI
+# -----------------------------
 OFFICIAL_RADAR_DOMAINS = [
     'sanayi.gov.tr','tubitak.gov.tr','kosgeb.gov.tr','turkpatent.gov.tr','tse.org.tr',
     'ssb.gov.tr','tuik.gov.tr','tcmb.gov.tr','ticaret.gov.tr','epdk.gov.tr','teias.gov.tr',
@@ -824,6 +929,7 @@ STATISTIC_TERMS = [
 ]
 
 def build_official_radar_queries(when):
+    """Genel medya taramasından ayrı, birincil/resmî kaynak sorguları."""
     gov_sites='('+' OR '.join('site:'+d for d in OFFICIAL_RADAR_DOMAINS)+')'
     return [
         f'(sanayi OR teknoloji OR üretim OR yatırım OR ihracat OR savunma OR Ar-Ge OR patent) {gov_sites} when:{when}',
@@ -831,6 +937,7 @@ def build_official_radar_queries(when):
     ]
 
 def build_statistics_queries(when):
+    """Günlük sayısal veri yayımlarını yakalamaya dönük dar ve hızlı ek sorgular."""
     sites='('+' OR '.join('site:'+d for d in PRIMARY_STATS_DOMAINS)+')'
     return [
         f'("sanayi üretimi" OR "kapasite kullanım" OR ihracat OR "dış ticaret" OR "otomotiv üretimi") {sites} when:{when}',
@@ -847,6 +954,10 @@ def _is_official_radar_row(r):
            'epdk','teiaş','teias','türkiye uzay ajansı']
     return any(x in srcn for x in names)
 
+
+# -----------------------------
+# V52 — GÜNÜN EN DEĞERLİ 10 GELİŞMESİ
+# -----------------------------
 V52_STRATEGIC_TERMS=[
     'savunma','savunma sanayii','tusaş','aselsan','roketsan','havelsan','baykar',
     'kaan','kızılelma','füze','hava savunma','siber','kritik altyapı',
@@ -856,6 +967,13 @@ V52_STRATEGIC_TERMS=[
 ]
 
 def _v52_event_value_table(df,n=10):
+    """
+    Olay bazlı 0-100 Değer Skoru.
+    Gerçek okunma/tıklanma verisi mevcut akışta bulunmadığından uydurulmaz.
+    Bunun yerine erişilebilen güçlü vekiller kullanılır:
+    önem/risk, kaynak yayılımı, resmî teyit, güncellik, stratejik önem,
+    negatif/eleştirel etki ve aynı olayın haber yoğunluğu.
+    """
     cols=['Sıra','Değer_Skoru','Tarih','Gelişme','Neden_Değerli',
           'Kaynak_Sayısı','Haber_Sayısı','Resmî_Teyit','Risk','URL']
     if df is None or df.empty:
@@ -888,12 +1006,16 @@ def _v52_event_value_table(df,n=10):
             or (g.get('Risk_Durumu',pd.Series(index=g.index,dtype=str))=='Yüksek Risk').any()
         )
 
+        # 0-100: kullanıcının istediği kıstaslara göre dengeli ağırlık.
         risk_part=min(25.0,maxrisk*0.25)
         spread_part=min(20.0,5.0*source_count + max(0,news_count-source_count)*1.5)
         official_part=15.0 if official else 0.0
         recency_part=10.0*recency
         strategic_part=15.0*strategic
         impact_part=10.0 if negative else (5.0 if maxrisk>=35 else 0.0)
+
+        # Gerçek click/read metriği yoksa "çok sayıda bağımsız kaynakta yankı"
+        # popülerlik vekili olarak en fazla 5 puan taşır.
         popularity_proxy=min(5.0,max(0,source_count-1)*1.5 + max(0,news_count-2)*0.5)
 
         score=int(round(min(100,risk_part+spread_part+official_part+recency_part+
@@ -930,7 +1052,9 @@ def _v52_event_value_table(df,n=10):
     out.insert(0,'Sıra',range(1,len(out)+1))
     return out[cols]
 
+
 def _v53_find_event_row(df, value_row):
+    """Top-10 satırını ana dataframe'deki temsilci haberle eşleştirir."""
     if df is None or df.empty:
         return None
     url=str(value_row.get('URL','') or '')
@@ -946,6 +1070,7 @@ def _v53_find_event_row(df, value_row):
     return None
 
 def _v54_content_sentences(text,title=''):
+    """Tam haber metninden menü/tekrar/gürültüyü azaltarak bilgi taşıyan cümleleri seçer."""
     clean=_clean_note_text(text)
     if not clean:
         return []
@@ -970,6 +1095,10 @@ def _v54_content_sentences(text,title=''):
     return out
 
 def _v54_article_summary(detail,fallback_row,max_sentences=4):
+    """
+    Haberin içeriğini 2-4 bilgi yoğun cümlede özetler.
+    Değer skoru, kaynak sayısı, resmî teyit gibi sıralama metadatasını özete katmaz.
+    """
     title=_clean_note_text((detail or {}).get('title','') or fallback_row.get('Başlık',''))
     text=_clean_note_text((detail or {}).get('text','') or fallback_row.get('İçerik_Özeti',''))
     sents=_v54_content_sentences(text,title)
@@ -978,6 +1107,7 @@ def _v54_article_summary(detail,fallback_row,max_sentences=4):
         fallback=_clean_note_text(fallback_row.get('İçerik_Özeti',''))
         return fallback[:900].strip() if fallback else title
 
+    # İlk anlamlı cümle bağlamı korur. Sonraki cümleler bilgi yoğunluğuna göre seçilir.
     selected=[sents[0]]
     candidates=[]
     for idx,s in enumerate(sents[1:],1):
@@ -995,6 +1125,7 @@ def _v54_article_summary(detail,fallback_row,max_sentences=4):
             'bakanlık','tüik','ssb','şirket','firma','kurum','başkanlığı',
             'genel müdür','bakan','başkanı'
         ]): score+=1
+        # Çok erken cümlelere hafif öncelik.
         score+=max(0,3-min(idx,3))
         candidates.append((score,idx,s))
 
@@ -1004,13 +1135,19 @@ def _v54_article_summary(detail,fallback_row,max_sentences=4):
         if len(selected)>=max_sentences:
             break
 
+    # Haber akışını bozmayacak şekilde özgün sıraya döndür.
     order={s:i for i,s in enumerate(sents)}
     selected=sorted(selected,key=lambda s:order.get(s,999))
     result=_join_sentences_naturally(selected)
 
+    # Tek olayın 45 satırlık toplam özeti şişirmesini önle.
     return result[:1500].strip()
 
 def _v54_deep_top10_summary(df,value10,max_lines=45):
+    """
+    Yalnızca Top-10 olayın temsilci haber sayfalarını butona basılınca zenginleştirir.
+    Normal tarama hızını etkilemez. Her olay içerik odaklı özetlenir.
+    """
     if value10 is None or value10.empty:
         return "Bugünün en değerli gelişmeleri arasında özet oluşturulabilecek içerik bulunamadı."
 
@@ -1030,6 +1167,7 @@ def _v54_deep_top10_summary(df,value10,max_lines=45):
             detail_text=title
         else:
             try:
+                # Ağ/tam metin işlemi SADECE özet butonuna basıldığında bu 10 haber için çalışır.
                 detail=article_detail(row.to_dict() if hasattr(row,'to_dict') else row)
             except Exception:
                 detail=None
@@ -1076,9 +1214,16 @@ def make_v54_top10_summary_docx(df,value10,text=None):
     doc.save(bio); bio.seek(0)
     return bio.getvalue()
 
+
+
 # -----------------------------
-# ANALİTİK TAKİP ÜÇLÜSÜ
+# V58 — ANALİTİK TAKİP ÜÇLÜSÜ
+# 1) Olay Yaşam Döngüsü
+# 2) Takip Edilecek Açık Hususlar
+# 3) Teyit / Çelişki Matrisi
+# Ek web isteği yapmaz; mevcut tarama sonuçlarını kullanır.
 # -----------------------------
+
 V58_RESOLUTION_TERMS=[
     'kontrol altına alındı','söndürüldü','sona erdi','tamamlandı','çözüldü',
     'giderildi','yeniden başladı','üretim yeniden başladı','faaliyet yeniden başladı',
@@ -1102,6 +1247,7 @@ def _v58_event_groups(df):
     return groups
 
 def _v58_event_stage(g):
+    """Olayın mevcut taramadaki izlerine göre yaşam döngüsü aşaması."""
     if g is None or g.empty:
         return 'İlk Sinyal'
 
@@ -1165,6 +1311,10 @@ def _v58_event_lifecycle_table(df,limit=25):
     return out.head(limit).drop(columns=['_stage_rank','_dt'],errors='ignore')
 
 def _v58_open_questions_for_group(g):
+    """
+    'Bilinmiyor' iddiası üretmez; mevcut içerikte ayrıca teyit/izleme gerektiren
+    alanları analist kontrol listesi olarak önerir.
+    """
     text=norm(' '.join(
         (g['Başlık'].fillna('').astype(str)+' '+g['İçerik_Özeti'].fillna('').astype(str)).tolist()
     ))
@@ -1215,6 +1365,7 @@ def _v58_open_questions_for_group(g):
             'Sanayi/teknoloji alanındaki somut etkisinin izlenmesi'
         ]
 
+    # Sıralı tekilleştirme, en fazla 4 açık husus.
     out=[]
     seen=set()
     for q in qs:
@@ -1231,6 +1382,7 @@ def _v58_open_issues_table(df,limit=20):
     for oid,g in groups.items():
         latest=g.sort_values('Tarih_dt',ascending=False).iloc[0]
         stage=_v58_event_stage(g)
+        # Sonuçlanan olaylar açık hususlar listesinin altında kalsın; aktif olaylar öne çıksın.
         qs=_v58_open_questions_for_group(g)
         risk=int(pd.to_numeric(g['Risk_Skoru'],errors='coerce').fillna(0).max()) if 'Risk_Skoru' in g.columns else 0
         rows.append({
@@ -1250,6 +1402,7 @@ def _v58_open_issues_table(df,limit=20):
     return out.head(limit).drop(columns=['_active','_dt'],errors='ignore')
 
 def _v58_numeric_claims(g):
+    """Kaynak bazında başlık+özetten sayısal iddiaları çıkarır."""
     claims=[]
     pat=re.compile(r'(?:%\s*)?\b\d+(?:[.,]\d+)?\b(?:\s*%|\s*(?:milyon|milyar|bin|adet|kişi|yaralı|ölü|mw|gw|ton|tl|dolar|euro|avro))?',re.I)
     for _,r in g.iterrows():
@@ -1266,6 +1419,7 @@ def _v58_conflict_status(g):
     nonempty=[nums for _,nums in claims if nums]
     numeric_conflict=False
     if len(nonempty)>=2:
+        # Birden fazla kaynağın sayısal kümeleri tamamen ayrışıyorsa uyar.
         for i in range(len(nonempty)):
             for j in range(i+1,len(nonempty)):
                 if nonempty[i] and nonempty[j] and nonempty[i].isdisjoint(nonempty[j]):
@@ -1319,7 +1473,7 @@ def _v58_verification_matrix(df,limit=25):
     return out.head(limit).drop(columns=['_rank','_dt'],errors='ignore')
 
 # -----------------------------
-# RESMÎ AÇIKLAMA / MEDYA KARŞILAŞTIRMASI
+# V51 — RESMÎ AÇIKLAMA / MEDYA KARŞILAŞTIRMASI
 # -----------------------------
 _COMPARE_STOP={
     've','ile','bir','bu','şu','için','da','de','mi','mı','mu','mü','olan','olarak',
@@ -1333,6 +1487,7 @@ def _compare_tokens(text):
     return {x for x in toks if x not in _COMPARE_STOP}
 
 def _event_similarity(a,b):
+    """Başlık + kısa içerik üzerinden hızlı olay benzerliği; ağ isteği yapmaz."""
     at=_compare_tokens(f"{a.get('Başlık','')} {str(a.get('İçerik_Özeti',''))[:500]}")
     bt=_compare_tokens(f"{b.get('Başlık','')} {str(b.get('İçerik_Özeti',''))[:500]}")
     if not at or not bt: return 0.0
@@ -1354,6 +1509,7 @@ def _short_claim(r,limit=220):
     return txt[:limit].strip()
 
 def _comparison_difference(media,official):
+    """İki kısa metindeki belirgin yön/iddia farklarını özetler; LLM/ağ çağrısı yok."""
     mt=norm(f"{media.get('Başlık','')} {media.get('İçerik_Özeti','')}")
     ot=norm(f"{official.get('Başlık','')} {official.get('İçerik_Özeti','')}")
     pairs=[
@@ -1376,6 +1532,10 @@ def _comparison_difference(media,official):
     return 'Aynı olaya ilişkin resmî açıklama bulundu. Belirgin bir çelişki otomatik olarak tespit edilmedi; ayrıntılar birlikte kontrol edilebilir.'
 
 def _official_media_comparison(df):
+    """
+    Sabit panel için medya haberlerini aynı taramadaki resmî/birincil içeriklerle eşleştirir.
+    Ek web isteği yoktur; mevcut Resmî Kaynak Radarı verisini kullanır.
+    """
     cols=['Tarih','Medya_Kaynağı','Medya_Haberi','Resmî_Kaynak','Resmî_Açıklama',
           'Karşılaştırma','Eşleşme','Medya_URL','Resmî_URL']
     if df is None or df.empty:
@@ -1387,6 +1547,7 @@ def _official_media_comparison(df):
         return pd.DataFrame(columns=cols)
 
     rows=[]
+    # Performans için resmî havuz zaten küçüktür; medya tarafında en yeni 250 içerik yeterli.
     media=media.sort_values('Tarih_dt',ascending=False).head(250)
     officials=officials.sort_values('Tarih_dt',ascending=False).head(80)
 
@@ -1401,6 +1562,7 @@ def _official_media_comparison(df):
             score=_event_similarity(m,o)
             if score>best_score:
                 best_score=score; best=o
+        # Yanlış eşleşmeyi azaltmak için ölçülü eşik.
         if best is None or best_score<0.30:
             continue
 
@@ -1446,6 +1608,7 @@ def _critical_numbers(text, limit=4):
     return ', '.join(out)
 
 def _important_statistics_rows(df):
+    """Bugün yayımlanan, sanayi/teknoloji açısından sayısal veri taşıyan içerikleri seçer."""
     if df is None or df.empty:
         return pd.DataFrame()
 
@@ -1470,6 +1633,7 @@ def _important_statistics_rows(df):
     today_mask=x['Tarih_dt'].apply(is_today)
     result=x[mask & today_mask].copy()
 
+    # Eğer yayın saati eksik gelmişse ama resmî/statistik kaynağı ve veri içeriği varsa dışarıda bırakma.
     missing_date=x['Tarih_dt'].isna()
     fallback=x[mask & missing_date & x.apply(_is_official_radar_row,axis=1)].copy()
     result=pd.concat([result,fallback],ignore_index=False).drop_duplicates(subset=['URL','Başlık'])
@@ -1502,6 +1666,7 @@ def _two_sentence_summary(text):
     return ' '.join(sents[:2])
 
 def _presentation_candidates(df,n=5):
+    """Sunuma girmeye değer 5 başlık: stratejik önem + risk + resmîlik + sayısal veri + güncellik."""
     if df is None or df.empty:
         return pd.DataFrame()
     x=df.copy()
@@ -1563,6 +1728,9 @@ def normalize_rows(raw, cutoff, mode, user_query):
         url=(r.get('url') or r.get('link') or '').strip(); title=html.unescape((r.get('title') or '').strip())
         if not url or not title: reasons['gecersiz']+=1; continue
         dt=parse_dt(r.get('date') or r.get('publishedAt') or r.get('seendate'))
+        # Tüm tarihleri UTC-aware datetime olarak karşılaştır. Bazı RSS/arama
+        # sağlayıcıları timezone bilgisi olmadan tarih döndürebildiği için
+        # doğrudan datetime karşılaştırması TypeError üretebilir.
         if dt:
             try:
                 if dt.tzinfo is None:
@@ -1575,8 +1743,11 @@ def normalize_rows(raw, cutoff, mode, user_query):
                     reasons['zaman']+=1
                     continue
             except (TypeError, ValueError, AttributeError):
+                # Tarih karşılaştırılamıyorsa haberi düşürme; aşağıda
+                # bilinmeyen tarih olarak sıralanmasına izin ver.
                 dt=None
         if not dt and mode=='turkish':
+            # tarih yoksa hızlı bakışta atmayalım; sadece sıralamada alta al.
             pass
         snippet=html.unescape((r.get('snippet') or r.get('body') or r.get('description') or '').strip())
         src=r.get('source') or ''
@@ -1590,6 +1761,9 @@ def normalize_rows(raw, cutoff, mode, user_query):
         elif mode=='global':
             if not relevant(t,user_query): reasons['konu']+=1; continue
         else:
+            # Türk batch'inde kaynak filtresi YOK. Arama zaten Türkiye odaklı.
+            # Bu, Google News'in yayıncı URL'sini Google domaininde tuttuğu durumlarda
+            # Türk haberlerinin 0'a düşmesini engeller. Türk kaynakları sıralamada öne çıkar.
             if not relevant(t,user_query): reasons['konu']+=1; continue
         sentiment,score,status,neg,risk,cat,risk_reasons=classify(title,snippet,d)
         out.append({
@@ -1603,6 +1777,7 @@ def normalize_rows(raw, cutoff, mode, user_query):
         })
     return out,reasons
 
+
 def source_reliability(domain_name, source_name=''):
     d=domain(domain_name); n=norm(source_name)
     if d in TR_OFFICIAL: return '🟢 A — Birincil / resmî'
@@ -1611,7 +1786,10 @@ def source_reliability(domain_name, source_name=''):
     if d in SOCIAL: return '🟠 C — Sosyal / indeks'
     return '🟡 B — Açık kaynak'
 
+
+
 def dedupe(rows):
+    """URL ve başlık anahtarına göre hızlı tekilleştirme; kronolojik sıralamayı korur."""
     out=[]
     urls=set()
     titles=set()
@@ -1638,7 +1816,9 @@ def dedupe(rows):
     )
     return out
 
+
 def _title_tokens(text):
+    """Başlıktan olay eşleştirmesi için anlamlı token kümesi üretir."""
     txt=norm(text)
     txt=re.sub(r'[^\wçğıöşüÇĞİÖŞÜ]+',' ',txt)
     stop={
@@ -1647,9 +1827,16 @@ def _title_tokens(text):
     }
     return {x for x in txt.split() if len(x)>=3 and x not in stop}
 
+
 def _event_signature(title):
+    """
+    Aynı/çok benzer haber başlıklarını hızlı gruplamak için deterministik imza.
+    İlk 6 ayırt edici token kullanılır. O(n²) SequenceMatcher taraması yerine
+    ters indeks kullanacağımız için yüzlerce haberde çok daha hızlıdır.
+    """
     toks=sorted(_title_tokens(title))
     return ' '.join(toks[:6])
+
 
 def _jaccard(a,b):
     if not a or not b:
@@ -1658,10 +1845,27 @@ def _jaccard(a,b):
     union=len(a | b)
     return inter/union if union else 0.0
 
+
+def source_reliability(source_domain,source_name=''):
+    d=domain(source_domain); n=norm(source_name)
+    if d in TR_OFFICIAL: return '🟢 A — Birincil / resmî'
+    if d in TR_MAIN or d in TR_TECH: return '🟢 A — Güvenilir medya'
+    if d in GR: return '🔵 B — Yunan medya'
+    if d in SOCIAL: return '🟠 C — Sosyal / indeks'
+    return '🟡 B — Açık kaynak'
+
+
 def enrich_rows(rows):
+    """
+    HIZLI analitik katman.
+    Önceki sürümde her haber diğer bütün haberlerle SequenceMatcher üzerinden
+    karşılaştırılıyordu ve doğrulama için ikinci kez O(n²) tarama yapılıyordu.
+    Bu sürüm ters token indeksi + olay grubu istatistikleri kullanır.
+    """
     if not rows:
         return rows
 
+    # 1) Tarih + temel risk sınıflaması: O(n)
     for r in rows:
         r['Tarih_dt']=_to_utc_datetime(r.get('Tarih_dt'))
         sentiment,score,status,neg,risk,cat,reasons=classify(
@@ -1676,6 +1880,8 @@ def enrich_rows(rows):
         r['Kaynak_Güvenilirliği']=source_reliability(r.get('Domain',''),r.get('Kaynak',''))
         r['_tokens']=_title_tokens(r.get('Başlık',''))
 
+    # 2) Olay kümelemesi: ters token indeksi.
+    # Her haber yalnızca ortak token taşıyan sınırlı sayıdaki önceki adayla karşılaştırılır.
     token_index={}
     event_representative={}
     next_event=1
@@ -1695,6 +1901,7 @@ def enrich_rows(rows):
                 best_score=score
                 best_event=eid
 
+        # Aynı olay için Jaccard eşiği. Çok kısa başlıklarda biraz daha sıkı.
         threshold=0.48 if len(toks)>=6 else 0.58
         if best_event is None or best_score < threshold:
             best_event=f'OLAY-{next_event:03d}'
@@ -1705,6 +1912,7 @@ def enrich_rows(rows):
         for tok in toks:
             token_index.setdefault(tok,set()).add(best_event)
 
+    # 3) Olay istatistikleri bir kez hesaplanır: O(n)
     groups={}
     for r in rows:
         groups.setdefault(r['Olay_ID'],[]).append(r)
@@ -1768,14 +1976,21 @@ def watchlist_hits(df, terms):
     return df[mask].copy()
 
 def _repair_mojibake_utf8(text):
+    """
+    'TÃ¼rkiye', 'genÃ§', 'katÄ±lÄ±m', 'baÅarÄ±' gibi UTF-8'in yanlış
+    Latin-1/Windows-1252 olarak çözülmesinden doğan bozulmaları düzeltir.
+    Doğru Türkçe metne dokunmamaya çalışır.
+    """
     s=str(text or '')
     if not s:
         return s
 
-    suspicious=('Ã','Ä','Å','Â','â€','â€™','â€œ','â€ ','â€“','â€”','\x80','\x81','\x8d','\x8f','\x90','\x9d','\x9f')
+    suspicious=('Ã','Ä','Å','Â','â€','â€™','â€œ','â€','â€“','â€”','\x80','\x81','\x8d','\x8f','\x90','\x9d','\x9f')
     if not any(x in s for x in suspicious):
         return s
 
+    # Önce Windows-1252 mojibake işaretlerini bayt değerlerine geri çevirebilmek
+    # için özel karakter -> byte haritası oluştur.
     cp1252_rev={}
     for b in range(256):
         try:
@@ -1790,6 +2005,8 @@ def _repair_mojibake_utf8(text):
             return o
         return cp1252_rev.get(ch)
 
+    # UTF-8 olabilecek bayt dizilerini parça parça düzelt; doğru Unicode
+    # karakterler (ör. gerçek “ ’ ğ ş) sınır olarak korunur.
     out=[]
     buf=[]
     def flush():
@@ -1800,6 +2017,7 @@ def _repair_mojibake_utf8(text):
         original=''.join(chr(b) for b in buf)
         try:
             decoded=raw.decode('utf-8')
+            # Yalnız gerçekten mojibake işaretlerini azaltıyorsa kabul et.
             before=sum(original.count(x) for x in ('Ã','Ä','Å','Â'))
             after=sum(decoded.count(x) for x in ('Ã','Ä','Å','Â'))
             out.append(decoded if after < before else original)
@@ -1817,6 +2035,7 @@ def _repair_mojibake_utf8(text):
     flush()
     fixed=''.join(out)
 
+    # Çok katmanlı bozulma varsa en fazla iki tur daha dene.
     for _ in range(2):
         if not any(x in fixed for x in ('Ã','Ä','Å','Â')):
             break
@@ -1831,6 +2050,12 @@ def _repair_mojibake_utf8(text):
     return fixed
 
 def _clean_note_text(value):
+    """
+    V78 Word-safe metin temizliği:
+    - mojibake'i bayt düzeyinde onarır,
+    - Türkçe karakterleri Unicode NFC biçiminde korur,
+    - DOCX/XML açısından sorunlu kontrol/görünmez karakterleri temizler.
+    """
     import html as _html
     import unicodedata as _unicodedata
 
@@ -1838,9 +2063,10 @@ def _clean_note_text(value):
     text=_html.unescape(text)
     text=_repair_mojibake_utf8(text)
 
+    # Kalan yaygın tipografik bozulmalar.
     replacements={
-        'â€™':'’','â€˜':'‘','â€œ':'“','â€ ':'”',
-        'â€“':'–','â€”':'—','â€¦':'…','Â ':' ','Â':''
+        'â€™':'’','â€˜':'‘','â€œ':'“','â€':'”',
+        'â€“':'–','â€”':'—','â€¦':'…','Â ':' ','Â':''
     }
     for bad,good in replacements.items():
         text=text.replace(bad,good)
@@ -1848,6 +2074,7 @@ def _clean_note_text(value):
     for bad in ('\u00ad','\u200b','\u200c','\u200d','\ufeff'):
         text=text.replace(bad,'')
 
+    # XML 1.0 geçersiz kontrol karakterlerini at.
     text=''.join(
         ch for ch in text
         if ch in ('\t','\n','\r') or ord(ch)>=32
@@ -1873,7 +2100,17 @@ def _unique_sentences(sentences):
         seen.add(k); out.append(s)
     return out
 
+def _note_source_sentence(r):
+    title=_clean_note_text(r.get('Başlık',''))
+    source=_clean_note_text(r.get('Kaynak','Açık Kaynak'))
+    when=_clean_note_text(r.get('Tarih',''))
+    cat=_clean_note_text(r.get('Kategori',''))
+    if when:
+        return f"{when} tarihinde {source} tarafından yayımlanan “{title}” başlıklı içerik, {cat.lower() if cat else 'sanayi ve teknoloji'} alanındaki gelişmelere ilişkindir."
+    return f"{source} tarafından yayımlanan “{title}” başlıklı içerik, {cat.lower() if cat else 'sanayi ve teknoloji'} alanındaki gelişmelere ilişkindir."
+
 def _detail_sentences(text, title=''):
+    """Haber gövdesinden bilgi taşıyan cümleleri temizler; ayrıntıyı korur."""
     text=_clean_note_text(text)
     if not text:
         return []
@@ -1897,7 +2134,9 @@ def _detail_sentences(text, title=''):
         out.append(s.strip())
     return out
 
+
 def _sent_score(s):
+    """Bilgi yoğun cümlelere öncelik verir."""
     n=norm(s)
     score=0
     if re.search(r'\b\d+(?:[.,]\d+)?\b', s): score+=3
@@ -1907,7 +2146,9 @@ def _sent_score(s):
     if any(x in n for x in ['üretim','kapasite','yatırım','ihracat','ithalat','tesis','fabrika','osb','teknoloji','savunma','enerji']): score+=2
     return score
 
+
 def _join_sentences_naturally(sentences):
+    """Kaynak cümlelerini bilgi kaybı olmadan okunabilir paragraf akışına getirir."""
     if not sentences:
         return ''
     out=[]
@@ -1920,13 +2161,21 @@ def _join_sentences_naturally(sentences):
         out.append(s)
     return ' '.join(out)
 
+
 def _compose_single_article_note(row, detail):
+    """
+    Tek haberi 'haber özeti' gibi değil, ayrıntılı bilgi notu gibi ele alır:
+    konu/olay -> gelişmeler -> açıklamalar/veriler -> mevcut durum/sonuç.
+    Ara başlık kullanmaz.
+    """
     title=_clean_note_text(detail.get('title') or row.get('Başlık',''))
     source=_clean_note_text(detail.get('source') or row.get('Kaynak','Açık Kaynak'))
     published=_clean_note_text(detail.get('published') or row.get('Tarih',''))
     fulltext=_clean_note_text(detail.get('text') or row.get('İçerik_Özeti','') or title)
     sentences=_detail_sentences(fulltext,title)
 
+    # Haber sırasını esas al. İlk cümleler olayın başlangıcını çoğunlukla verir.
+    # Çok uzun haberlerde bilgi yoğun cümleleri de mutlaka koru.
     if len(sentences)>45:
         first=sentences[:22]
         rest=sentences[22:]
@@ -1944,6 +2193,7 @@ def _compose_single_article_note(row, detail):
         fallback=_clean_note_text(row.get('İçerik_Özeti','') or title)
         return intro + (fallback[0].lower()+fallback[1:] if len(fallback)>1 else fallback)
 
+    # İlk 1-2 cümle olayın girişini oluşturur; geri kalanı kronolojik/haber sırasıyla devam eder.
     first=sentences[:2]
     remaining=sentences[2:]
     opening=_join_sentences_naturally(first)
@@ -1951,6 +2201,7 @@ def _compose_single_article_note(row, detail):
         opening=opening[0].lower()+opening[1:]
     para1=intro+opening
 
+    # Uzun haberlerde okunabilirlik için doğal paragraf bölmeleri.
     chunks=[]
     chunk_size=7
     for i in range(0,len(remaining),chunk_size):
@@ -1961,18 +2212,25 @@ def _compose_single_article_note(row, detail):
 
     parts=[para1]+chunks
 
+    # Son cümlede yalnızca kaynakta aktarılan çerçeveye dayan.
     last_context=sentences[-3:] if len(sentences)>=3 else sentences
     conclusion=(
         "Bu çerçevede, haberde aktarılan son durum itibarıyla "
         + _join_sentences_naturally(last_context)
     )
+    # Son üç cümleyi gövdede zaten kullandığımız için birebir tekrar çok fazlaysa genel, temkinli kapanış kullan.
     if len(norm(conclusion))>900:
         conclusion="Bu çerçevede gelişmenin, haberde aktarılan mevcut durum ve ilgili kurumların sonraki açıklamaları doğrultusunda izlenmesi önem taşımaktadır."
     parts.append(conclusion)
 
     return '\n\n'.join(parts)
 
+
 def _compose_prose_note(df):
+    """
+    Seçilen gerçek haber sayfalarının tam metninden ayrıntılı bilgi notu oluşturur.
+    'Giriş/Gelişme/Sonuç' başlıkları yazılmaz; anlatı doğal olarak bu sırada ilerler.
+    """
     if df is None or df.empty:
         return '', []
 
@@ -1992,6 +2250,7 @@ def _compose_prose_note(df):
         note=_compose_single_article_note(row,detail)
         return note,enriched
 
+    # Çoklu haberde kısa bir doğal giriş, ardından her haber kronolojik sırada ayrıntılı işlenir.
     source_names=[]
     for row,detail in enriched:
         s=_clean_note_text(detail.get('source') or row.get('Kaynak',''))
@@ -2017,6 +2276,13 @@ def _compose_prose_note(df):
     return '\n\n'.join(blocks), enriched
 
 def make_analyst_docx(df, title='BİLGİ NOTU'):
+    """
+    V66: Başlıksız üç aşamalı bilgi notu yapısı:
+    1) İlk paragraf kısa özet,
+    2) devam eden paragraf(lar) ayrıntı/rakam/istatistik/gelişme,
+    3) son paragraf sonuç ve kısa değerlendirme.
+    Metin daima 'Arz olunur.' ile tamamlanır.
+    """
     doc=Document()
     sec=doc.sections[0]
     sec.top_margin=Cm(2); sec.bottom_margin=Cm(2)
@@ -2049,6 +2315,7 @@ def make_analyst_docx(df, title='BİLGİ NOTU'):
         body=_clean_note_text(detail.get('text') or row.get('İçerik_Özeti') or title_text)
         all_sent.extend(_akt_clean_sentences(title_text,body))
 
+    # Yakın tekrarları temizle.
     uniq=[]; seen=[]
     for sent in all_sent:
         sent=_clean_note_text(sent)
@@ -2073,13 +2340,16 @@ def make_analyst_docx(df, title='BİLGİ NOTU'):
         bp.add_run(_v66_formalize_sentence_endings(safe_text))
 
     if uniq:
+        # İlk paragraf: haberin kısa özeti. Başlık yazılmaz.
         intro=_join_sentences_naturally(uniq[:2])
         add_body(intro)
 
+        # Gelişme bölümü: başlık kullanılmadan, ayrıntı/rakam/istatistikler korunarak devam eder.
         detail_s=uniq[2:]
         if not detail_s:
             detail_s=uniq
 
+        # Uzun haberlerde ayrıntıları iki paragraf halinde dağıtarak okunabilirliği koru.
         detail_s=detail_s[:18]
         if len(detail_s)<=9:
             add_body(_join_sentences_naturally(detail_s))
@@ -2087,6 +2357,7 @@ def make_analyst_docx(df, title='BİLGİ NOTU'):
             add_body(_join_sentences_naturally(detail_s[:9]))
             add_body(_join_sentences_naturally(detail_s[9:18]))
 
+        # Son paragraf: sonuç + kısa/temkinli değerlendirme; ayrı başlık yoktur.
         tail=_join_sentences_naturally(uniq[-3:])
         if tail:
             conclusion=(
@@ -2126,8 +2397,10 @@ def make_analyst_docx(df, title='BİLGİ NOTU'):
     doc.save(bio); bio.seek(0)
     return bio.getvalue()
 
+
 # -----------------------------
-# SQLITE VERİTABANI VE GEÇMİŞ MOTORU
+# V33 — BİLGİ NOTU ADAYLARI + DÜNDEN BERİ NE DEĞİŞTİ?
+# V32 çekirdek tarama motoruna dokunmaz.
 # -----------------------------
 _HISTORY_DB = Path(__file__).resolve().with_name("sanayi_teknoloji_osint_history.db")
 
@@ -2263,6 +2536,7 @@ def _history_tokens(text):
         return sorted({x for x in re.split(r'\W+',txt) if len(x)>=3})
 
 def _save_scan_history(rows, scanned_at, period_hours):
+    """Her taramanın olay özetini yerel SQLite dosyasına kaydeder."""
     if not rows or not _init_history_db():
         return None
     try:
@@ -2320,6 +2594,7 @@ def _save_scan_history(rows, scanned_at, period_hours):
         return None
 
 def _previous_scan_id(current_scan_id=None):
+    """Öncelik: bugünden önceki en son tarama; yoksa mevcut taramadan önceki en son tarama."""
     if not _init_history_db():
         return None
     try:
@@ -2413,6 +2688,13 @@ def _current_event_frame(df):
     return pd.DataFrame(items)
 
 def _compare_since_previous(df,current_scan_id=None):
+    """
+    Olay bazında:
+    🆕 yeni olay
+    🔄 yeni bilgi/güncelleme
+    ⚠️ risk arttı
+    ✅ teyit güçlendi
+    """
     current=_current_event_frame(df)
     prev_id=_previous_scan_id(current_scan_id)
     previous=_load_scan_events(prev_id)
@@ -2432,6 +2714,7 @@ def _compare_since_previous(df,current_scan_id=None):
         best=None; best_sim=0.0
         for p in prev_records:
             sim=_token_jaccard_lists(c['tokens'],p['tokens'])
+            # Kaynak/URL aynıysa eşleşmeyi kuvvetlendir.
             if c.get('url') and c.get('url')==p.get('url'):
                 sim=max(sim,0.95)
             if sim>best_sim:
@@ -2557,8 +2840,10 @@ def _information_note_candidates(df,current_scan_id=None,limit=10):
     out=pd.DataFrame(rows).sort_values(['Aday Puanı','Risk'],ascending=[False,False]).head(limit)
     return out.reset_index(drop=True)
 
+
 # -----------------------------
-# SEPET İŞLEMLERİ
+# V34 — VARDİYA BAŞLANGIÇ ÖZETİ + ÖNEMLİ GELİŞMELER SEPETİ
+# V33 çekirdeğine dokunmaz.
 # -----------------------------
 def _mark_shift_handover(scan_id=None, label='Devir noktası'):
     if not _init_history_db():
@@ -2588,6 +2873,10 @@ def _latest_shift_mark():
         return None
 
 def _shift_baseline(current_scan_id=None):
+    """
+    Öncelik manuel devir noktasıdır.
+    Hiç devir noktası yoksa V33'ün önceki taramasını baseline olarak kullanır.
+    """
     mark=_latest_shift_mark()
     if mark:
         try:
@@ -2606,6 +2895,16 @@ def _shift_baseline(current_scan_id=None):
     return None,"Henüz devir noktası yok",None
 
 def _shift_start_summary(df,current_scan_id=None):
+    """
+    Son devir noktasından bu yana:
+    - yeni haber
+    - yeni önemli olay
+    - yüksek riskli gelişme
+    - risk artışı
+    - teyit güçlenmesi
+    - OSB olayı
+    - sabah ilk bakılması gereken 5 gelişme
+    """
     if df is None or df.empty:
         return {},pd.DataFrame(),""
 
@@ -2691,6 +2990,7 @@ def _load_important_basket():
             )
     except Exception:
         return pd.DataFrame()
+
 
 def _add_rows_to_osint_basket(rows):
     if rows is None or len(rows)==0 or not _init_history_db():
@@ -2789,7 +3089,196 @@ def _clear_important_basket():
     except Exception:
         return 0
 
+def _v81_sentence_case_title(title):
+    t=_clean_note_text(title).strip()
+    letters=''.join(c for c in t if c.isalpha())
+    if letters and sum(c.isupper() for c in letters)/max(1,len(letters))>.80:
+        t=t.lower()
+        t=t[:1].upper()+t[1:]
+    return t
+
+def _v84_hard_repair_text(text):
+    """
+    V84: Türkçe olmayan/mojibake karakterleri agresif biçimde temizler.
+    Tam onarılamayan bozuk cümleler ÖGN özetine hiç alınmaz.
+    """
+    t=_clean_note_text(text)
+
+    # Ek yaygın bozulmalar.
+    fixes={
+        'TÃ¼rkiye':'Türkiye','TÃ¼rk':'Türk','genÃ§':'genç','dÃ¼nya':'dünya',
+        'Ã¼lke':'ülke','Ã¼stÃ¼n':'üstün','Ã¶ÄŸrenci':'öğrenci','Ã¶Ärenci':'öğrenci',
+        'baÅŸar':'başar','katÄ±lÄ±m':'katılım','mÃ¼cadele':'mücadele',
+        'saÄŸladÄ±ÄŸÄ±':'sağladığı','saÄladÄÄ±ÄÄ±':'sağladığı',
+        'ettiÄŸi':'ettiği','ettiÄi':'ettiği','TÃ¼rkiyenin':"Türkiye'nin",
+        'TÃ¼rkiyeyi':"Türkiye'yi",'Ã§':'ç','ÄŸ':'ğ','Ä±':'ı',
+        'Ã¶':'ö','Ã¼':'ü','ÅŸ':'ş','Ã‡':'Ç','Äž':'Ğ','Ä°':'İ','Ã–':'Ö','Ãœ':'Ü','Åž':'Ş'
+    }
+    for a,b in fixes.items():
+        t=t.replace(a,b)
+
+    # Kalan açık mojibake işaretleri varsa cümle güvenilmez kabul edilir.
+    return _clean_note_text(t)
+
+def _v84_sentence_is_clean(s):
+    bad=('Ã','Ä','Å','Â',' ','\ufffd','','',' ')
+    return not any(x in s for x in bad)
+
+def _v84_clean_article_sentences(text):
+    """Haber gövdesinden yalnız güvenilir, tam ve kurumsal özetlemeye uygun cümleleri alır."""
+    text=_v84_hard_repair_text(text)
+    garbage=[
+        'çerez','cookie','reklam','devamını oku','tıklayın','anasayfa','son dakika',
+        'benzer haber','ilgili haber','foto galeri','video galeri','sıralamayı değiştirmek',
+        'kartları yukarı','abone ol','bildirimleri aç','google news','whatsapp kanal',
+        'instagram','facebook','twitter','ekonomi gazetesi »','doğru şarj alışkanlıklarını',
+        'haberler (','bugün kocaeli gazetesi','açıklaması şöyle','şunları kaydetti',
+        'şöyle konuştu','şöyle dedi'
+    ]
+    out=[]; seen=set()
+    for s in _sentence_split_tr(text):
+        s=_v84_hard_repair_text(s).strip(" ;:-[]'\"")
+        ns=norm(s)
+        if not _v84_sentence_is_clean(s):
+            continue
+        if len(s)<38 or len(s)>480 or any(g in ns for g in garbage):
+            continue
+        if s.endswith(('…','...')) or re.search(r'\bve k$',s,re.I):
+            continue
+        # Haber ortasından alınmış doğrudan konuşma/alıntı ile başlama.
+        if s.startswith(('"','“',"'",'‘')) or re.match(r'^\d+\s',s):
+            continue
+        letters=''.join(c for c in s if c.isalpha())
+        if letters and len(s)<135 and sum(c.isupper() for c in letters)/max(1,len(letters))>.76:
+            continue
+        k=title_key(s)
+        if not k or k in seen:
+            continue
+        seen.add(k); out.append(s)
+    return out
+
+def _v84_formalize(s):
+    """Yalnız cümle sonunu değil, yaygın haber dili kalıntılarını da resmîleştirir."""
+    s=_v84_hard_repair_text(s).strip()
+    replacements=[
+        (r'\bifade etti\b','ifade etmiştir'),(r'\bifade ediyor\b','ifade etmektedir'),
+        (r'\bbelirtti\b','belirtmiştir'),(r'\bbelirtiyor\b','belirtmektedir'),
+        (r'\baçıkladı\b','açıklamıştır'),(r'\baçıklıyor\b','açıklamaktadır'),
+        (r'\bduyurdu\b','duyurmuştur'),(r'\bduyuruyor\b','duyurmaktadır'),
+        (r'\bgösterdi\b','göstermiştir'),(r'\bgösteriyor\b','göstermektedir'),
+        (r'\bsağladı\b','sağlamıştır'),(r'\bsağlıyor\b','sağlamaktadır'),
+        (r'\bhedefliyor\b','hedeflemektedir'),(r'\bplanlıyor\b','planlamaktadır'),
+        (r'\bbaşladı\b','başlamıştır'),(r'\bbaşlıyor\b','başlamaktadır'),
+        (r'\btamamladı\b','tamamlamıştır'),(r'\btamamladı\b','tamamlamıştır'),
+        (r'\bkazandı\b','kazanmıştır'),(r'\bgerçekleşti\b','gerçekleşmiştir'),
+        (r'\byükseldi\b','yükselmiştir'),(r'\bgeriledi\b','gerilemiştir'),
+        (r'\barttı\b','artmıştır'),(r'\bazaldı\b','azalmıştır'),
+        (r'\boldu\b','olmuştur'),(r'\bolacak\b','olacaktır'),
+        (r'\byapılacak\b','yapılacaktır'),(r'\bsağlanacak\b','sağlanacaktır'),
+        (r'\bbaşlayacak\b','başlayacaktır'),(r'\byer alacak\b','yer alacaktır'),
+        (r'\bmücadele edecek\b','mücadele edecektir')
+    ]
+    for pat,val in replacements:
+        s=re.sub(pat,val,s,flags=re.I)
+    s=_v66_formalize_sentence_endings(s)
+    s=re.sub(r'\bifade ettiği ifade etmiştir\b','ifade etmiştir',s,flags=re.I)
+    s=re.sub(r'\bbelirttiği belirtmiştir\b','belirtmiştir',s,flags=re.I)
+    return _v84_hard_repair_text(s)
+
+def _v84_score_intro(s):
+    ns=norm(s)
+    actor=['cumhurbaşkan','bakan','bakanlık','tüik','tübitak','tcmb','tse','türkpatent',
+           'ssb','valili','başkan','şirket','üniversite','nasa','ibm','türk telekom',
+           'kardemir','togg','gezeravcı','zeytinoğlu']
+    action=['açıklad','duyur','başlat','gerçekleştir','tamamla','imzala','yayımla',
+            'düzenlen','üret','geliştir','test','ziyaret','göreve','başvuru','yatırım']
+    place=['ankara','istanbul','kocaeli','antalya','amasya','astana','pekin','gölcük',
+           'türkiye','abd','çin','kazakistan','avustralya','almanya','isveç']
+    return 4*sum(x in ns for x in actor)+4*sum(x in ns for x in action)+sum(x in ns for x in place)+min(len(re.findall(r'\d',s)),2)
+
+def _v84_score_detail(s):
+    ns=norm(s)
+    data=['%','yüzde','milyon','milyar','bin ','adet','mw','gwh','mwh','km','puan',
+          'oran','endeks','kapasite','ciro','ihracat','üretim','satış','başvuru','rekor']
+    return 4*sum(x in ns for x in data)+min(len(re.findall(r'\d',s)),5)
+
+def _v84_score_result(s):
+    ns=norm(s)
+    result=['art','azal','gerile','yüksel','ulaş','hedef','plan','beklen','sağla',
+            'kazandır','devreye','pilot','kullanıl','rekor','destek','katkı','başarı']
+    return 4*sum(x in ns for x in result)+min(len(re.findall(r'\d',s)),3)
+
+def _v80_reference_important_summary(title,summary,full_text=''):
+    """
+    V84: Önce düzgün bir giriş cümlesi, sonra kritik rakam/detay, sonra sonuç/önem.
+    2-3 tam cümle; cümle ortasında kesme yok; Word'de yaklaşık 4 satır hedefi.
+    """
+    title=_v81_sentence_case_title(_v84_hard_repair_text(title))
+    body=_v84_hard_repair_text(full_text or summary)
+    good=_v84_clean_article_sentences(body)
+
+    if len(good)<2:
+        good=_v84_clean_article_sentences(str(summary)+' '+str(full_text))
+    if not good:
+        return _v84_formalize(title)
+
+    # Giriş asla haberin ortasından başlamasın: aktör + eylem taşıyan cümleyi seç.
+    intro_candidates=good[:12]
+    intro=max(intro_candidates,key=lambda s:(_v84_score_intro(s),-good.index(s)))
+    if _v84_score_intro(intro)<4:
+        # Güçlü giriş bulunamazsa ilk temiz cümleyi kullan.
+        intro=good[0]
+
+    chosen=[intro]
+
+    rem=[s for s in good if s not in chosen]
+    if rem:
+        detail=max(rem,key=lambda s:(_v84_score_detail(s),-good.index(s)))
+        if _v84_score_detail(detail)>0:
+            chosen.append(detail)
+
+    rem=[s for s in good if s not in chosen]
+    if rem:
+        result=max(rem,key=lambda s:(_v84_score_result(s),-good.index(s)))
+        if _v84_score_result(result)>0:
+            chosen.append(result)
+
+    # En az iki cümle olsun.
+    if len(chosen)<2:
+        for s in good:
+            if s not in chosen:
+                chosen.append(s)
+                break
+
+    chosen=sorted(chosen,key=lambda s:good.index(s))
+    formal=[_v84_formalize(s) for s in chosen[:3] if _v84_sentence_is_clean(_v84_formalize(s))]
+    text=_clean_note_text(' '.join(formal))
+
+    # Çok uzun cümleler nedeniyle 4 satırı aşmaması için sıkı sınır:
+    # 2 veya 3 TAM cümle, yaklaşık 500 karakter.
+    sents=_sentence_split_tr(text)
+    kept=[]; total=0
+    for sent in sents:
+        add=len(sent)+(1 if kept else 0)
+        if kept and total+add>500:
+            break
+        kept.append(sent); total+=add
+        if len(kept)>=3:
+            break
+
+    # Eğer ilk cümle tek başına çok uzunsa, güvenli cümle sınırında sıkıştır.
+    if kept and len(' '.join(kept))>520:
+        kept=kept[:2]
+
+    result=' '.join(kept).strip()
+
+    # Son güvenlik: bozuk yabancı karakter kalırsa o cümleyi düşür.
+    final_sents=[s for s in _sentence_split_tr(result) if _v84_sentence_is_clean(s)]
+    return ' '.join(final_sents[:3]).strip()
+
+
 def _v87_safe_tr(text):
+    """Only obvious mojibake repair; never drop the whole item."""
     t=_clean_note_text(text)
     fixes={
         'TÃ¼rkiye':'Türkiye','TÃ¼rk':'Türk','genÃ§':'genç','dÃ¼nya':'dünya',
@@ -2797,14 +3286,16 @@ def _v87_safe_tr(text):
         'baÅŸar':'başar','katÄ±lÄ±m':'katılım','mÃ¼cadele':'mücadele',
         'Ä±':'ı','ÄŸ':'ğ','ÅŸ':'ş','Ã§':'ç','Ã¶':'ö','Ã¼':'ü',
         'Ä°':'İ','Äž':'Ğ','Åž':'Ş','Ã‡':'Ç','Ã–':'Ö','Ãœ':'Ü',
-        'Â':'','â€™':'’','â€œ':'“','â€ ':'”','â€“':'–','â€”':'—'
+        'Â':'','â€™':'’','â€œ':'“','â€':'”','â€“':'–','â€”':'—'
     }
     for a,b in fixes.items():
         t=t.replace(a,b)
     return re.sub(r'\s+',' ',t).strip()
 
+
 @st.cache_data(ttl=3600,show_spinner=False)
 def _v88_cached_article_detail(title,source,url,fallback,news_time):
+    """Same article is not fetched again for one hour."""
     try:
         return article_detail({
             'Başlık':title,
@@ -2821,19 +3312,39 @@ def _v88_cached_article_detail(title,source,url,fallback,news_time):
         }
 
 def _v88_title_core(title,source=''):
+    """Remove publisher suffixes and headline clutter."""
     t=_v87_safe_tr(title)
     source=_v87_safe_tr(source)
+    # Common Google News/source suffix.
     if source:
         t=re.sub(r'\s*[-–—]\s*'+re.escape(source)+r'\s*$','',t,flags=re.I)
     t=re.sub(r'\s*[-–—]\s*(Haberler|Haber|Son Dakika|Gündem)\s*$','',t,flags=re.I)
     t=re.sub(r'\s+',' ',t).strip(' -–—|')
     return t
 
+def _v88_sentence_bad(s):
+    s=_v87_safe_tr(s)
+    bad_chars=('Ã','Ä','Å','Â',' ',' ','','')
+    if any(x in s for x in bad_chars):
+        return True
+    n=norm(s)
+    noise=[
+        'sıralamayı değiştirmek','kartları yukarı','tüvtürk en sık',
+        'samsung sevilen modelin','benzer haber','ilgili haber',
+        'devamını oku','çerez','cookie','reklam','foto galeri','video galeri',
+        'ekonomi gazetesi »','araç sahipleri dikkat'
+    ]
+    if any(x in n for x in noise):
+        return True
+    if s.endswith(('…','...')) or re.search(r'\bve k$',s,re.I):
+        return True
+    return False
+
 def _v88_clean_sentences(text):
     out=[]; seen=set()
     for s in _sentence_chunks(_v87_safe_tr(text)):
         s=_v87_safe_tr(s).strip(" []'\";-:")
-        if len(s)<35 or len(s)>430:
+        if len(s)<35 or len(s)>430 or _v88_sentence_bad(s):
             continue
         k=title_key(s)
         if not k or k in seen:
@@ -2841,152 +3352,1465 @@ def _v88_clean_sentences(text):
         seen.add(k); out.append(s)
     return out
 
-# ============================================================
-# STB ÖNEMLİ GELİŞMELER NOTU - RESMİ KURUMSAL DİL MOTORU
-# ============================================================
+def _v88_keywords(title):
+    stop={'haber','haberi','son','dakika','bugün','yeni','ile','ve','bir','için','olan','oldu',
+          'olacak','dedi','açıkladı','duyurdu','türkiye','türk'}
+    words=[w for w in re.findall(r'[a-zçğıöşü0-9]+',norm(title)) if len(w)>=4 and w not in stop]
+    return set(words[:12])
 
-def _formalize_official_turkish(text):
-    """
-    Haber dilindeki fiil çekimlerini resmi kurumsal dile (-mıştır/-miştir/-mektedir) dönüştürür.
-    """
-    s = str(text or '').strip()
-    if not s:
-        return ""
-    
-    replacements = [
-        (r'\baçıkladı\b', 'açıklamıştır'), (r'\bbelirtti\b', 'belirtmiştir'),
-        (r'\bduyurdu\b', 'duyurmuştur'), (r'\bkaydetti\b', 'kaydetmiştir'),
-        (r'\bifade etti\b', 'ifade etmiştir'), (r'\bbaşladı\b', 'başlamıştır'),
-        (r'\btamamladı\b', 'tamamlamıştır'), (r'\bkazandı\b', 'kazanmıştır'),
-        (r'\barttı\b', 'artmıştır'), (r'\bazaldı\b', 'azalmıştır'),
-        (r'\bgeriledi\b', 'gerilemiştir'), (r'\byükseldi\b', 'yükselmiştir'),
-        (r'\bulaştı\b', 'ulaşmıştır'), (r'\bgerçekleşti\b', 'gerçekleşmiştir'),
-        (r'\boldu\b', 'olmuştur'), (r'\bseçildi\b', 'seçilmiştir'),
-        (r'\bdevam ediyor\b', 'devam etmektedir'), (r'\bgösteriyor\b', 'göstermektedir'),
-        (r'\bsağlıyor\b', 'sağlamaktadır'), (r'\bdikkat çekiyor\b', 'dikkat çekmektedir'),
-        (r'\bsona erdi\b', 'sona ermiştir'), (r'\byayımlandı\b', 'yayımlanmıştır'),
-        (r'\byayınlandı\b', 'yayımlanmıştır'), (r'\bdüzenlendi\b', 'düzenlenmiştir'),
-        (r'\bhayata geçirildi\b', 'hayata geçirilmiştir')
+def _v88_formal(s):
+    s=_v87_safe_tr(s)
+    pairs=[
+        (r'\baçıkladı\b','açıklamıştır'),(r'\bbelirtti\b','belirtmiştir'),
+        (r'\bduyurdu\b','duyurmuştur'),(r'\bkaydetti\b','kaydetmiştir'),
+        (r'\bifade etti\b','ifade etmiştir'),(r'\bbaşladı\b','başlamıştır'),
+        (r'\btamamladı\b','tamamlamıştır'),(r'\bkazandı\b','kazanmıştır'),
+        (r'\barttı\b','artmıştır'),(r'\bazaldı\b','azalmıştır'),
+        (r'\bgeriledi\b','gerilemiştir'),(r'\byükseldi\b','yükselmiştir'),
+        (r'\bulaştı\b','ulaşmıştır'),(r'\bgerçekleşti\b','gerçekleşmiştir'),
+        (r'\boldu\b','olmuştur'),(r'\byer alacak\b','yer alacaktır'),
+        (r'\bbaşlayacak\b','başlayacaktır'),(r'\bsağlanacak\b','sağlanacaktır'),
+        (r'\bverilecek\b','verilecektir'),(r'\bseçilecek\b','seçilecektir'),
+        (r'\bkazandırılacak\b','kazandırılacaktır'),(r'\bdevam ediyor\b','devam etmektedir'),
+        (r'\bgösteriyor\b','göstermektedir'),(r'\bsağlıyor\b','sağlamaktadır'),
+        (r'\bdikkat çekiyor\b','dikkat çekmektedir')
     ]
-    
-    for pat, val in replacements:
-        s = re.sub(pat, val, s, flags=re.I)
-    
-    s = s.rstrip(' .;:')
-    if s and not s.endswith(('.', '!', '?')):
-        s += '.'
+    for pat,val in pairs:
+        s=re.sub(pat,val,s,flags=re.I)
+    s=_v66_formalize_sentence_endings(s)
+    s=_v87_safe_tr(s).strip()
+    if s:
+        s=s[0].upper()+s[1:]
     return s
 
-def _stb_build_single_official_sentence(title, source, body, fallback):
+def _v89_normalize_source_title(title,source):
+    """Başlıktaki yayıncı/portal eklerini temizler; başlığı çıktı olarak kullanmaz."""
+    t=_v88_title_core(title,source)
+    t=re.sub(r'\s+[A-Za-zÇĞİÖŞÜçğıöşü0-9_.-]+\.(?:com|com\.tr|net|org|tr)\s*$','',t,flags=re.I)
+    return _v87_safe_tr(t).strip(' -–—|')
+
+def _v89_clause_from_sentence(s):
     """
-    Haber başlığı ve gövdesinden, STB Temsilciliği formatına uygun
-    TEK veya EN FAZLA İKİ, yüksek bilgi yoğunluklu resmî cümle kurar.
+    İkinci bir haber cümlesini ana resmî cümleye eklenebilir bilgi cümleciğine çevirir.
+    Tam cümleyi parçalamaz; yalnız son noktayı kaldırır.
     """
-    full_text = f"{body} {fallback}".strip()
-    clean_title = _v88_title_core(title, source)
-    
-    sentences = _v88_clean_sentences(full_text)
-    
-    primary_sentence = ""
-    for sent in sentences:
-        if any(kw in sent.lower() for kw in ['tarafından', 'açıkla', 'duyur', 'göre', 'kapsamında', 'oranında', 'tarihinde', 'başlat']):
-            primary_sentence = sent
+    s=_v88_formal(_v87_safe_tr(s)).strip()
+    return s.rstrip(' .;:')
+
+def _v89_single_official_sentence(title,source,body,fallback):
+    """
+    Gerçek STB örneği mantığı:
+    Her gelişme için TEK, TAM ve RESMÎ cümle.
+    - kim/kurum + ne oldu ana cümlesi,
+    - en kritik rakam/yer/tarih aynı cümlede,
+    - gerekiyorsa sonuç/hedef ikinci cümlecik olarak noktalı virgülle bağlanır,
+    - haber başlığı tek başına çıktı olmaz.
+    """
+    title=_v89_normalize_source_title(title,source)
+    text=_v87_safe_tr(body or fallback)
+    sents=_v88_clean_sentences(text)
+    if len(sents)<2:
+        sents=_v88_clean_sentences(fallback)
+
+    if not sents:
+        # Son çare: kaydedilmiş özet varsa onu kullan; sırf başlığı basma.
+        fb=_v87_safe_tr(fallback)
+        if len(fb)>=60:
+            return _v88_formal(fb).rstrip(' .;')+'.'
+        return ''
+
+    keywords=_v88_keywords(title)
+    actor_terms=['cumhurbaşkan','bakan','bakanlık','başkan','tüik','tübitak','tcmb','tse',
+                 'türkpatent','ssb','valili','üniversite','şirket','genel müdür','türk telekom',
+                 'kardemir','togg','aselsan','roketsan','gezeravcı','zeytinoğlu','kurum','takım']
+    action_terms=['açıkla','duyur','başlat','gerçekleştir','tamamla','imzala','kazan','yatırım',
+                  'test','görev','üret','satış','başvuru','düzenlen','ulaş','art','azal','gerile']
+    detail_terms=['%','yüzde','milyon','milyar','bin ','adet','mw','gwh','mwh','km','puan',
+                  'kapasite','ihracat','üretim','satış','hibe','öğrenci','madalya','rekor','tarih']
+    result_terms=['hedef','beklen','sağla','katkı','devreye','plan','başarı','destek','başvuru',
+                  'artış','azalış','yüksel','gerile','ulaş']
+
+    def overlap(sent):
+        ws=set(re.findall(r'[a-zçğıöşü0-9]+',norm(sent)))
+        return len(keywords & ws)
+
+    # Konuyla ilişkisiz "Samsung / TÜVTÜRK / başka haber" parçalarını devreden çıkar.
+    related=[x for x in sents if overlap(x)>0]
+    pool=related if related else sents[:8]
+
+    def intro_score(x):
+        n=norm(x)
+        return 7*overlap(x)+4*sum(k in n for k in actor_terms)+4*sum(k in n for k in action_terms)
+
+    intro=max(pool[:8],key=lambda x:(intro_score(x),-sents.index(x)))
+    intro_formal=_v89_clause_from_sentence(intro)
+
+    # Başlıkla neredeyse aynıysa, başka giriş ara.
+    if title_key(intro_formal)==title_key(title):
+        alternatives=[x for x in pool if title_key(x)!=title_key(title)]
+        if alternatives:
+            intro=max(alternatives,key=lambda x:(intro_score(x),-sents.index(x)))
+            intro_formal=_v89_clause_from_sentence(intro)
+
+    rem=[x for x in pool if x!=intro]
+    detail=None
+    if rem:
+        def detail_score(x):
+            n=norm(x)
+            return 6*overlap(x)+5*sum(k in n for k in detail_terms)+min(len(re.findall(r'\d',x)),6)
+        cand=max(rem,key=lambda x:(detail_score(x),-sents.index(x)))
+        if detail_score(cand)>0:
+            detail=cand
+
+    rem=[x for x in rem if x!=detail]
+    result=None
+    if rem:
+        def result_score(x):
+            n=norm(x)
+            return 5*overlap(x)+4*sum(k in n for k in result_terms)+2*sum(k in n for k in detail_terms)
+        cand=max(rem,key=lambda x:(result_score(x),-sents.index(x)))
+        if result_score(cand)>0:
+            result=cand
+
+    # Ana cümle doğal biçimde zaten gerekli rakamları içeriyorsa gereksiz tekrar ekleme.
+    clauses=[intro_formal]
+    intro_digits=set(re.findall(r'\d+(?:[.,]\d+)?',intro_formal))
+
+    for extra in [detail,result]:
+        if not extra:
+            continue
+        ef=_v89_clause_from_sentence(extra)
+        if not ef or _v88_sentence_bad(ef):
+            continue
+        # Aynı olayı/rakamı tekrar eden cümleyi alma.
+        nums=set(re.findall(r'\d+(?:[.,]\d+)?',ef))
+        if nums and nums.issubset(intro_digits) and title_key(ef)[:80] in title_key(intro_formal):
+            continue
+        # Başlıkla ilişki şartı: unrelated site snippets cannot enter.
+        if keywords and overlap(ef)==0:
+            continue
+        clauses.append(ef)
+        if len(clauses)>=2:  # tek cümlede iki ana bilgi bloğu yeterli
             break
-            
-    if not primary_sentence and sentences:
-        primary_sentence = sentences[0]
-    elif not primary_sentence:
-        primary_sentence = clean_title
 
-    formal_sentence = _formalize_official_turkish(primary_sentence)
-    
-    if len(formal_sentence) < 40:
-        formal_sentence = _formalize_official_turkish(clean_title)
-
-    return formal_sentence
-
-def make_important_basket_docx_v90(basket_df):
-    """
-    Örnek Word şablonuna birebir uyumlu STB Önemli Gelişmeler Notu oluşturur.
-    """
-    doc = Document()
-    sec = doc.sections[0]
-    sec.top_margin = Cm(2)
-    sec.bottom_margin = Cm(2)
-    sec.left_margin = Cm(2.5)
-    sec.right_margin = Cm(2.5)
-    
-    normal = doc.styles['Normal']
-    normal.font.name = 'Times New Roman'
-    normal.font.size = Pt(11)
-    normal._element.rPr.rFonts.set(qn('w:eastAsia'), 'Times New Roman')
-
-    records = [] if basket_df is None else basket_df.to_dict('records')
-    
-    # 1. TARİH ARALIĞI BAŞLIĞI (Sağ üst köşe)
-    p_header = doc.add_paragraph()
-    p_header.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-    
-    if records:
-        dates = [r.get('news_time', '') for r in records if r.get('news_time')]
-        if len(dates) >= 2:
-            date_str = f"{dates[-1][:10]} – {dates[0][:10]}"
-        elif dates:
-            date_str = f"{dates[0][:10]}"
-        else:
-            date_str = datetime.now().strftime('%d/%m/%Y')
+    # Tek resmî cümle: ilk tam cümle + ikinci bilgi bloğu noktalı virgülle.
+    if len(clauses)==1:
+        out=clauses[0]
     else:
-        date_str = datetime.now().strftime('%d/%m/%Y')
-        
-    p_header.add_run(date_str).bold = True
+        second=clauses[1]
+        # İkinci bloğu küçük harfle doğal bağla; özel isimleri bozma.
+        connector='; ayrıca, '
+        out=clauses[0]+connector+second
 
-    # 2. KONU BAŞLIĞI
-    p_subject = doc.add_paragraph()
-    p_subject.paragraph_format.space_after = Pt(12)
-    run_label = p_subject.add_run('Konu: \t')
-    run_label.bold = True
-    run_title = p_subject.add_run('STB Temsilciliği Önemli Gelişmeler Notu')
-    run_title.bold = True
+    out=_v87_safe_tr(out).strip(' ;:.')
+    # 4 satır hedefi: cümleyi kesmeden 500 karaktere yaklaş.
+    if len(out)>500 and len(clauses)>1:
+        out=clauses[0].strip(' ;:.')
+    if len(out)>520:
+        # Çok uzun tek giriş varsa noktalı virgül/virgül sınırından kısalt.
+        cut=out[:520]
+        candidates=[cut.rfind('; '),cut.rfind(', ')]
+        k=max(candidates)
+        if k>=300:
+            out=cut[:k].rstrip(' ,;')
+    return _v87_safe_tr(out)+'.'
 
-    # 3. HABER MADDELERİ
-    if not records:
-        doc.add_paragraph('Kayıtlı önemli gelişme bulunmamaktadır.')
-    else:
-        for item in records:
-            title = item.get('title', '')
-            source = item.get('source', '')
-            fallback = item.get('summary', '')
-            url = str(item.get('url', '') or '')
-            news_time = item.get('news_time', '')
+# Keep name used by make_important_basket_docx, but route to V89.
+def _v88_summary(title,source,body,fallback):
+    return _v89_single_official_sentence(title,source,body,fallback)
 
-            detail = _v88_cached_article_detail(title, source, url, fallback, news_time)
-            body = (detail or {}).get('text', '') or fallback
-            
-            official_text = _stb_build_single_official_sentence(title, source, body, fallback)
-            
-            p_item = doc.add_paragraph()
-            p_item.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
-            p_item.paragraph_format.space_after = Pt(6)
-            p_item.paragraph_format.line_spacing = 1.15
-            
-            p_item.add_run(official_text.rstrip(' .') + ' ')
-            p_item.add_run('(STB).').bold = False
+def _v87_ogn_summary(title, body, fallback):
+    """
+    Simple, deterministic recovery summarizer:
+    - never returns blank when fallback exists,
+    - uses stable _akt_formal_summary,
+    - keeps 2-3 complete sentences where available,
+    - no extra web search and no experimental sentence dropping.
+    """
+    title=_v87_safe_tr(title)
+    body=_v87_safe_tr(body or fallback or title)
+    fallback=_v87_safe_tr(fallback)
 
-    # 4. ARZ OLUNUR KAPANIŞI
-    p_closing = doc.add_paragraph()
-    p_closing.paragraph_format.space_before = Pt(12)
-    p_closing.add_run('Arz olunur.')
+    try:
+        text=_akt_formal_summary(title,body,max_sentences=3,max_chars=700)
+    except Exception:
+        text=fallback or body or title
 
-    bio = BytesIO()
+    text=_v87_safe_tr(text)
+    if not text or title_key(text)==title_key(title):
+        text=fallback if len(fallback)>=60 else (body if len(body)>=60 else title)
+
+    # Formalize endings using existing stable routine.
+    text=_v66_formalize_sentence_endings(text)
+
+    # Keep max 3 COMPLETE sentences and roughly 4 Word lines.
+    sents=_sentence_chunks(text)
+    if not sents:
+        return text[:520].strip()
+
+    kept=[]; total=0
+    for sent in sents:
+        sent=_v87_safe_tr(sent).strip()
+        if not sent: continue
+        add=len(sent)+(1 if kept else 0)
+        if kept and total+add>520:
+            break
+        kept.append(sent)
+        total+=add
+        if len(kept)>=3:
+            break
+
+    out=' '.join(kept).strip()
+    return out or (fallback[:520].strip() if fallback else title[:520].strip())
+
+
+V90_OGN_ENGINE_VERSION='v95_ogn_20260821_1'
+
+def _v90_clean_title(title,source=''):
+    t=_v87_safe_tr(title)
+    s=_v87_safe_tr(source)
+    if s:
+        t=re.sub(r'\s*[-–—]\s*'+re.escape(s)+r'\s*$','',t,flags=re.I)
+    t=re.sub(r'\s*[-–—]\s*(Haberler|Haber|Son Dakika|Gündem)\s*$','',t,flags=re.I)
+    t=re.sub(r'\s+',' ',t).strip(' -–—|')
+    return t
+
+def _v90_clean_sentence(s):
+    s=_v87_safe_tr(s).strip(" []'\";-:")
+    # Haber portalı / başka başlık / yarım snippet artıkları.
+    noise=[
+        'sıralamayı değiştirmek','kartları yukarı','devamını oku','benzer haber',
+        'ilgili haber','çerez','cookie','reklam','foto galeri','video galeri',
+        'google news','whatsapp','instagram','facebook','twitter',
+        'araç sahipleri dikkat','samsung sevilen modelin','tüvtürk en sık',
+        'ekonomi gazetesi »'
+    ]
+    ns=norm(s)
+    if any(x in ns for x in noise):
+        return ''
+    if s.endswith(('…','...')) or re.search(r'\bve k$',s,re.I):
+        return ''
+    if any(x in s for x in ('Ã','Ä','Å',' ',' ','','')):
+        return ''
+    return s
+
+def _v90_sentences(text):
+    out=[]; seen=set()
+    for raw in _sentence_chunks(_v87_safe_tr(text)):
+        s=_v90_clean_sentence(raw)
+        if len(s)<38 or len(s)>520:
+            continue
+        k=title_key(s)
+        if not k or k in seen:
+            continue
+        seen.add(k)
+        out.append(s)
+    return out
+
+def _v90_title_words(title):
+    stop={
+        'haber','haberi','son','dakika','bugün','yeni','ile','ve','bir','için','olan',
+        'oldu','olacak','dedi','açıkladı','duyurdu','türkiye','türk','etti','başladı'
+    }
+    return set(
+        w for w in re.findall(r'[a-zçğıöşü0-9]+',norm(title))
+        if len(w)>=4 and w not in stop
+    )
+
+def _v90_formalize(s):
+    s=_v87_safe_tr(s)
+    replacements=[
+        (r'\baçıkladı\b','açıklamıştır'),(r'\bbelirtti\b','belirtmiştir'),
+        (r'\bduyurdu\b','duyurmuştur'),(r'\bkaydetti\b','kaydetmiştir'),
+        (r'\bifade etti\b','ifade etmiştir'),(r'\bbaşladı\b','başlamıştır'),
+        (r'\btamamladı\b','tamamlamıştır'),(r'\bkazandı\b','kazanmıştır'),
+        (r'\barttı\b','artmıştır'),(r'\bazaldı\b','azalmıştır'),
+        (r'\bgeriledi\b','gerilemiştir'),(r'\byükseldi\b','yükselmiştir'),
+        (r'\bulaştı\b','ulaşmıştır'),(r'\bgerçekleşti\b','gerçekleşmiştir'),
+        (r'\boldu\b','olmuştur'),(r'\bkırıldı\b','kırılmıştır'),
+        (r'\byer alacak\b','yer alacaktır'),(r'\bbaşlayacak\b','başlayacaktır'),
+        (r'\bsağlanacak\b','sağlanacaktır'),(r'\bverilecek\b','verilecektir'),
+        (r'\bseçilecek\b','seçilecektir'),(r'\bkazandırılacak\b','kazandırılacaktır'),
+        (r'\bdevam ediyor\b','devam etmektedir'),(r'\bgösteriyor\b','göstermektedir'),
+        (r'\bsağlıyor\b','sağlamaktadır'),(r'\bdikkat çekiyor\b','dikkat çekmektedir')
+    ]
+    for pat,val in replacements:
+        s=re.sub(pat,val,s,flags=re.I)
+    s=_v66_formalize_sentence_endings(s)
+    s=_v87_safe_tr(s).strip()
+    if s:
+        s=s[0].upper()+s[1:]
+    return s
+
+def _v90_item_summary(title,source,body,fallback):
+    """
+    Kurum örneğine yakın TEK, TAM, RESMÎ cümle:
+    ana olay + kritik rakam/yer/tarih/kişi + gerekiyorsa tek tamamlayıcı bilgi.
+    Başlık doğrudan Word'e yazılmaz.
+    """
+    title=_v90_clean_title(title,source)
+    text=_v87_safe_tr(body or fallback)
+    sents=_v90_sentences(text)
+    if len(sents)<2:
+        sents=_v90_sentences(fallback)
+
+    # Başlık dışında gerçek içerik yoksa fallback'i kullan; yine başlığı tek başına basma.
+    if not sents:
+        fb=_v87_safe_tr(fallback)
+        if len(fb)>=80 and title_key(fb)!=title_key(title):
+            return _v90_formalize(fb).rstrip(' .;')+'.'
+        return ''
+
+    tw=_v90_title_words(title)
+
+    actor_terms=[
+        'cumhurbaşkan','bakan','bakanlık','başkan','tüik','tübitak','tcmb','tse',
+        'türkpatent','ssb','valili','üniversite','şirket','genel müdür','türk telekom',
+        'kardemir','togg','aselsan','roketsan','gezeravcı','zeytinoğlu','takım'
+    ]
+    action_terms=[
+        'açıkla','duyur','başlat','gerçekleştir','tamamla','imzala','kazan','yatırım',
+        'test','görev','üret','satış','başvuru','düzenlen','ulaş','art','azal','gerile'
+    ]
+    detail_terms=[
+        '%','yüzde','milyon','milyar','bin ','adet','mw','gwh','mwh','km','puan',
+        'kapasite','ihracat','üretim','satış','hibe','öğrenci','madalya','rekor',
+        '2025','2026','2027'
+    ]
+
+    def overlap(s):
+        words=set(re.findall(r'[a-zçğıöşü0-9]+',norm(s)))
+        return len(words & tw)
+
+    # Yalnız haberle ilişkili cümleleri tercih et.
+    related=[s for s in sents if overlap(s)>0]
+    pool=related if related else sents[:8]
+
+    def intro_score(s):
+        n=norm(s)
+        return (
+            8*overlap(s)
+            + 4*sum(x in n for x in actor_terms)
+            + 4*sum(x in n for x in action_terms)
+            + min(len(re.findall(r'\d',s)),3)
+        )
+
+    # İlk cümle haberin ortasından değil, olayı tanımlayan cümle olsun.
+    intro=max(pool[:8],key=lambda s:(intro_score(s),-sents.index(s)))
+    intro=_v90_formalize(intro).rstrip(' .;')
+
+    # Eğer intro başlıkla neredeyse aynıysa başka gövde cümlesi dene.
+    if title_key(intro)==title_key(title):
+        alternatives=[s for s in pool if title_key(s)!=title_key(title)]
+        if alternatives:
+            intro=_v90_formalize(
+                max(alternatives,key=lambda s:(intro_score(s),-sents.index(s)))
+            ).rstrip(' .;')
+
+    # En kritik ikinci bilgi: rakam/tarih/ölçek; aynı olayla ilişkili olmak zorunda.
+    remaining=[s for s in pool if title_key(_v90_formalize(s))!=title_key(intro)]
+    detail=''
+    if remaining:
+        def detail_score(s):
+            n=norm(s)
+            return (
+                7*overlap(s)
+                + 5*sum(x in n for x in detail_terms)
+                + min(len(re.findall(r'\d',s)),6)
+            )
+        cand=max(remaining,key=lambda s:(detail_score(s),-sents.index(s)))
+        if detail_score(cand)>=5:
+            detail=_v90_formalize(cand).rstrip(' .;')
+
+    # Tek resmî cümle oluştur.
+    out=intro
+    if detail:
+        # Aynı rakamları tekrar eden ayrıntıyı ekleme.
+        n1=set(re.findall(r'\d+(?:[.,]\d+)?',intro))
+        n2=set(re.findall(r'\d+(?:[.,]\d+)?',detail))
+        if not (n2 and n2.issubset(n1) and len(detail)<180):
+            out += '; ayrıca, ' + detail[0].lower()+detail[1:] if detail else ''
+
+    out=_v87_safe_tr(out).strip(' ;:.')
+
+    # Örnekteki yoğunluk: yaklaşık 4 Word satırı; cümleyi ortadan kesme.
+    if len(out)>500 and detail:
+        out=intro
+    if len(out)>520:
+        # Giriş tek başına çok uzunsa en yakın anlamlı virgül/noktalı virgül sınırında kısalt.
+        cut=out[:520]
+        k=max(cut.rfind('; '),cut.rfind(', '))
+        if k>=330:
+            out=cut[:k].rstrip(' ,;')
+
+    return out.rstrip(' .;')+'.'
+
+@st.cache_data(ttl=3600,show_spinner=False)
+def _v90_fetch_detail(title,source,url,fallback,news_time):
+    try:
+        return article_detail({
+            'Başlık':title,
+            'Kaynak':source,
+            'URL':url,
+            'Yayıncı_URL':url,
+            'İçerik_Özeti':fallback,
+            'Tarih':news_time
+        })
+    except Exception:
+        return {'title':title,'source':source,'text':fallback,'canonical':url,'images':[]}
+
+
+def _v92_clean_news_text(text):
+    t=_v87_safe_tr(text)
+    # Portal artıkları / başka haber başlıkları / navigasyon.
+    noise_patterns=[
+        r'sıralamayı değiştirmek[^.!?]*[.!?]?',
+        r'kartları yukarı[^.!?]*[.!?]?',
+        r'devamını oku[^.!?]*[.!?]?',
+        r'benzer haber(?:ler)?[^.!?]*[.!?]?',
+        r'ilgili haber(?:ler)?[^.!?]*[.!?]?',
+        r'google news[^.!?]*[.!?]?',
+        r'whatsapp kanal[^.!?]*[.!?]?',
+    ]
+    for pat in noise_patterns:
+        t=re.sub(pat,' ',t,flags=re.I)
+    return re.sub(r'\s+',' ',t).strip()
+
+def _v92_formal_sentence(s):
+    """Yalnız haber dili yüklemlerini kurumsal geçmiş/şimdiki zamana çevirir."""
+    s=_v92_clean_news_text(s).strip()
+    pairs=[
+        (r'\baçıkladı\b','açıklamıştır'),
+        (r'\bbelirtti\b','belirtmiştir'),
+        (r'\bduyurdu\b','duyurmuştur'),
+        (r'\bkaydetti\b','kaydetmiştir'),
+        (r'\bifade etti\b','ifade etmiştir'),
+        (r'\bbaşladı\b','başlamıştır'),
+        (r'\btamamladı\b','tamamlamıştır'),
+        (r'\bkazandı\b','kazanmıştır'),
+        (r'\barttı\b','artmıştır'),
+        (r'\bazaldı\b','azalmıştır'),
+        (r'\bgeriledi\b','gerilemiştir'),
+        (r'\byükseldi\b','yükselmiştir'),
+        (r'\bulaştı\b','ulaşmıştır'),
+        (r'\bgerçekleşti\b','gerçekleşmiştir'),
+        (r'\boldu\b','olmuştur'),
+        (r'\bkırıldı\b','kırılmıştır'),
+        (r'\byayımlandı\b','yayımlanmıştır'),
+        (r'\byayınlandı\b','yayımlanmıştır'),
+        (r'\bbaşlıyor\b','başlamaktadır'),
+        (r'\bdevam ediyor\b','devam etmektedir'),
+        (r'\bsağlıyor\b','sağlamaktadır'),
+        (r'\bgösteriyor\b','göstermektedir'),
+        (r'\bhedefleniyor\b','hedeflenmektedir'),
+        (r'\bplanlanıyor\b','planlanmaktadır'),
+    ]
+    for pat,val in pairs:
+        s=re.sub(pat,val,s,flags=re.I)
+    return _v66_formalize_sentence_endings(s).strip()
+
+def _v92_good_sentence(s):
+    s=_v92_clean_news_text(s)
+    if len(s)<35 or len(s)>650:
+        return False
+    if any(x in s for x in ('Ã','Ä','Å',' ',' ','','')):
+        return False
+    n=norm(s)
+    noise=[
+        'çerez','cookie','reklam','foto galeri','video galeri',
+        'instagram','facebook','twitter','abone ol','bildirimleri aç',
+        'sıralamayı değiştirmek','kartları yukarı','devamını oku',
+        'benzer haber','ilgili haber'
+    ]
+    return not any(x in n for x in noise)
+
+def _v92_summary(title, source, body, fallback):
+    """
+    STB örneğindeki mantık:
+    1) Haberin ana gelişmesini veren giriş cümlesi.
+    2) Hemen ardından gelen kritik veri/rakam/açıklama.
+    3) Gerekliyse üçüncü ardışık cümle.
+    Farklı yerlerden cümle toplayıp yapıştırmaz.
+    """
+    title=_v90_clean_title(title,source)
+    raw=_v92_clean_news_text(body or fallback)
+
+    sents=[]
+    seen=set()
+    for s in _sentence_chunks(raw):
+        s=_v92_clean_news_text(s).strip(" []'\";-:")
+        if not _v92_good_sentence(s):
+            continue
+        k=title_key(s)
+        if not k or k in seen:
+            continue
+        seen.add(k)
+        sents.append(s)
+
+    if not sents:
+        fb=_v92_clean_news_text(fallback)
+        return _v92_formal_sentence(fb) if len(fb)>=50 else ''
+
+    # Başlıktaki ayırt edici sözcükler.
+    stop={'haber','haberi','son','dakika','bugün','yeni','ile','ve','bir','için',
+          'olan','oldu','olacak','dedi','türkiye','türk'}
+    title_words={
+        w for w in re.findall(r'[a-zçğıöşü0-9]+',norm(title))
+        if len(w)>=4 and w not in stop
+    }
+
+    def overlap(s):
+        sw=set(re.findall(r'[a-zçğıöşü0-9]+',norm(s)))
+        return len(sw & title_words)
+
+    # Giriş: ilk 6 temiz cümle içinde başlıkla en ilişkili olanı bul.
+    # Böylece sayfanın ortasından başlamaz; ama başlık tekrarına da mahkûm olmaz.
+    first_pool=sents[:6]
+    start=max(range(len(first_pool)), key=lambda i:(overlap(first_pool[i]), -i))
+
+    # Eğer ilk cümle zaten makul derecede ilgiliyse onu tercih et.
+    if overlap(first_pool[0])>0:
+        start=0
+
+    # Ardışık cümleler: bağlam korunur. Maksimum 3 cümle.
+    chosen=[]
+    total=0
+    for s in sents[start:start+3]:
+        fs=_v92_formal_sentence(s).strip()
+        if not fs:
+            continue
+        if fs[-1] not in '.!?':
+            fs+='.'
+        # Yaklaşık 4 satır; cümleyi ortadan kesme.
+        add=len(fs)+(1 if chosen else 0)
+        if chosen and total+add>560:
+            break
+        chosen.append(fs)
+        total+=add
+
+    # Tek cümle çok kısa kaldıysa bir sonraki ilgili tam cümleyi ekle.
+    if len(' '.join(chosen))<220:
+        for s in sents[start+len(chosen):]:
+            if overlap(s)<=0 and title_words:
+                continue
+            fs=_v92_formal_sentence(s).strip()
+            if not fs:
+                continue
+            if fs[-1] not in '.!?':
+                fs+='.'
+            if len(' '.join(chosen+[fs]))<=560:
+                chosen.append(fs)
+            break
+
+    out=' '.join(chosen).strip()
+
+    # Başlığı tek başına "özet" kabul etme.
+    if title_key(out)==title_key(title):
+        fb=_v92_clean_news_text(fallback)
+        if len(fb)>=80 and title_key(fb)!=title_key(title):
+            out=_v92_formal_sentence(fb)
+
+    return _v87_safe_tr(out).strip()
+
+
+def _v93_sentence_split(text):
+    t=_v92_clean_news_text(text)
+    # Noktalı virgülü cümle gibi bölme; kurumsal örneklerde bağlı bilgi olabilir.
+    return [x.strip() for x in re.split(r'(?<=[.!?])\s+',t) if x.strip()]
+
+def _v93_is_noise(s):
+    n=norm(s)
+    bad=[
+        'sıralamayı değiştirmek','kartları yukarı','benzer haber','ilgili haber',
+        'devamını oku','son dakika','reklam','çerez','cookie','instagram',
+        'facebook','twitter','whatsapp','youtube','google news',
+        'tıklayın','abone ol','yorumlar','etiketler'
+    ]
+    return len(s)<30 or any(x in n for x in bad) or any(x in s for x in ('Ã','Ä','Å',' '))
+
+def _v93_content_score(s, title_words):
+    n=norm(s)
+    words=set(re.findall(r'[a-zçğıöşü0-9]+',n))
+    score=0
+    score += 5*len(words & title_words)
+    # Örnek notlarda öne çıkan unsurlar: kurum/kişi, tarih, rakam, oran, yer, karar/eylem.
+    if re.search(r'\b\d+(?:[.,]\d+)?\b|%|yüzde|milyon|milyar|bin\b',n): score+=5
+    if re.search(r'\b20\d{2}\b|\b\d{1,2}\s+(?:ocak|şubat|mart|nisan|mayıs|haziran|temmuz|ağustos|eylül|ekim|kasım|aralık)\b',n): score+=3
+    if any(x in n for x in ['açıklad','duyur','yayımla','başlat','tamamla','imzala','seçilecek',
+                             'gerçekleştir','üret','ihrac','yatırım','satın al','devreye al',
+                             'denize indir','entegre','belirlen','güncellen','başvuru']): score+=4
+    if any(x in n for x in ['bakanlık','tübitak','tüik','aselsan','roketsan','tusaş','havelsan',
+                             'cumhurbaşkan','başkanlığı','ajansı','üniversitesi','şirketi','ofisi']): score+=3
+    return score
+
+def _v93_build_summary(title, source, body, fallback):
+    """
+    Tek haber -> tek olay anlatısı.
+    Cümleler haberin başından/ortasından rastgele seçilmez:
+    ana olay cümlesi bulunur ve yalnız onun çevresindeki aynı bağlam kullanılır.
+    """
+    title=_v90_clean_title(title,source)
+    text=_v92_clean_news_text(body or fallback)
+    sentences=[s for s in _v93_sentence_split(text) if not _v93_is_noise(s)]
+    if not sentences:
+        sentences=[s for s in _v93_sentence_split(fallback) if not _v93_is_noise(s)]
+    if not sentences:
+        return ''
+
+    stop={'haber','haberi','son','dakika','bugün','yeni','ile','ve','bir','için','olan',
+          'oldu','olacak','dedi','türkiye','türk','tarafından','kapsamında'}
+    title_words={w for w in re.findall(r'[a-zçğıöşü0-9]+',norm(title)) if len(w)>=4 and w not in stop}
+
+    # Ana olay cümlesi: yalnız ilk 7 cümle içinde aranır.
+    # Böylece sayfanın sonundan/başka haberlerden içerik çekilmez.
+    pool=sentences[:7]
+    scores=[_v93_content_score(s,title_words) for s in pool]
+    anchor=max(range(len(pool)),key=lambda i:(scores[i],-i)) if pool else 0
+
+    # Başlangıç cümlesi başlıkla anlamlı örtüşüyorsa girişten başla.
+    first_overlap=len(set(re.findall(r'[a-zçğıöşü0-9]+',norm(pool[0]))) & title_words) if pool else 0
+    if first_overlap>=1:
+        anchor=0
+
+    chosen=[pool[anchor]]
+    # Ana olayın hemen devamındaki en fazla iki cümleyi kullan.
+    # Uzak cümle avlama kesinlikle yapılmaz.
+    for s in sentences[anchor+1:anchor+3]:
+        # Çok bariz biçimde yeni bir haber/konu başlıyorsa kes.
+        ov=len(set(re.findall(r'[a-zçğıöşü0-9]+',norm(s))) & title_words)
+        if ov==0 and len(chosen)>=2 and _v93_content_score(s,title_words)<5:
+            break
+        chosen.append(s)
+
+    formal=[]
+    for s in chosen:
+        fs=_v92_formal_sentence(s).strip()
+        if not fs:
+            continue
+        if fs[-1] not in '.!?':
+            fs+='.'
+        formal.append(fs)
+
+    # 4 satır hedefi: yaklaşık 520 karakter; ASLA kelime/cümle ortasından kesme.
+    result=[]
+    for s in formal:
+        candidate=' '.join(result+[s])
+        if result and len(candidate)>520:
+            break
+        result.append(s)
+
+    out=' '.join(result).strip()
+
+    # Çok kısa ise yalnız bir sonraki ARDIŞIK cümleyi eklemeyi dene.
+    if len(out)<170:
+        next_i=anchor+len(result)
+        if next_i<len(sentences):
+            fs=_v92_formal_sentence(sentences[next_i]).strip()
+            if fs and fs[-1] not in '.!?': fs+='.'
+            if fs and len(out+' '+fs)<=520:
+                out=(out+' '+fs).strip()
+
+    # Başlık veya link asla eklenmez.
+    out=re.sub(r'https?://\S+','',out)
+    out=re.sub(r'\s+',' ',out).strip()
+    return _v87_safe_tr(out)
+
+
+def _v94_formal_summary_text(text):
+    """
+    Very simple and robust:
+    - clean the saved news summary
+    - take complete sentences in their original order
+    - keep up to ~4 Word lines
+    - formalize common journalistic endings
+    - never return blank if usable text exists
+    """
+    t=_v87_safe_tr(text or '')
+    t=re.sub(r'https?://\S+',' ',t)
+    t=re.sub(r'\s+',' ',t).strip()
+    if not t:
+        return ''
+
+    # Split only on real sentence endings; preserve original order.
+    parts=[x.strip() for x in re.split(r'(?<=[.!?])\s+',t) if x.strip()]
+    if not parts:
+        parts=[t]
+
+    noise=('devamını oku','benzer haber','ilgili haber','çerez','cookie',
+           'reklam','instagram','facebook','twitter','whatsapp','google news')
+    clean=[]
+    for s in parts:
+        ns=norm(s)
+        if any(x in ns for x in noise):
+            continue
+        s=_v92_formal_sentence(s).strip()
+        if not s:
+            continue
+        if s[-1] not in '.!?':
+            s+='.'
+        clean.append(s)
+
+    if not clean:
+        s=_v92_formal_sentence(t).strip()
+        return (s.rstrip(' .;')+'.') if s else ''
+
+    # Approx. four lines. Do not cut a sentence.
+    chosen=[]
+    for s in clean:
+        candidate=' '.join(chosen+[s])
+        if chosen and len(candidate)>560:
+            break
+        chosen.append(s)
+        if len(chosen)>=3:
+            break
+
+    out=' '.join(chosen).strip()
+    return out
+
+
+def _v95_ogn_from_existing_engines(title, body):
+    """
+    Yeni bir özetleme algoritması yok.
+    AKT'de başarılı çalışan:
+      _akt_clean_sentences -> _akt_formal_summary
+    ve Bilgi Notunda kullanılan kurumsal dil normalizasyonu kullanılır.
+    """
+    title=_clean_note_text(title)
+    body=_clean_note_text(body or title)
+
+    # AKT motoru haberi baştan sona değerlendirir; burada yalnız çıktı uzunluğu kısaltılır.
+    text=_akt_formal_summary(
+        title,
+        body,
+        max_sentences=3,
+        max_chars=560
+    )
+    text=_clean_note_text(text)
+
+    # AKT özetindeki ";" akışını ÖGN için tam cümlelere dönüştür.
+    clauses=[_clean_note_text(x).strip(' ,;:.') for x in re.split(r'\s*;\s*',text) if _clean_note_text(x)]
+    sentences=[]
+    for clause in clauses[:3]:
+        formal=_v66_formalize_sentence_endings(clause).strip()
+        if not formal:
+            continue
+        if formal[-1] not in '.!?':
+            formal+='.'
+        sentences.append(formal)
+
+    if not sentences:
+        formal=_v66_formalize_sentence_endings(text).strip()
+        if formal and formal[-1] not in '.!?':
+            formal+='.'
+        return formal
+
+    # Yaklaşık 4 satır; tam cümleyi kesme.
+    chosen=[]
+    for s in sentences:
+        candidate=' '.join(chosen+[s])
+        if chosen and len(candidate)>560:
+            break
+        chosen.append(s)
+
+    return ' '.join(chosen).strip()
+
+
+def make_important_basket_docx_v95(basket_df):
+    """
+    Önemli Gelişmeler Word:
+    - Haber işleme: Bilgi Notu gibi article_detail()
+    - Özetleme: AKT gibi _akt_formal_summary()
+    - Dil: mevcut V66 resmî dil normalizasyonu
+    - Çıktı: başlıksız, linksiz, yaklaşık 4 satır.
+    """
+    doc=Document()
+    sec=doc.sections[0]
+    sec.top_margin=Cm(2); sec.bottom_margin=Cm(2)
+    sec.left_margin=Cm(2.5); sec.right_margin=Cm(2.5)
+
+    normal=doc.styles['Normal']
+    normal.font.name='Times New Roman'
+    normal.font.size=Pt(12)
+    normal._element.rPr.rFonts.set(qn('w:eastAsia'),'Times New Roman')
+
+    now=datetime.now().astimezone()
+    p=doc.add_paragraph()
+    p.alignment=WD_ALIGN_PARAGRAPH.RIGHT
+    p.add_run(now.strftime('%d/%m/%Y'))
+
+    p=doc.add_paragraph()
+    p.add_run('Konu: ').bold=True
+    p.add_run('STB Temsilciliği Önemli Gelişmeler Notu')
+
+    rows=[] if basket_df is None else basket_df.to_dict('records')
+
+    def process_row(r):
+        title=_clean_note_text(r.get('title',''))
+        source=_clean_note_text(r.get('source',''))
+        summary=_clean_note_text(r.get('summary',''))
+        url=str(r.get('url','') or '')
+        news_time=_clean_note_text(r.get('news_time',''))
+
+        # Bilgi Notu ile aynı yaklaşım: mümkünse gerçek haber metnini al.
+        try:
+            detail=article_detail({
+                'Başlık':title,
+                'Kaynak':source,
+                'URL':url,
+                'Yayıncı_URL':url,
+                'İçerik_Özeti':summary,
+                'Tarih':news_time
+            })
+        except Exception:
+            detail={}
+
+        body=_clean_note_text(detail.get('text') or summary or title)
+
+        # AKT'nin çalışan özet motorunu doğrudan kullan.
+        result=_v95_ogn_from_existing_engines(title,body)
+
+        # Tam metin tarafı sonuç vermezse AKT motorunu kayıtlı özet üzerinde çalıştır.
+        if not result or len(result)<50:
+            result=_v95_ogn_from_existing_engines(title,summary or title)
+
+        return result
+
+    # Bilgi notu/AKT içerik yaklaşımı korunurken Word beklemesini azaltmak için paralel oku.
+    outputs=['']*len(rows)
+    if rows:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(6,len(rows))) as ex:
+            jobs={ex.submit(process_row,r):i for i,r in enumerate(rows)}
+            for fut in concurrent.futures.as_completed(jobs):
+                idx=jobs[fut]
+                try:
+                    outputs[idx]=fut.result()
+                except Exception:
+                    r=rows[idx]
+                    outputs[idx]=_v95_ogn_from_existing_engines(
+                        r.get('title',''),
+                        r.get('summary','') or r.get('title','')
+                    )
+
+    for text in outputs:
+        text=_clean_note_text(text)
+        if not text:
+            continue
+        p=doc.add_paragraph()
+        p.alignment=WD_ALIGN_PARAGRAPH.JUSTIFY
+        p.paragraph_format.space_after=Pt(6)
+        p.paragraph_format.line_spacing=1.0
+        # Haber başlığı, kaynak adı veya URL ayrıca yazılmaz.
+        p.add_run(text.rstrip(' .;')+' (STB).')
+
+    doc.add_paragraph('Arz olunur.')
+
+    bio=BytesIO()
     doc.save(bio)
     bio.seek(0)
     return bio.getvalue()
 
-def make_important_basket_docx(basket_df):
-    return make_important_basket_docx_v90(basket_df)
+def make_important_basket_docx_v94(basket_df):
+    """
+    Reliable ÖGN Word generator.
+    No headline, no URL, no bullet.
+    Every basket row produces one paragraph.
+    Primary source = summary already stored when the news was scanned.
+    """
+    doc=Document()
+    sec=doc.sections[0]
+    sec.top_margin=Cm(2); sec.bottom_margin=Cm(2)
+    sec.left_margin=Cm(2.5); sec.right_margin=Cm(2.5)
 
+    stl=doc.styles['Normal']
+    stl.font.name='Times New Roman'
+    stl.font.size=Pt(12)
+    stl._element.rPr.rFonts.set(qn('w:eastAsia'),'Times New Roman')
+
+    now=datetime.now().astimezone()
+    p0=doc.add_paragraph()
+    p0.alignment=WD_ALIGN_PARAGRAPH.RIGHT
+    p0.add_run(now.strftime('%d/%m/%Y'))
+
+    p1=doc.add_paragraph()
+    p1.add_run('Konu: ').bold=True
+    p1.add_run('STB Temsilciliği Önemli Gelişmeler Notu')
+
+    rows=[] if basket_df is None else basket_df.to_dict('records')
+
+    for r in rows:
+        title=_v87_safe_tr(r.get('title',''))
+        source=_v87_safe_tr(r.get('source',''))
+        summary=_v87_safe_tr(r.get('summary',''))
+        url=str(r.get('url','') or '')
+        news_time=_v87_safe_tr(r.get('news_time',''))
+
+        # Use the text already saved in the basket first: fast and stable.
+        text=summary
+
+        # Only if the stored summary is genuinely empty/too short, try the article.
+        if len(text.strip())<60 and url:
+            try:
+                d=article_detail({
+                    'Başlık':title,'Kaynak':source,'URL':url,'Yayıncı_URL':url,
+                    'İçerik_Özeti':summary,'Tarih':news_time
+                })
+                fetched=_v87_safe_tr((d or {}).get('text',''))
+                if len(fetched)>len(text):
+                    text=fetched
+            except Exception:
+                pass
+
+        out=_v94_formal_summary_text(text)
+
+        # Absolute fallback: do not create an empty Word document.
+        # If scan stored no summary and article could not be read, use a cleaned
+        # sentence from the title rather than silently omitting the news.
+        if not out:
+            out=_v92_formal_sentence(title).strip()
+            if out and out[-1] not in '.!?':
+                out+='.'
+
+        if not out:
+            continue
+
+        p=doc.add_paragraph()
+        p.alignment=WD_ALIGN_PARAGRAPH.JUSTIFY
+        p.paragraph_format.space_after=Pt(6)
+        p.paragraph_format.line_spacing=1.0
+        p.add_run(out.rstrip(' .;')+' (STB).')
+
+    doc.add_paragraph('Arz olunur.')
+    bio=BytesIO()
+    doc.save(bio)
+    bio.seek(0)
+    return bio.getvalue()
+
+def make_important_basket_docx_v93(basket_df):
+    """STB referansına göre sıfırdan yazılmış Önemli Gelişmeler Word motoru."""
+    doc=Document()
+    sec=doc.sections[0]
+    sec.top_margin=Cm(2); sec.bottom_margin=Cm(2)
+    sec.left_margin=Cm(2.5); sec.right_margin=Cm(2.5)
+
+    style=doc.styles['Normal']
+    style.font.name='Times New Roman'
+    style.font.size=Pt(12)
+    style._element.rPr.rFonts.set(qn('w:eastAsia'),'Times New Roman')
+
+    now=datetime.now().astimezone()
+    p=doc.add_paragraph()
+    p.alignment=WD_ALIGN_PARAGRAPH.RIGHT
+    p.add_run(now.strftime('%d/%m/%Y'))
+
+    p=doc.add_paragraph()
+    p.add_run('Konu: ').bold=True
+    p.add_run('STB Temsilciliği Önemli Gelişmeler Notu')
+
+    rows=[] if basket_df is None else basket_df.to_dict('records')
+
+    def one(r):
+        title=_v87_safe_tr(r.get('title',''))
+        source=_v87_safe_tr(r.get('source',''))
+        fallback=_v87_safe_tr(r.get('summary',''))
+        url=str(r.get('url','') or '')
+        news_time=_v87_safe_tr(r.get('news_time',''))
+        try:
+            d=_v90_fetch_detail(title,source,url,fallback,news_time)
+            body=_v87_safe_tr((d or {}).get('text','') or fallback)
+        except Exception:
+            body=fallback
+        return _v93_build_summary(title,source,body,fallback)
+
+    summaries=['']*len(rows)
+    if rows:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(8,len(rows))) as ex:
+            jobs={ex.submit(one,r):i for i,r in enumerate(rows)}
+            for f in concurrent.futures.as_completed(jobs):
+                i=jobs[f]
+                try: summaries[i]=f.result()
+                except Exception: summaries[i]=''
+
+    for text in summaries:
+        if not text:
+            continue
+        p=doc.add_paragraph()
+        p.alignment=WD_ALIGN_PARAGRAPH.JUSTIFY
+        p.paragraph_format.space_after=Pt(6)
+        p.paragraph_format.line_spacing=1.0
+        # Başlık yok, URL yok, madde imi yok.
+        p.add_run(text.rstrip(' .;')+' (STB).')
+
+    doc.add_paragraph('Arz olunur.')
+    bio=BytesIO(); doc.save(bio); bio.seek(0)
+    return bio.getvalue()
+
+def make_important_basket_docx_v92(basket_df):
+    """
+    V92: ÖGN için sade ve izlenebilir akış.
+    Haberleri paralel alır; her haber için tek gövde + ardışık 2-3 cümle.
+    """
+    doc=Document()
+    sec=doc.sections[0]
+    sec.top_margin=Cm(2); sec.bottom_margin=Cm(2)
+    sec.left_margin=Cm(2.5); sec.right_margin=Cm(2.5)
+
+    normal=doc.styles['Normal']
+    normal.font.name='Times New Roman'
+    normal.font.size=Pt(12)
+    normal._element.rPr.rFonts.set(qn('w:eastAsia'),'Times New Roman')
+
+    now=datetime.now().astimezone()
+    p=doc.add_paragraph()
+    p.alignment=WD_ALIGN_PARAGRAPH.RIGHT
+    p.add_run(now.strftime('%d/%m/%Y')).bold=True
+
+    p=doc.add_paragraph()
+    p.add_run('Konu: ').bold=True
+    p.add_run('STB Temsilciliği Önemli Gelişmeler Notu')
+
+    records=[] if basket_df is None else basket_df.to_dict('records')
+
+    def process(item):
+        title=_v87_safe_tr(item.get('title',''))
+        source=_v87_safe_tr(item.get('source',''))
+        fallback=_v87_safe_tr(item.get('summary',''))
+        url=str(item.get('url','') or '')
+        news_time=_v87_safe_tr(item.get('news_time',''))
+
+        detail=_v90_fetch_detail(title,source,url,fallback,news_time)
+        body=_v87_safe_tr((detail or {}).get('text','') or fallback)
+
+        txt=_v92_summary(title,source,body,fallback)
+        if not txt:
+            txt=_v92_summary(title,source,fallback,fallback)
+        return txt
+
+    summaries=['']*len(records)
+    if records:
+        workers=min(8,max(1,len(records)))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
+            fmap={ex.submit(process,r):i for i,r in enumerate(records)}
+            for fut in concurrent.futures.as_completed(fmap):
+                idx=fmap[fut]
+                try:
+                    summaries[idx]=fut.result()
+                except Exception:
+                    summaries[idx]=''
+
+    for txt in summaries:
+        if not txt:
+            continue
+        p=doc.add_paragraph()
+        p.alignment=WD_ALIGN_PARAGRAPH.JUSTIFY
+        p.paragraph_format.space_after=Pt(6)
+        p.paragraph_format.line_spacing=1.0
+        p.add_run(_v87_safe_tr(txt).rstrip(' .;')+' (STB).')
+
+    p=doc.add_paragraph()
+    p.paragraph_format.space_before=Pt(8)
+    p.add_run('Arz olunur.')
+
+    bio=BytesIO()
+    doc.save(bio)
+    bio.seek(0)
+    return bio.getvalue()
+
+def make_important_basket_docx_v90(basket_df):
+    """
+    V90 ÖGN motoru. Eski Word baytlarını/fonksiyonlarını kullanmaz.
+    Her haber için gerçek metni paralel alır, sırayı korur.
+    """
+    doc=Document(); sec=doc.sections[0]
+    sec.top_margin=Cm(2); sec.bottom_margin=Cm(2)
+    sec.left_margin=Cm(2.5); sec.right_margin=Cm(2.5)
+    normal=doc.styles['Normal']
+    normal.font.name='Times New Roman'; normal.font.size=Pt(12)
+    normal._element.rPr.rFonts.set(qn('w:eastAsia'),'Times New Roman')
+
+    now=datetime.now().astimezone()
+    p=doc.add_paragraph(); p.alignment=WD_ALIGN_PARAGRAPH.RIGHT
+    p.add_run(now.strftime('%d/%m/%Y')).bold=True
+    p=doc.add_paragraph()
+    p.add_run('Konu: ').bold=True
+    p.add_run('STB Temsilciliği Önemli Gelişmeler Notu')
+
+    records=[] if basket_df is None else basket_df.to_dict('records')
+    if not records:
+        doc.add_paragraph('Kayıtlı önemli gelişme bulunmamaktadır.')
+    else:
+        def process(item):
+            title=_v87_safe_tr(item.get('title',''))
+            source=_v87_safe_tr(item.get('source',''))
+            fallback=_v87_safe_tr(item.get('summary',''))
+            url=str(item.get('url','') or '')
+            news_time=_v87_safe_tr(item.get('news_time',''))
+
+            detail=_v90_fetch_detail(title,source,url,fallback,news_time)
+            body=_v87_safe_tr((detail or {}).get('text','') or fallback)
+            txt=_v90_item_summary(title,source,body,fallback)
+
+            # Asla eski başlık-çıktı davranışına dönme.
+            if not txt:
+                # fallback gövdesinden tek resmî cümle oluşturmayı tekrar dene.
+                txt=_v90_item_summary(title,source,fallback,fallback)
+            if not txt:
+                # Son çare: başlığı değil, açıklayıcı bir kurum cümlesi oluştur.
+                clean_title=_v90_clean_title(title,source)
+                txt=f'{clean_title} konusuna ilişkin gelişme açık kaynaklarda yer almıştır.'
+                txt=_v90_formalize(txt)
+            return txt
+
+        summaries=['']*len(records)
+        workers=min(8,max(1,len(records)))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
+            fmap={ex.submit(process,r):i for i,r in enumerate(records)}
+            for fut in concurrent.futures.as_completed(fmap):
+                idx=fmap[fut]
+                try:
+                    summaries[idx]=fut.result()
+                except Exception:
+                    summaries[idx]=''
+
+        for rr,txt in zip(records,summaries):
+            if not txt:
+                continue
+            p=doc.add_paragraph()
+            p.alignment=WD_ALIGN_PARAGRAPH.JUSTIFY
+            p.paragraph_format.space_after=Pt(6)
+            p.paragraph_format.line_spacing=1.0
+            p.add_run(_v87_safe_tr(txt).rstrip(' .;')+' (STB).')
+
+    p=doc.add_paragraph()
+    p.paragraph_format.space_before=Pt(8)
+    p.add_run('Arz olunur.')
+
+    bio=BytesIO(); doc.save(bio); bio.seek(0)
+    return bio.getvalue()
+def make_important_basket_docx(basket_df):
+    """
+    V88:
+    - article fetches run in parallel instead of one-by-one,
+    - results cached for 1 hour,
+    - output order remains basket order,
+    - no item is silently dropped.
+    """
+    doc=Document(); sec=doc.sections[0]
+    sec.top_margin=Cm(2); sec.bottom_margin=Cm(2); sec.left_margin=Cm(2.5); sec.right_margin=Cm(2.5)
+    normal=doc.styles['Normal']
+    normal.font.name='Times New Roman'; normal.font.size=Pt(12)
+    normal._element.rPr.rFonts.set(qn('w:eastAsia'),'Times New Roman')
+
+    now=datetime.now().astimezone()
+    p=doc.add_paragraph(); p.alignment=WD_ALIGN_PARAGRAPH.RIGHT
+    p.add_run(now.strftime('%d/%m/%Y')).bold=True
+    p=doc.add_paragraph(); p.add_run('Konu: ').bold=True
+    p.add_run('STB Temsilciliği Önemli Gelişmeler Notu')
+
+    if basket_df is None or basket_df.empty:
+        doc.add_paragraph('Kayıtlı önemli gelişme bulunmamaktadır.')
+    else:
+        records=basket_df.to_dict('records')
+
+        def fetch_one(item):
+            title=_v87_safe_tr(item.get('title',''))
+            source=_v87_safe_tr(item.get('source',''))
+            fallback=_v87_safe_tr(item.get('summary',''))
+            url=str(item.get('url','') or '')
+            news_time=_v87_safe_tr(item.get('news_time',''))
+
+            # If saved summary is already substantial, don't delay Word just to fetch again.
+            # Full article is requested mainly for short/snippet-like summaries.
+            detail={}
+            if len(fallback)<380:
+                detail=_v88_cached_article_detail(title,source,url,fallback,news_time)
+            body=_v87_safe_tr((detail or {}).get('text','') or fallback)
+            return _v88_summary(title,source,body,fallback)
+
+        summaries=['']*len(records)
+        max_workers=min(6,max(1,len(records)))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as ex:
+            futmap={ex.submit(fetch_one,r):idx for idx,r in enumerate(records)}
+            for fut in concurrent.futures.as_completed(futmap):
+                idx=futmap[fut]
+                try:
+                    summaries[idx]=fut.result()
+                except Exception:
+                    rr=records[idx]
+                    summaries[idx]=_v88_summary(
+                        rr.get('title',''),rr.get('source',''),
+                        rr.get('summary',''),rr.get('summary','')
+                    )
+
+        for rr,txt in zip(records,summaries):
+            if not txt:
+                txt=_v88_formal(_v87_safe_tr(rr.get('summary','') or rr.get('title','')))
+            p=doc.add_paragraph()
+            p.alignment=WD_ALIGN_PARAGRAPH.JUSTIFY
+            p.paragraph_format.space_after=Pt(5)
+            p.paragraph_format.line_spacing=1.0
+            p.add_run(_v87_safe_tr(txt).rstrip(' .;')+' (STB).')
+
+    p=doc.add_paragraph(); p.paragraph_format.space_before=Pt(8)
+    p.add_run('Arz olunur.')
+    bio=BytesIO(); doc.save(bio); bio.seek(0)
+    return bio.getvalue()
+
+# -----------------------------
+# GÜNLÜK DURUM ÖZETİ — V32 EK MODÜL
+# V31 çekirdek tarama / risk / alarm / bilgi notu fonksiyonlarına dokunmaz.
+# -----------------------------
+def _daily_summary_stats(df):
+    x=df.copy()
+    if x.empty:
+        return {}
+
+    neg=int((x['Duygu']=='Negatif').sum()) if 'Duygu' in x else 0
+    high=int((x['Risk_Durumu']=='Yüksek Risk').sum()) if 'Risk_Durumu' in x else 0
+
+    osb=0
+    if 'Başlık' in x:
+        for _,r in x.iterrows():
+            if is_osb_fire(r.get('Başlık',''),r.get('İçerik_Özeti','')):
+                osb+=1
+
+    def count_terms(terms):
+        c=0
+        for _,r in x.iterrows():
+            text=norm(f"{r.get('Başlık','')} {r.get('İçerik_Özeti','')} {r.get('Kategori','')}")
+            if any(t in text for t in terms):
+                c+=1
+        return c
+
+    investment=count_terms(['yatırım','yatirim','fabrika aç','tesis aç','kapasite art','yeni tesis','teşvik','tesvik'])
+    defence=count_terms(['savunma','aselsan','tusaş','tusas','roketsan','baykar','havelsan','saha expo','iha','siha','füze','fuze'])
+    cyber=count_terms(['siber','veri sızınt','veri sizint','fidye yazılım','fidye yazilim','hack','siber saldır','siber saldir'])
+
+    return {
+        'total':len(x),
+        'negative':neg,
+        'high_risk':high,
+        'osb_fire':osb,
+        'investment':investment,
+        'defence':defence,
+        'cyber':cyber
+    }
+
+
+def _daily_top_events(df, n=5):
+    """
+    V62: Sabah ilk bakılacak gelişmeleri seçer.
+    Negatiflik tek başına belirleyici değildir. Stratejik sanayi-teknoloji ilgisi,
+    ekonomik/kurumsal etki, resmî teyit, çoklu kaynak, yenilik ve risk birlikte puanlanır.
+    """
+    if df.empty:
+        return df.copy()
+
+    x=df.copy()
+    x['Tarih_dt']=pd.to_datetime(x.get('Tarih_dt'),utc=True,errors='coerce')
+    strategic_terms=[
+        'yatırım','üretim','ihracat','ithalat','kapasite','fabrika','tesis','osb',
+        'savunma','tusaş','aselsan','roketsan','havelsan','baykar','kaan',
+        'yapay zeka','yapay zekâ','çip','yarı iletken','siber','teknoloji',
+        'arge','ar-ge','tübitak','kosgeb','patent','togg','otomotiv','enerji',
+        'kritik mineral','uzay','uydu','teknofest','sanayi üretimi'
+    ]
+    high_value_terms=[
+        'milyar','milyon','rekor','anlaşma','sözleşme','yatırım','teşvik',
+        'ihracat','üretim','kapasite','lansman','ilk kez','yeni tesis',
+        'stratejik','program','eylem planı','resmi gazete','resmî gazete'
+    ]
+    low_relevance_terms=[
+        'trafik kazası','magazin','spor','dualarla anıldı','hayatını kaybeden muhabir'
+    ]
+
+    def importance(r):
+        text=norm(f"{r.get('Başlık','')} {r.get('İçerik_Özeti','')} {r.get('Kategori','')}")
+        score=0
+
+        # Sanayi-teknoloji alanına doğrudan ilgi en güçlü ölçüt.
+        score += min(sum(1 for k in strategic_terms if k in text)*8,40)
+        score += min(sum(1 for k in high_value_terms if k in text)*5,20)
+
+        cat=norm(r.get('Kategori',''))
+        if any(k in cat for k in ['savunma','sanayi','üretim','dijital','yapay zeka','yapay zekâ',
+                                  'otomotiv','uzay','enerji','teknoloji']):
+            score+=18
+
+        # Risk önemlidir ama negatiflik listeyi ele geçirmez.
+        risk=int(r.get('Risk_Skoru',0) or 0)
+        score+=min(risk//4,20)
+        if r.get('Risk_Durumu')=='Yüksek Risk':
+            score+=12
+        if r.get('Duygu')=='Negatif':
+            score+=5
+
+        if critical_industrial_incident(r.get('Başlık',''),r.get('İçerik_Özeti','')):
+            score+=25
+
+        try:
+            score+=min(int(r.get('Olay_Kaynak_Sayisi',0) or 0)*5,20)
+        except Exception:
+            pass
+
+        verification=norm(r.get('Doğrulama',''))
+        if 'resmi' in verification or 'resmî' in verification or 'birincil' in verification:
+            score+=22
+        elif 'çoklu kaynak' in verification or 'coklu kaynak' in verification:
+            score+=14
+
+        if any(k in text for k in low_relevance_terms):
+            score-=30
+
+        return score
+
+    x['_Önem']=x.apply(importance,axis=1)
+
+    if 'Olay_ID' in x.columns:
+        x=x.sort_values(['_Önem','Tarih_dt'],ascending=[False,False],na_position='last')
+        x=x.drop_duplicates(subset=['Olay_ID'],keep='first')
+    else:
+        x=x.sort_values(['_Önem','Tarih_dt'],ascending=[False,False],na_position='last')
+
+    return x.head(n).drop(columns=['_Önem'],errors='ignore')
+
+
+def _daily_summary_text(df):
+    stats=_daily_summary_stats(df)
+    top=_daily_top_events(df,5)
+    if not stats:
+        return '',top,stats
+
+    intro=(
+        f"Sanayi ve teknoloji alanında gerçekleştirilen güncel açık kaynak taramasında toplam {stats['total']} haber tespit edilmiştir. "
+        f"Bunların {stats['negative']} adedi negatif içerik, {stats['high_risk']} adedi yüksek riskli gelişme olarak sınıflandırılmıştır. "
+        f"Tarama kapsamında {stats['osb_fire']} organize sanayi bölgesi yangını, {stats['investment']} yatırım/kapasite gelişmesi, "
+        f"{stats['defence']} savunma sanayii bağlantılı içerik ve {stats['cyber']} siber güvenlik bağlantılı içerik belirlenmiştir."
+    )
+
+    paras=[intro]
+    if not top.empty:
+        paras.append(
+            "Günün genel görünümünde öne çıkan gelişmeler; güncellik, risk düzeyi, kaynak teyidi ve sanayi-teknoloji alanına muhtemel etkileri "
+            "birlikte dikkate alınarak aşağıda özetlenmiştir."
+        )
+        for i,(_,r) in enumerate(top.iterrows(),1):
+            title=_clean_note_text(r.get('Başlık',''))
+            source=_clean_note_text(r.get('Kaynak','Açık Kaynak'))
+            when=_clean_note_text(r.get('Tarih',''))
+            content=_clean_note_text(r.get('İçerik_Özeti',''))
+
+            # Başlığı tekrar etmek yerine içerikten anlamlı cümleleri seç.
+            sents=_detail_sentences(content,title)
+            useful=[]
+            seen=set()
+            for s in sents:
+                s=_clean_note_text(s)
+                key=norm(s)
+                if not s or len(s)<35 or key in seen:
+                    continue
+                seen.add(key)
+                useful.append(s)
+                if len(useful)>=4:
+                    break
+
+            detail=_join_sentences_naturally(useful) if useful else content[:700].strip()
+            risk=int(r.get('Risk_Skoru',0) or 0)
+            status=_clean_note_text(r.get('Risk_Durumu',''))
+            category=_clean_note_text(r.get('Kategori',''))
+
+            p=f"{i}. {when} tarihinde {source} kaynaklı gelişmede, {detail}" if detail else f"{i}. {when} tarihinde {source} kaynaklı “{title}” başlıklı gelişme öne çıkmıştır."
+            if p and p[-1] not in '.!?':
+                p+='.'
+            if category:
+                p+=f" Gelişme sistemde {category} başlığı altında izlenmektedir."
+            if risk:
+                p+=f" Risk puanı {risk}/100"
+                if status:
+                    p+=f" ve risk durumu {status}"
+                p+=" olarak değerlendirilmiştir."
+            paras.append(p)
+
+    # Günlük tabloya dair kısa analitik kapanış.
+    emphasis=[]
+    if stats['high_risk']:
+        emphasis.append(f"{stats['high_risk']} yüksek riskli gelişmenin")
+    if stats['negative']:
+        emphasis.append(f"{stats['negative']} negatif içeriğin")
+    if stats['investment']:
+        emphasis.append(f"{stats['investment']} yatırım/kapasite gelişmesinin")
+    if stats['defence']:
+        emphasis.append(f"{stats['defence']} savunma sanayii gelişmesinin")
+    if stats['cyber']:
+        emphasis.append(f"{stats['cyber']} siber güvenlik gelişmesinin")
+
+    if emphasis:
+        focus=', '.join(emphasis[:-1]) + ((' ve '+emphasis[-1]) if len(emphasis)>1 else emphasis[0])
+        conclusion=(
+            f"Günlük görünümde özellikle {focus} takip edilmesi gereken başlıklar arasında bulunduğu değerlendirilmektedir. "
+            "Yeni resmî açıklamalar, üretim ve tedarik zincirine olası etkiler ile farklı açık kaynaklardan gelecek teyitlerin izlenmesi önem taşımaktadır."
+        )
+    else:
+        conclusion=(
+            "Günlük görünümde belirgin bir yüksek risk yoğunlaşması görülmemekle birlikte, yeni resmî açıklamalar ile üretim, yatırım, "
+            "tedarik zinciri ve teknoloji alanındaki gelişmelerin izlenmesinin sürdürülmesi önem taşımaktadır."
+        )
+    paras.append(conclusion)
+    return '\n\n'.join(paras),top,stats
+
+
+def make_daily_summary_docx(df):
+    text,top,stats=_daily_summary_text(df)
+
+    doc=Document()
+    sec=doc.sections[0]
+    sec.top_margin=Cm(2); sec.bottom_margin=Cm(2)
+    sec.left_margin=Cm(2.5); sec.right_margin=Cm(2.5)
+    doc.styles['Normal'].font.name='Times New Roman'
+    doc.styles['Normal'].font.size=Pt(11)
+
+    p=doc.add_paragraph()
+    p.alignment=WD_ALIGN_PARAGRAPH.CENTER
+    r=p.add_run('GÜNLÜK SANAYİ VE TEKNOLOJİ DURUM ÖZETİ')
+    r.bold=True; r.font.size=Pt(14)
+
+    p=doc.add_paragraph()
+    p.alignment=WD_ALIGN_PARAGRAPH.CENTER
+    p.add_run(datetime.now().astimezone().strftime('%d.%m.%Y %H:%M'))
+
+    for block in text.split('\n\n'):
+        bp=doc.add_paragraph()
+        bp.alignment=WD_ALIGN_PARAGRAPH.JUSTIFY
+        bp.paragraph_format.first_line_indent=Cm(1.25)
+        bp.paragraph_format.line_spacing=1.15
+        bp.paragraph_format.space_after=Pt(8)
+        bp.add_run(block)
+
+    if not top.empty:
+        hp=doc.add_paragraph()
+        rr=hp.add_run('ÖNE ÇIKAN GELİŞMELERİN KAYNAKLARI')
+        rr.bold=True
+        for i,(_,row) in enumerate(top.iterrows(),1):
+            p=doc.add_paragraph()
+            p.add_run(f"{i}. {_clean_note_text(row.get('Kaynak','Açık Kaynak'))} — {_clean_note_text(row.get('Başlık',''))}")
+            if row.get('URL'):
+                p.add_run(' — ')
+                _word_hyperlink(p,row['URL'],'Haber linki')
+
+    bio=BytesIO()
+    doc.save(bio); bio.seek(0)
+    return bio.getvalue()
+
+# -----------------------------
+# DOCX — AKT / Açık Kaynak Taraması formatı
+# Tarama motoru korunur. Yalnızca seçilen haberlerin rapora aktarılması değiştirilmiştir.
+# -----------------------------
 @st.cache_data(ttl=1800, show_spinner=False)
 def article_detail(row):
+    """
+    Seçilen kayıt için gerçek yayıncı URL'sini ve gerçek haber sayfasını bulur.
+    Google News'in kodlanmış RSS bağlantıları doğrudan yayıncı adresi değilse
+    sırasıyla decoder, HTTP redirect, GDELT ve DuckDuckGo üzerinden çözülür.
+    """
     if isinstance(row, str):
         row = {"URL": row}
 
@@ -3072,6 +4896,7 @@ def article_detail(row):
         if not title:
             return ""
 
+        # Önce GDELT: sonuçlar doğrudan yayıncı URL'si verir.
         try:
             q = '"' + title.replace('"', " ")[:240] + '"'
             r = requests.get(
@@ -3094,6 +4919,7 @@ def article_detail(row):
                     u = art.get("url") or ""
                     t = norm(art.get("title") or "")
                     if valid_article_url(u):
+                        # Exact/near exact başlık eşleşmesi öncelikli.
                         if target and (target in t or t in target):
                             return u
                 for art in arts:
@@ -3103,6 +4929,7 @@ def article_detail(row):
         except Exception:
             pass
 
+        # Son fallback: DuckDuckGo doğrudan yayıncı URL'si döndürebilir.
         try:
             from ddgs import DDGS
         except Exception:
@@ -3130,6 +4957,7 @@ def article_detail(row):
 
         return ""
 
+    # 1) Google News bağlantısını çöz.
     real_url = ""
     if is_google(original_url):
         real_url = decode_with_package(original_url)
@@ -3142,11 +4970,13 @@ def article_detail(row):
     else:
         real_url = decode_with_search(fallback_title)
 
+    # 2) Gerçek sayfayı indir.
     rr, soup = fetch_page(real_url) if real_url else (None, None)
 
     if rr and soup:
         out["canonical"] = real_url or rr.url
 
+        # Canonical
         can = soup.find("link", rel=lambda x: x and "canonical" in str(x).lower())
         if can and can.get("href"):
             out["canonical"] = requests.compat.urljoin(rr.url, can["href"])
@@ -3155,6 +4985,7 @@ def article_detail(row):
             if ogurl and ogurl.get("content"):
                 out["canonical"] = requests.compat.urljoin(rr.url, ogurl["content"])
 
+        # Başlık
         for attrs in (
             {"property": "og:title"},
             {"name": "twitter:title"},
@@ -3166,6 +4997,7 @@ def article_detail(row):
         if not out["title"] and soup.title:
             out["title"] = soup.title.get_text(" ", strip=True)
 
+        # Yayıncı
         for attrs in (
             {"property": "og:site_name"},
             {"name": "application-name"},
@@ -3175,6 +5007,7 @@ def article_detail(row):
                 out["source"] = t["content"].strip()
                 break
 
+        # Tarih
         for attrs in (
             {"property": "article:published_time"},
             {"itemprop": "datePublished"},
@@ -3274,6 +5107,7 @@ def article_detail(row):
                 if value:
                     images.append(requests.compat.urljoin(rr.url, value))
 
+        # Temizle
         seen=set()
         out["images"]=[]
         for u in images:
@@ -3292,10 +5126,15 @@ def article_detail(row):
             key=norm(body[:700])
             if key in seen_t: continue
             seen_t.add(key); texts.append(body)
+        # V92: Birden fazla article/main/content bloğunu BİRLEŞTİRME.
+        # Aynı sayfadaki önerilen haberler ve tekrar blokları ÖGN'ye karışmasın.
+        # Tek, en kapsamlı gövdeyi kullan.
         texts.sort(key=len, reverse=True)
         if texts:
-            out["text"]=" ".join(texts[:4])[:18000]
+            out["text"]=texts[0][:18000]
 
+    # 3) Sayfa erişilemediyse bile RSS kaydını çöp etmiyoruz.
+    # Generic Google Haberler adını asla gerçek yayıncı olarak rapora yazma.
     generic = {"google haberler","google news","google","google news rss","rss"}
     if norm(out["source"]) in generic:
         if publisher_name and norm(publisher_name) not in generic:
@@ -3305,12 +5144,14 @@ def article_detail(row):
         else:
             out["source"] = "Açık Kaynak"
 
+    # Başlık generic ise snippet/ekran başlığı kullan.
     if norm(out["title"]) in generic or not out["title"]:
         out["title"] = fallback_title or fallback_snippet
 
     if not out["text"] or len(out["text"]) < 250:
         out["text"] = fallback_snippet or out["title"]
 
+    # Eğer gerçek URL çözüldüyse onu kullan; çözülmediyse Google News linkini rapora koyma.
     if not valid_article_url(out["canonical"]):
         out["canonical"] = publisher_url or original_url
 
@@ -3343,6 +5184,7 @@ def _download_report_image(url):
     except Exception:
         return None
 
+
 def _word_hyperlink(paragraph, url, label):
     if not url:
         paragraph.add_run(label)
@@ -3373,6 +5215,99 @@ def _word_hyperlink(paragraph, url, label):
         paragraph._p.append(hyperlink)
     except Exception:
         paragraph.add_run(url)
+
+
+# -----------------------------
+# V43 — TAM HABER METNİNE GÖRE NEGATİF/RİSK ANALİZİ
+# -----------------------------
+def _deep_negative_reclassify(rows, max_workers=14):
+    """
+    Her haberi mümkünse gerçek haber sayfasındaki tam metinle yeniden sınıflandırır.
+    Sayfaya erişilemezse mevcut başlık + kısa içerik fallback olur.
+
+    Yalnızca negatif/risk alanları güncellenir; kategori, olay kümeleri ve diğer
+    çalışan modüller korunur.
+    """
+    if not rows:
+        return rows, {'tam_metin':0,'kisa_icerik':0,'hata':0}
+
+    results=[None]*len(rows)
+    stats={'tam_metin':0,'kisa_icerik':0,'hata':0}
+
+    def one(idx,row):
+        try:
+            detail=article_detail(row)
+            full_text=re.sub(r'\s+',' ',str(detail.get('text') or '')).strip()
+            snippet=re.sub(r'\s+',' ',str(row.get('İçerik_Özeti') or '')).strip()
+
+            # article_detail erişemezse fallback olarak snippet döndürebilir.
+            is_full=bool(full_text) and len(full_text)>=max(450,len(snippet)+180)
+            analysis_text=full_text if is_full else (snippet or full_text or row.get('Başlık',''))
+
+            sentiment,score,status,neg,risk,_cat,reasons=classify(
+                row.get('Başlık',''),
+                analysis_text,
+                row.get('Domain','')
+            )
+
+            return idx,{
+                'Duygu':sentiment,
+                'Skor':score,
+                'Risk_Skoru':score,
+                'Risk_Durumu':status,
+                'Risk_Gerekçesi':'; '.join(reasons),
+                'Negatif_Sinyaller':neg,
+                'Risk_Sinyalleri':risk,
+                'Negatif_Analiz_Kapsamı':'Tam haber metni' if is_full else 'Başlık + kısa içerik',
+                '_is_full':is_full
+            }
+        except Exception:
+            sentiment,score,status,neg,risk,_cat,reasons=classify(
+                row.get('Başlık',''),
+                row.get('İçerik_Özeti',''),
+                row.get('Domain','')
+            )
+            return idx,{
+                'Duygu':sentiment,
+                'Skor':score,
+                'Risk_Skoru':score,
+                'Risk_Durumu':status,
+                'Risk_Gerekçesi':'; '.join(reasons),
+                'Negatif_Sinyaller':neg,
+                'Risk_Sinyalleri':risk,
+                'Negatif_Analiz_Kapsamı':'Başlık + kısa içerik',
+                '_is_full':False,
+                '_error':True
+            }
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(max_workers,len(rows))) as ex:
+        futures=[ex.submit(one,i,r.copy()) for i,r in enumerate(rows)]
+        for fut in concurrent.futures.as_completed(futures):
+            try:
+                idx,data=fut.result()
+                results[idx]=data
+            except Exception:
+                pass
+
+    out=[]
+    for i,row in enumerate(rows):
+        r=row.copy()
+        data=results[i]
+        if data:
+            if data.pop('_is_full',False):
+                stats['tam_metin']+=1
+            else:
+                stats['kisa_icerik']+=1
+            if data.pop('_error',False):
+                stats['hata']+=1
+            r.update(data)
+        else:
+            stats['kisa_icerik']+=1
+            r['Negatif_Analiz_Kapsamı']='Başlık + kısa içerik'
+        out.append(r)
+
+    return out,stats
+
 
 def _real_source(row, detail, real_url):
     generic = {"google haberler", "google news", "google", "google news rss", "rss"}
@@ -3450,17 +5385,27 @@ def _akt_sentence_score(s):
     return score
 
 def _akt_formal_summary(title, body, max_sentences=10, max_chars=2800):
+    """
+    Haber başından sonuna okunur:
+    - tekrar/menü temizlenir,
+    - başlangıçtan ilk önemli bilgiler,
+    - ortadaki en güçlü veri/açıklamalar,
+    - sondaki sonuç/son durum birlikte seçilir,
+    - orijinal haber sırası korunur.
+    """
     sentences=_akt_clean_sentences(title,body)
     if not sentences:
         fallback=re.sub(r'\s+',' ',str(body or title or '')).strip()
         return fallback[:max_chars].rstrip(' .;')
 
     n=len(sentences)
-    chosen=set(range(min(2,n)))
+    chosen=set(range(min(2,n)))  # başlangıç
 
+    # son durum / sonuç
     for i in range(max(0,n-2),n):
         chosen.add(i)
 
+    # gövdedeki en vurucu sayısal/kurumsal bilgiler
     ranked=sorted(
         [(i,_akt_sentence_score(s)) for i,s in enumerate(sentences)],
         key=lambda z:(z[1],-z[0]),
@@ -3487,6 +5432,7 @@ def _akt_formal_summary(title, body, max_sentences=10, max_chars=2800):
     if not clauses:
         clauses=[sentences[0].strip().rstrip(' .;:')]
 
+    # Örnekteki resmî AKT anlatımına yakın tek akış.
     text='; '.join(clauses)
     if text:
         first=text[0]
@@ -3494,7 +5440,19 @@ def _akt_formal_summary(title, body, max_sentences=10, max_chars=2800):
             text=first.lower()+text[1:]
     return text
 
+def _expanded_report_text(title, body):
+    # Geriye dönük uyumluluk: AKT artık ham tam metni değil, resmî ve tekrarsız özeti kullanır.
+    return _akt_formal_summary(title,body)
+
+
+# -----------------------------
+# V66 — KURUMSAL RESMÎ DİL NORMALİZASYONU
+# -----------------------------
 def _v66_formalize_sentence_endings(text):
+    """
+    V67: Önemli Gelişmeler ve Bilgi Notunda cümle sonlarındaki haber dili
+    (-yor/-dı) yerine kurumsal resmî dil (-maktadır/-miştir) kullanılır.
+    """
     t=re.sub(r'\s+',' ',str(text or '')).strip()
     if not t:
         return t
@@ -3524,7 +5482,7 @@ def _v66_formalize_sentence_endings(text):
     ]
     past=[
         ('yapıldı','yapılmıştır'),('gerçekleştirildi','gerçekleştirilmiştir'),
-        ('açıklandı','açıklanmıştır'),('duyuruldu','duyurulmıştır'),
+        ('açıklandı','açıklanmıştır'),('duyuruldu','duyurulmuştur'),
         ('yayımlandı','yayımlanmıştır'),('yayınlandı','yayımlanmıştır'),
         ('başladı','başlamıştır'),('tamamlandı','tamamlanmıştır'),
         ('sona erdi','sona ermiştir'),('arttı','artmıştır'),('azaldı','azalmıştır'),
@@ -3556,6 +5514,34 @@ def _v66_formalize_sentence_endings(text):
                 break
         out.append(core.rstrip(' .;:')+punct)
     return ' '.join(out)
+
+
+def _v66_limit_important_paragraph(text,max_chars=520,max_sentences=3):
+    """
+    Önemli gelişmeler notunda her gelişmeyi Word üzerinde yaklaşık dört satırı
+    aşmayacak yoğunlukta tutar. Öncelik ilk bilgi taşıyan cümlelere verilir.
+    """
+    clean=_v66_formalize_sentence_endings(text)
+    sents=_sentence_chunks(clean)
+    chosen=[]
+    total=0
+    for s in sents:
+        s=s.strip()
+        if not s: continue
+        if total+len(s)>max_chars and chosen:
+            break
+        chosen.append(s)
+        total+=len(s)+1
+        if len(chosen)>=max_sentences:
+            break
+    result=' '.join(chosen).strip()
+    if len(result)>max_chars:
+        cut=result[:max_chars].rsplit(' ',1)[0].rstrip(' ,;:')
+        # Kurumsal kapanış; kesilmiş yarım yüklem bırakma.
+        if cut and cut[-1] not in '.!?':
+            cut+='.'
+        result=cut
+    return result
 
 def _akt_topic_labels(rows):
     joined=norm(' '.join(
@@ -3607,7 +5593,13 @@ def _akt_findings_intro(rows):
         "içeriğin detaylı özeti ve görseli aşağıda yer almaktadır."
     )
 
+
 def _v67_akt_reported_content(text):
+    """
+    AKT'de haber içeriğini dolaylı anlatı biçimine çevirir:
+    açıklıyor -> açıkladığı, duyurdu -> duyurduğu, belirtiyor -> belirttiği vb.
+    Son kapanış tek kez 'hususları ifade edilmektedir.' olur.
+    """
     t=re.sub(r'\s+',' ',str(text or '')).strip().rstrip(' .;:')
     if not t: return t
 
@@ -3645,10 +5637,12 @@ def _v67_akt_reported_content(text):
         low=c.lower()
         changed=False
         for old,newv in sorted(conv,key=lambda x:len(x[0]),reverse=True):
+            # Haber özetindeki yüklem çoğunlukla cümlecik sonundadır.
             if low.endswith(old):
                 c=c[:-len(old)]+newv
                 changed=True
                 break
+        # Nokta ile birleşmiş kısa cümlelerde de son yüklemi dönüştür.
         if not changed:
             for old,newv in sorted(conv,key=lambda x:len(x[0]),reverse=True):
                 c=re.sub(r'\b'+re.escape(old)+r'(?=\s*$)',newv,c,flags=re.I)
@@ -3656,6 +5650,10 @@ def _v67_akt_reported_content(text):
     return '; '.join(out)
 
 def make_docx(rows):
+    """
+    Kullanıcının ilettiği STB AKT örneğine yakın resmî format:
+    Başlık -> görev alanı -> tarih -> bulgular -> numaralı haber/özet/link -> görsel -> Arz olunur.
+    """
     doc=Document()
     section=doc.sections[0]
     section.top_margin=Cm(2.0)
@@ -3744,6 +5742,7 @@ def make_docx(rows):
             ip.paragraph_format.space_after=Pt(10)
             ip.add_run().add_picture(image_stream,width=Cm(14.5))
         elif detail.get("images"):
+            # Örnekte görsel esas; indirilemediyse raporu gereksiz teknik metinle doldurma.
             lp=doc.add_paragraph()
             lp.alignment=WD_ALIGN_PARAGRAPH.CENTER
             lp.paragraph_format.space_after=Pt(8)
@@ -3758,6 +5757,10 @@ def make_docx(rows):
     bio.seek(0)
     return bio.getvalue()
 
+
+# -----------------------------
+# V63 — İŞ AKIŞI HAFIZASI / İKİNCİ GÖZ / YARINA TAKİP
+# -----------------------------
 def _v63_mark_notes(rows):
     if rows is None or len(rows)==0 or not _init_history_db():
         return
@@ -3778,6 +5781,10 @@ def _v73_invalidate_status_cache():
     st.session_state.pop('_v73_status_sets_cache',None)
 
 def _v63_status_sets():
+    """
+    V73 performans: aynı Streamlit rerun'ında/her bölümde SQLite'ı tekrar tekrar okumaz.
+    Sepet durumları session cache'den gelir; sepet değiştiğinde cache temizlenir.
+    """
     cached=st.session_state.get('_v73_status_sets_cache')
     if cached is not None:
         return cached
@@ -3812,6 +5819,7 @@ def _v63_add_status_badges(df):
     return out
 
 def _v63_missed_candidates(df,limit=12):
+    """Yüksek değerli fakat iki sepette de olmayan olayları ikinci göz olarak gösterir."""
     if df is None or df.empty: return pd.DataFrame()
     value=_v52_event_value_table(df,max(30,limit*2))
     if value.empty: return value
@@ -3821,13 +5829,76 @@ def _v63_missed_candidates(df,limit=12):
         url=str(v.get('URL','') or '').strip()
         key=url or title_key(str(v.get('Gelişme','')))
         if key in imp or key in akt: continue
+        # İkinci göz eşiği: güçlü değer skoru veya belirgin risk.
         if int(v.get('Değer_Skoru',0) or 0)<55 and int(v.get('Risk',0) or 0)<60:
             continue
         rows.append(v.to_dict())
         if len(rows)>=limit: break
     return pd.DataFrame(rows)
 
+def _v63_tomorrow_candidates(df,limit=15):
+    """Sonuçlanmamış, stratejik/riskli ve takip değeri olan olayları yarın için önerir."""
+    if df is None or df.empty: return pd.DataFrame()
+    life=_v58_event_lifecycle_table(df,40)
+    if life.empty: return pd.DataFrame()
+    out=life[life['Aşama']!='✅ Sonuçlandı'].copy()
+    out=out[(pd.to_numeric(out['Risk_Skoru'],errors='coerce').fillna(0)>=35) |
+            (pd.to_numeric(out['Kaynak_Sayısı'],errors='coerce').fillna(0)>=2)]
+    if out.empty: return out
+    out['Takip_Gerekçesi']=out.apply(
+        lambda r:(
+            'Olay gelişiyor; yeni açıklama/sonuç bekleniyor.'
+            if 'Gelişiyor' in str(r.get('Aşama','')) else
+            'Teyit edildi; uygulama/sonuç etkisi izlenmeli.'
+            if 'Teyit' in str(r.get('Aşama','')) else
+            'İlk sinyal; ikinci kaynak veya resmî teyit izlenmeli.'
+        ),axis=1
+    )
+    return out.head(limit)
+
+def _v63_add_tomorrow(rows):
+    if rows is None or len(rows)==0 or not _init_history_db(): return 0
+    added=0
+    try:
+        with _history_connect() as conn:
+            for row in rows:
+                title=str(row.get('Başlık','') or '').strip()
+                if not title: continue
+                cur=conn.execute("""
+                    INSERT OR IGNORE INTO tomorrow_followup(
+                        added_at,title,source,url,category,reason
+                    ) VALUES(?,?,?,?,?,?)
+                """,(
+                    datetime.now().astimezone().isoformat(),title,
+                    str(row.get('Kaynak','') or ''),str(row.get('URL','') or ''),
+                    str(row.get('Kategori','') or ''),str(row.get('Takip_Gerekçesi','') or '')
+                ))
+                added+=int(bool(cur.rowcount))
+            conn.commit()
+    except Exception: pass
+    return added
+
+def _v63_load_tomorrow():
+    if not _init_history_db(): return pd.DataFrame()
+    try:
+        with _history_connect() as conn:
+            return pd.read_sql_query("SELECT * FROM tomorrow_followup ORDER BY added_at DESC",conn)
+    except Exception:
+        return pd.DataFrame()
+
+
+
+# -----------------------------
+# V68 — ANALİST KOMUTA MERKEZİ / SONRAKİ EN İYİ İŞLEM
+# -----------------------------
 def _v68_analyst_command_center(df,limit=8):
+    """
+    V69 Analist Komuta Merkezi:
+    - 09:00–17:30 Bilgi Notu: veri/istatistik, resmî açıklama, ürün/teknoloji tanıtımı vb.
+    - 09:00–17:30 AKT: negatif, eleştirel, yapısal eleştiri, propaganda/dezenformasyon niteliği taşıyan olumsuz içerikler.
+    - 17:30 sonrası: yalnız kritik/acil gelişmeler.
+    - Sunum: resmî veri/istatistik, resmî açıklama veya resmî teyitli bilgi.
+    """
     cols=['Öncelik','Önerilen_İşlem','Tarih','Başlık','Neden','Durum','Değer_Skoru','Risk_Skoru','URL']
     if df is None or df.empty:
         return pd.DataFrame(columns=cols), 'Veri Yok', ''
@@ -3903,6 +5974,7 @@ def _v68_analyst_command_center(df,limit=8):
 
         proposals=[]
 
+        # 17:30 sonrası: yalnız kritik gelişme.
         if hour >= 17.5 or hour < 9:
             if critical or risk>=75 or score>=88:
                 why=[]
@@ -3912,6 +5984,7 @@ def _v68_analyst_command_center(df,limit=8):
                 if officially_verified: why.append('resmî/teyitli bilgi')
                 proposals.append((120+risk,'🚨 KRİTİK GELİŞME — ACİL DEĞERLENDİR',why))
         else:
+            # Bilgi Notu: veri/istatistik, resmî açıklama, ürün/teknoloji tanıtımı.
             if key not in notes and (data_stat or official or product_intro):
                 why=[]
                 if data_stat: why.append('veri/istatistiki bilgi')
@@ -3920,6 +5993,7 @@ def _v68_analyst_command_center(df,limit=8):
                 if multi: why.append(f"{int(v.get('Kaynak_Sayısı',0) or 0)} farklı kaynak")
                 proposals.append((105+score,'📝 Bilgi Notu Değerlendir',why))
 
+            # AKT: negatif, eleştirel, propaganda/dezenformasyon/olumsuz içerik.
             if key not in akt and negative:
                 why=[]
                 if str(row.get('Duygu',''))=='Negatif': why.append('negatif/olumsuz içerik')
@@ -3928,6 +6002,7 @@ def _v68_analyst_command_center(df,limit=8):
                 if risk>=55: why.append('dikkat gerektiren risk/etki')
                 proposals.append((100+score+risk//5,'📁 AKT Sepetine Almayı Değerlendir',why))
 
+            # Sunum: yalnız resmî veri/istatistik veya resmî/teyitli bilgi.
             if (data_stat and officially_verified) or official or (officially_verified and score>=55):
                 why=[]
                 if data_stat: why.append('resmî/teyitli veri veya istatistik')
@@ -3935,6 +6010,7 @@ def _v68_analyst_command_center(df,limit=8):
                 elif officially_verified: why.append('resmî teyitli bilgi')
                 proposals.append((85+score,'🖥️ Sunuma Eklemeyi Değerlendir',why))
 
+            # Mevcut önemli gelişme yeni kaynaklarla zenginleşmişse ayrıca hatırlat.
             if key in imp and multi:
                 proposals.append((78+score,'🔄 Önemli Gelişmeyi Zenginleştir',
                                   ['önemli gelişme sepetinde','yeni/çoklu kaynak desteği mevcut']))
@@ -3956,20 +6032,29 @@ def _v68_analyst_command_center(df,limit=8):
         return pd.DataFrame(columns=cols),phase,phase_hint
 
     out=pd.DataFrame(actions)
+    # Aynı haber aynı işlem için yalnız bir kez gösterilsin.
     out=out.sort_values(['Öncelik','Değer_Skoru','Risk_Skoru'],ascending=[False,False,False])
     out=out.drop_duplicates(subset=['Önerilen_İşlem','URL','Başlık'],keep='first').head(limit).reset_index(drop=True)
     out['Öncelik']=range(1,len(out)+1)
     return out[cols],phase,phase_hint
 
+
 def _v73_row_keys(df):
+    """apply(axis=1) yerine hızlı, vektörize haber anahtarı üretir."""
     if df is None or df.empty:
         return pd.Series(dtype=str)
     urls=df['URL'].fillna('').astype(str).str.strip() if 'URL' in df.columns else pd.Series('',index=df.index)
     titles=df['Başlık'].fillna('').astype(str) if 'Başlık' in df.columns else pd.Series('',index=df.index)
+    # title_key yalnız URL'siz satırlarda çalışır.
     fallback=titles.map(title_key)
     return urls.where(urls.ne(''),fallback)
 
+
 def _v74_bulk_add_basket(rows,table_name):
+    """
+    V74: Kronoloji hızlı işlemleri için tek SQLite executemany çağrısı.
+    Satır satır execute yerine toplu INSERT OR IGNORE kullanır.
+    """
     if rows is None or len(rows)==0 or not _init_history_db():
         return 0
     if table_name not in ('important_basket','osint_report_basket'):
@@ -4016,6 +6101,7 @@ def _v74_fast_add_osint(rows):
     return _v74_bulk_add_basket(rows,'osint_report_basket')
 
 def _v80_add_presentation(rows):
+    """Her bölümden seçilen haberleri sunum sepetine toplu ekler."""
     if rows is None or len(rows)==0 or not _init_history_db():
         return 0
     payload=[]
@@ -4057,6 +6143,15 @@ def _v80_load_presentation():
     except Exception:
         return pd.DataFrame()
 
+def _v80_clear_presentation():
+    try:
+        with _history_connect() as conn:
+            cur=conn.execute("DELETE FROM presentation_basket")
+            conn.commit()
+            return cur.rowcount
+    except Exception:
+        return 0
+
 def _v81_remove_presentation_ids(ids):
     ids=[int(x) for x in ids if str(x).isdigit()]
     if not ids: return 0
@@ -4079,7 +6174,12 @@ def _v81_basket_to_rows(bdf):
         'Risk_Skoru':r.get('risk_score',0),'Risk_Durumu':_clean_note_text(r.get('risk_status',''))})
     return rows
 
+
 def _v73_main_selected(selected_keys):
+    """
+    Ana tarama DataFrame'ini yalnız kullanıcı gerçekten bir işlem butonuna bastığında oluşturur/eşleştirir.
+    Checkbox işaretlemek artık yüzlerce satır üzerinde gereksiz tekrar filtrelemesi başlatmaz.
+    """
     if not selected_keys:
         return pd.DataFrame()
     main_rows=st.session_state.get('rows') or []
@@ -4090,6 +6190,11 @@ def _v73_main_selected(selected_keys):
     return main_df[keys.isin(selected_keys)].copy()
 
 def _section_select_table(section_key, data, columns, height=420):
+    """
+    V75 ULTRA HIZ:
+    Tüm bölüm tablolarında checkbox değişikliği form içinde kalır.
+    Streamlit yalnız kullanıcı işlem düğmesine bastığında rerun yapar.
+    """
     if data is None or data.empty:
         return pd.DataFrame()
 
@@ -4139,6 +6244,7 @@ def _section_select_table(section_key, data, columns, height=420):
         if not selected_keys:
             st.warning('Önce en az bir haberi işaretleyin.')
         else:
+            # Önce görünür bölüm verisini kullan: ana dataframe eşleştirmesine çoğu işlemde gerek yok.
             action_rows=selected.copy()
             if do_imp:
                 n=_v74_fast_add_important(action_rows.to_dict('records'))
@@ -4150,6 +6256,7 @@ def _section_select_table(section_key, data, columns, height=420):
                 n=_v80_add_presentation(action_rows.to_dict('records'))
                 st.success(f'✅ {n} yeni haber Sunum Sepeti’ne eklenmiştir.')
             elif do_note:
+                # Bilgi notunda tam içerik gerekiyorsa yalnız burada ana tabloya dön.
                 full=_v73_main_selected(selected_keys)
                 if full.empty: full=action_rows
                 with st.spinner(f'{len(full)} seçili haber için bilgi notu hazırlanmaktadır...'):
@@ -4188,7 +6295,16 @@ def _collect_section_selected_from_main_df(df):
     mask=_v73_row_keys(df).isin(keys)
     return df[mask].copy()
 
+
+# -----------------------------
+# V60 — OTOMATİK GERİ DÖNÜŞ / ANOMALİ / GÜN SONU
+# -----------------------------
 def _v60_register_visit_once():
+    """
+    Yeni browser oturumunda bir kez çalışır.
+    Önceki giriş zamanını alır, mevcut girişi kaydeder.
+    Streamlit rerun'larında baseline değişmez.
+    """
     if st.session_state.get('_v60_visit_initialized',False):
         return st.session_state.get('_v60_previous_visit')
 
@@ -4216,6 +6332,11 @@ def _v60_register_visit_once():
     return previous
 
 def _v60_auto_catchup(previous_visit,user_query=''):
+    """
+    Kullanıcı yeniden giriş yaptığında manuel buton gerektirmeden,
+    son girişten bu yana gelişmeleri hafif bir sorgu setiyle kontrol eder.
+    Tam tarama değildir; yalnızca dönüş brifingi içindir.
+    """
     if previous_visit is None or pd.isna(previous_visit):
         return [],None
 
@@ -4227,6 +6348,7 @@ def _v60_auto_catchup(previous_visit,user_query=''):
         prev_utc=prev_utc.astimezone(timezone.utc)
 
     delta_h=max(0.25,(now_utc-prev_utc).total_seconds()/3600)
+    # Google/RSS tarafında geniş pencere kullanılır; kesin filtre aşağıda previous_visit ile yapılır.
     when=period_window(max(3,delta_h))
 
     queries=[
@@ -4263,7 +6385,77 @@ def _v60_now_to_know_table(rows,n=5):
         return value
     return value.head(n).copy()
 
+def _v60_anomaly_radar(df,current_hours,lookback_days=14):
+    """
+    Mevcut taramadaki kategori olay hızını, geçmiş günlerin son taramalarındaki
+    saatlik olay hızıyla karşılaştırır. Ek web isteği yoktur.
+    """
+    cols=['Kategori','Şimdi','Beklenen','Normalin_Katı','Durum']
+    if df is None or df.empty or not _init_history_db():
+        return pd.DataFrame(columns=cols)
+
+    try:
+        cutoff=(datetime.now().astimezone()-timedelta(days=lookback_days)).isoformat()
+        with _history_connect() as conn:
+            hist=pd.read_sql_query("""
+                SELECT s.scan_id,s.scanned_at,s.period_hours,e.category
+                FROM scans s
+                JOIN event_snapshots e ON e.scan_id=s.scan_id
+                WHERE s.scanned_at>=?
+                ORDER BY s.scanned_at DESC
+            """,conn,params=(cutoff,))
+    except Exception:
+        return pd.DataFrame(columns=cols)
+
+    if hist.empty:
+        return pd.DataFrame(columns=cols)
+
+    hist['day']=hist['scanned_at'].astype(str).str.slice(0,10)
+    # Aynı gün çok tarama varsa yalnız o günün en son taraması baseline olur.
+    last_scan_per_day=(
+        hist[['day','scan_id','scanned_at']]
+        .drop_duplicates()
+        .sort_values('scanned_at')
+        .groupby('day',as_index=False)
+        .tail(1)[['day','scan_id']]
+    )
+    hist=hist.merge(last_scan_per_day,on=['day','scan_id'],how='inner')
+    if hist['day'].nunique()<2:
+        return pd.DataFrame(columns=cols)
+
+    scan_hours=hist[['scan_id','period_hours']].drop_duplicates().set_index('scan_id')['period_hours'].to_dict()
+    hc=hist.groupby(['scan_id','category']).size().reset_index(name='events')
+    hc['rate']=hc.apply(
+        lambda r:r['events']/max(1,float(scan_hours.get(r['scan_id'],24) or 24)),axis=1
+    )
+    baseline=hc.groupby('category')['rate'].agg(['mean','std','count']).reset_index()
+
+    cur=df.groupby('Kategori')['Olay_ID'].nunique() if 'Olay_ID' in df.columns else df.groupby('Kategori').size()
+    rows=[]
+    for cat,current in cur.items():
+        b=baseline[baseline['category']==cat]
+        if b.empty:
+            continue
+        mean_rate=float(b.iloc[0]['mean'] or 0)
+        expected=max(0.1,mean_rate*max(1,float(current_hours)))
+        ratio=float(current)/expected if expected else 0
+        # Hem göreli hem mutlak fark arıyoruz; küçük bazlarda sahte alarmı azaltır.
+        if current>=3 and ratio>=1.8 and (current-expected)>=2:
+            level='🔴 Çok Olağandışı' if ratio>=3 else '🟠 Olağandışı'
+            rows.append({
+                'Kategori':cat,
+                'Şimdi':int(current),
+                'Beklenen':round(expected,1),
+                'Normalin_Katı':round(ratio,1),
+                'Durum':level
+            })
+
+    if not rows:
+        return pd.DataFrame(columns=cols)
+    return pd.DataFrame(rows).sort_values(['Normalin_Katı','Şimdi'],ascending=[False,False])
+
 def _v60_day_end_performance(df=None):
+    """Bugünün operasyonel üretimini yerel geçmiş/sepet kayıtlarından özetler."""
     today=datetime.now().astimezone().date().isoformat()
     result={
         'Taramalar':0,'Benzersiz Olay':0,'Negatif':0,'Yüksek Risk':0,
@@ -4311,7 +6503,7 @@ def _v60_day_end_performance(df=None):
     return result
 
 # -----------------------------
-# UI / ANA ARAYÜZ
+# UI
 # -----------------------------
 st.title('🛡️ T.C. Sanayi ve Teknoloji Bakanlığı Açık Kaynak Tarama Merkezi')
 st.caption('Hızlı ilk bakış · olay kümeleri · risk/negatif ayrımı · Türk medya önceliği · Yunan/Türk savunma · kaynak güvenilirliği · trend · alarm · seçilen haberlerden DOCX')
@@ -4342,6 +6534,7 @@ if 'history_status' not in st.session_state: st.session_state.history_status=_in
 if 'basket_docx_bytes' not in st.session_state: st.session_state.basket_docx_bytes=None
 if 'section_selections' not in st.session_state: st.session_state.section_selections={}
 
+# V60: Yeni browser oturumunda önceki giriş zamanı otomatik belirlenir.
 _v60_previous_visit=_v60_register_visit_once()
 if '_v60_catchup_done' not in st.session_state:
     st.session_state['_v60_catchup_done']=False
@@ -4358,10 +6551,12 @@ if not st.session_state['_v60_catchup_done']:
             st.session_state['_v60_catchup_rows']=_catch_rows
             st.session_state['_v60_catchup_hours']=_catch_hours
 
+
 if run:
     cutoff=(datetime.now(timezone.utc)-timedelta(hours=hours)).astimezone(timezone.utc)
     when=period_window(hours)
     batches=[('🇹🇷 Türk medya / sanayi-teknoloji',build_turkish_queries(when,query),'turkish')]
+    # V41 bağımsız katmanları: yalnızca 4 ek sorgu; mevcut paralel havuzda çalışır.
     batches.append(('🏛️ Resmî kaynak radarı',build_official_radar_queries(when),'official'))
     batches.append(('📊 Önemli istatistik radarı',build_statistics_queries(when),'statistics'))
     if neg: batches.append(('⚠️ Negatif haber taraması',build_negative_queries(when),'negative'))
@@ -4403,6 +6598,7 @@ if run:
         return True
 
     def _merge_batch(raw,mode):
+        nonlocal_dummy=None
         norm_rows,reasons=normalize_rows(raw,cutoff,mode,query)
         stat['Zaman dışı']+=reasons['zaman']
         stat['Konu dışı']+=reasons['konu']
@@ -4410,6 +6606,7 @@ if run:
         stat['Kaynak dışı']+=reasons['kaynak']
         return norm_rows
 
+    # 1) Türk ana taraması önce: kullanıcı ilk sonuçları en kısa sürede görsün.
     primary_label,primary_queries,primary_mode=batches[0]
     status_box.write(f'{primary_label} — {len(primary_queries)} sorgu / 10 eşzamanlı')
     primary_raw=[]
@@ -4424,6 +6621,10 @@ if run:
     all_rows=dedupe(_merge_batch(primary_raw,primary_mode))
     stat['Sonuç']=len(all_rows)
 
+    # V44: Hızlı İlk Bakış kaldırıldı.
+    # Tarama sonuçları doğrudan aşağıdaki ana Görünüm ekranında (Kronolojik/Negatif/Yüksek Risk vb.) açılır.
+
+    # 2) Negatif + Yunan + sosyal + global sorgularını TEK HAVUZDA paralel çalıştır.
     supplemental=batches[1:]
     jobs=[]
     for label,queries,mode in supplemental:
@@ -4444,6 +6645,8 @@ if run:
                 stat['Ham sonuç']+=len(chunk)
                 supplemental_raw_by_mode.setdefault(mode,[]).extend(chunk)
 
+                # ÖZEL KRİTİK SANAYİ OLAYI ALARMI:
+                # OSB/OSB dışı fabrika-tesis yangın ve patlamalarında sorgu döner dönmez bildir.
                 if instant_alerts and chunk:
                     quick_rows,_quick_reasons=normalize_rows(chunk,cutoff,mode,query)
                     for qr in quick_rows:
@@ -4463,11 +6666,19 @@ if run:
                                     f'{str(qr.get("Başlık",""))[:140]}'
                                 )
 
+    # Mode bazlı normalize + birleştirme.
     for mode,raw in supplemental_raw_by_mode.items():
         incoming=_merge_batch(raw,mode)
+        old_keys={_alert_key(x) for x in all_rows}
         all_rows=dedupe(all_rows+incoming)
+        # Genel negatif/yüksek risk alarmı bu aşamada verilmez.
+        # Önce aşağıda gerçek haber sayfasının tam metni okunarak nihai sınıflandırma yapılır.
+        # Kritik sanayi yangın/patlama anlık alarmı yukarıdaki özel blokta aynen devam eder.
         stat['Sonuç']=len(all_rows)
 
+    # 3) Analitik katman — V44 performans düzenlemesi.
+    # V43'teki her haber sayfasını tek tek indiren tam-metin negatif analizi kaldırıldı.
+    # V42'deki hızlı ve bağlam duyarlı Başlık + RSS İçerik/Özet sınıflandırması kullanılır.
     if all_rows:
         status_box.write('🧩 Hızlı olay analizi hazırlanıyor...')
         all_rows=enrich_rows(all_rows)
@@ -4475,6 +6686,8 @@ if run:
     else:
         stat['Olay']=0
 
+    # Nihai alarm listesi mevcut hızlı sınıflandırmadan oluşturulur.
+    # Kritik sanayi yangın/patlama alarmı aynen korunur.
     live_alerts=[]
     alerted_keys=set()
     final_toast_count=0
@@ -4505,12 +6718,16 @@ if run:
     st.session_state.stats=stat
     st.session_state.last_scan_alerts=live_alerts
 
+    # V33 geçmiş karşılaştırma katmanı: tarama bittikten SONRA olay özetini kaydeder.
+    # Tarama motoruna veya sıralamaya müdahale etmez.
     st.session_state.current_scan_id=_save_scan_history(
         all_rows,
         st.session_state.scan_time,
         hours
     )
 
+
+# V60 — ŞU AN BİLMEN GEREKENLER: manuel çalışmaz, yeni oturumda otomatik hazırlanır.
 st.subheader('⚡ Şu An Bilmen Gerekenler')
 _prev=st.session_state.get('_v60_previous_visit')
 _catch_rows=st.session_state.get('_v60_catchup_rows') or []
@@ -4531,6 +6748,7 @@ else:
     else:
         st.warning(f'Son girişinizden bu yana dikkat gerektiren {_now5.shape[0]} gelişme öne çıkıyor.')
 
+        # V61: Bu bölümden doğrudan seçim/sepet/bilgi notu işlemleri yapılabilir.
         _catch_df=pd.DataFrame(_catch_rows)
         _know_rows=[]
         for _,_v in _now5.iterrows():
@@ -4628,6 +6846,9 @@ else:
 
 st.markdown('---')
 
+# ============================================================
+# V68 — ANALİST KOMUTA MERKEZİ
+# ============================================================
 st.caption('⚡ V75 ultra hızlı mod: checkbox işlemleri form içinde tutulmakta; tik atmak tek başına uygulamayı yeniden çalıştırmamaktadır.')
 st.subheader('🎛️ Analist Komuta Merkezi')
 st.caption(
@@ -4675,6 +6896,8 @@ rows=st.session_state.rows
 if rows is None:
     st.info('👋 Hazır. Tarama başlamaz. Zaman aralığını seçip **TARAMAYI BAŞLAT / YENİLE** düğmesine basın.')
 else:
+    # Tarama sırasında satırlar zaten enrich_rows() ile zenginleştiriliyor.
+    # Checkbox / sekme / buton gibi UI etkileşimlerinde pahalı analizi tekrar çalıştırmıyoruz.
     df=pd.DataFrame(rows)
     if not df.empty:
         df['Tarih_dt']=pd.to_datetime(df['Tarih_dt'],utc=True,errors='coerce')
@@ -4687,6 +6910,14 @@ else:
         total=len(df); negc=int((df.Duygu=='Negatif').sum()); riskc=int((df.Risk_Durumu=='Yüksek Risk').sum()); trc=int(df.Kaynak_Grubu.astype(str).str.startswith('🇹🇷').sum()); grc=int(df.Kaynak_Grubu.astype(str).str.startswith('🇬🇷').sum()); events=df['Olay_ID'].nunique()
         a,b,c,d,e,f=st.columns(6); a.metric('Toplam',total); b.metric('Olay',events); c.metric('Negatif',negc); d.metric('Yüksek Risk',riskc); e.metric('🇹🇷 Türk',trc); f.metric('🇬🇷 Yunan',grc)
 
+
+        # ---------------------------------------------------------
+        # V34 — VARDİYA BAŞLANGIÇ ÖZETİ
+        # ---------------------------------------------------------
+        # V46 — ANA GÖRÜNÜM EN ÜSTTE
+        # Tarama tamamlandığında ilk bölüm doğrudan Kronolojik / Negatif / Yüksek Risk vb. ana haber görünümüdür.
+        # Performans: Streamlit tabs içindeki TÜM içerikleri arka planda çalıştırır.
+        # Bu nedenle tek seferde yalnızca seçilen görünümü üretiriz.
         st.subheader('🌅 Vardiya Başlangıç Özeti')
         st.caption('Sabah ilk analitik bakış: yalnızca negatif haberleri değil; sanayi ve teknoloji açısından en önemli, stratejik, etkili, teyitli ve dikkat gerektiren gelişmeleri öne çıkarır.')
         shift_stats,shift_top,shift_baseline_label=_shift_start_summary(
@@ -4724,6 +6955,9 @@ else:
                 else:
                     st.error('Devir noktası kaydedilemedi.')
 
+        # ---------------------------------------------------------
+        # V33 — DÜNDEN BERİ NE DEĞİŞTİ?
+        # ---------------------------------------------------------
         st.subheader('🆕 Dünden Beri Ne Değişti?')
         changes,previous_scan_id,previous_scan_time=_compare_since_previous(
             df,
@@ -4757,6 +6991,7 @@ else:
                     height=min(560,70+35*min(len(changes_view),25))
                 )
 
+        # Son taramada anlık yakalanan bildirimlerin kalıcı özeti
         recent_alerts=st.session_state.get('last_scan_alerts',[])
         if recent_alerts:
             with st.expander(f'🔔 Son taramada yakalanan yeni negatif/riskli içerikler ({len(recent_alerts)})',False):
@@ -4771,6 +7006,7 @@ else:
                     height=min(420,42+35*len(alert_view))
                 )
 
+        # Alarm bandı
         alarms=df[(df.Risk_Skoru>=70) | (df.Duygu=='Negatif')].sort_values(['Risk_Skoru','Tarih_dt'],ascending=[False,False])
         if not alarms.empty:
             st.subheader('🚨 Yeni / Öncelikli Alarmlar')
@@ -4782,6 +7018,8 @@ else:
                 height=min(470,70+38*len(alarm_view))
             )
 
+        # Kritik sanayi olayları için SABİT bölüm.
+        # Her zaman görünür; olay varsa içerik dolar, yoksa boş durum gösterilir.
         st.subheader('🚨 Kritik Sanayi Olayları — OSB / OSB Dışı Yangın ve Patlama')
         st.caption('OSB ve OSB dışındaki fabrika, tesis ve sanayi alanlarında tespit edilen yangın/patlama olayları burada sürekli izlenir.')
 
@@ -4810,7 +7048,8 @@ else:
         st.subheader('🏆 Günün En Değerli 10 Gelişmesi')
         st.caption(
             'Aynı olaya ait haberlar tek gelişmede birleştirilir. Değer Skoru; önem/risk, farklı kaynak sayısı, '
-            'resmî teyit, güncellik, stratejik sanayi-teknoloji önemi, negatif/eleştirel etki ve haber yoğunluğunu birlikte değerlendirir.'
+            'resmî teyit, güncellik, stratejik sanayi-teknoloji önemi, negatif/eleştirel etki ve haber yoğunluğunu birlikte değerlendirir. '
+            'Kaynak gerçek okunma/tıklanma verisi sağlıyorsa ileride ayrıca eklenebilir; mevcut sistem erişilemeyen okunma sayılarını tahmin etmez.'
         )
         value10=_v52_event_value_table(df,10)
         if value10.empty:
@@ -4820,4 +7059,727 @@ else:
                 'daily_top10_value',
                 value10,
                 ['Sıra','Değer_Skoru','Tarih','Gelişme','Neden_Değerli',
-                 'Kaynak_Sayısı','HaberBen sadece bir dil modeliyim ve bu isteğinize yardımcı olamıyorum.
+                 'Kaynak_Sayısı','Haber_Sayısı','Resmî_Teyit','Risk','URL'],
+                height=min(680,105+55*len(value10))
+            )
+
+            if st.button('📊 BUGÜNÜN DURUM ÖZETİNİ OLUŞTUR',use_container_width=True,key='v54_top10_summary_btn'):
+                with st.spinner('Yalnızca en değerli 10 gelişmenin haber içerikleri okunuyor ve özetleniyor...'):
+                    summary_text=_v54_deep_top10_summary(df,value10,45)
+                    st.session_state.daily_summary_text=summary_text
+                    st.session_state.daily_summary_bytes=make_v54_top10_summary_docx(df,value10,summary_text)
+
+            if st.session_state.get('daily_summary_text'):
+                st.text_area(
+                    'Bugünün Durum Özeti — En Değerli 10 Gelişme',
+                    st.session_state.daily_summary_text,
+                    height=520,
+                    key='v54_daily_summary_preview'
+                )
+                st.caption(
+                    'Özet yalnızca yukarıdaki 10 gelişmenin haber içeriğini anlatır; değer skoru, kaynak sayısı ve '
+                    'sıralama gerekçeleri metne eklenmez. Toplam çıktı 45 satırı geçmez.'
+                )
+                if st.session_state.get('daily_summary_bytes'):
+                    st.download_button(
+                        '⬇️ BUGÜNÜN DURUM ÖZETİNİ WORD OLARAK İNDİR',
+                        data=st.session_state.daily_summary_bytes,
+                        file_name=f'bugunun_durum_ozeti_top10_{datetime.now().strftime("%Y%m%d_%H%M")}.docx',
+                        mime='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                        use_container_width=True,
+                        key='v54_top10_summary_download'
+                    )
+
+        # V33 — BİLGİ NOTU ADAYLARI
+        # ---------------------------------------------------------
+        st.subheader('🎯 Bilgi Notu Adayları')
+        st.caption('Mevcut taramadaki olayları risk, teyit, kaynak sayısı, stratejik önem ve yenilik açısından puanlar.')
+        candidate_count=st.slider('Gösterilecek aday sayısı',5,15,10,1,key='candidate_count')
+        candidates=_information_note_candidates(
+            df,
+            st.session_state.get('current_scan_id'),
+            candidate_count
+        )
+        if candidates.empty:
+            st.info('Bu taramada bilgi notu adayı oluşturulamadı.')
+        else:
+            _section_select_table(
+                'candidates',
+                candidates,
+                ['Aday Puanı','Başlık','Kaynak','Kategori','Risk','Kaynak Sayısı','Doğrulama','Değişim','Neden Bilgi Notu?','URL'],
+                height=min(470,65+36*len(candidates))
+            )
+
+        # ---------------------------------------------------------
+
+        st.markdown('---')
+        st.subheader('👀 Kaçırıyor Olabilir Miyim? — İkinci Göz')
+        st.caption(
+            'Mevcut taramada yüksek değer/risk taşıdığı hâlde henüz Önemli Gelişmeler veya '
+            'Açık Kaynak Tarama sepetine alınmamış olayları otomatik gösterir.'
+        )
+        _missed=_v63_missed_candidates(df,12)
+        if _missed.empty:
+            st.success('Şu anda sepetler dışında kalan belirgin yüksek değerli bir gelişme görünmüyor.')
+        else:
+            st.warning(f'Henüz hiçbir sepete alınmamış {_missed.shape[0]} dikkat çekici gelişme var.')
+            _section_select_table(
+                'v63_missed',
+                _missed.rename(columns={'Gelişme':'Başlık'}),
+                ['Tarih','Başlık','Değer_Skoru','Neden_Değerli','Kaynak_Sayısı','Risk','URL'],
+                height=min(620,100+48*len(_missed))
+            )
+
+        view=st.radio(
+            'Görünüm',
+            ['📰 Kronolojik','⚠️ Negatif','🚨 Yüksek Risk','🇹🇷 Türk','🇬🇷 Yunan','🧩 Olaylar','📈 Trend / Analiz','⭐ Takip Listesi'],
+            horizontal=True,
+            key='main_view'
+        )
+
+        cols=['Seç','Tarih','Kaynak_Grubu','Kaynak','Kategori','Başlık','İçerik_Özeti','Duygu','Risk_Skoru','Risk_Durumu','Kaynak_Güvenilirliği','Doğrulama','URL']
+
+        if view=='📰 Kronolojik':
+            st.caption(
+                '☑️ Hızlı işlem modu: kutucuklara tıklarken sayfa yeniden çalıştırılmaz. '
+                'Seçiminizi yaptıktan sonra aşağıdaki işlem düğmelerinden birine basmanız yeterlidir.'
+            )
+            page_size=40
+            total_pages=max(1,(len(df)+page_size-1)//page_size)
+            page_no=st.number_input(
+                'Sayfa',min_value=1,max_value=total_pages,value=1,step=1,
+                key='news_page'
+            )
+            start_i=(int(page_no)-1)*page_size
+            end_i=min(start_i+page_size,len(df))
+            page_df=df.iloc[start_i:end_i].copy()
+
+            # Tarayıcı yükünü azalt: yalnız görünür sayfadaki kısa özet gönderilir.
+            page_df['İçerik_Özeti']=page_df['İçerik_Özeti'].astype(str).str.slice(0,220)
+
+            # Durum rozetleri tek cache okumasıyla eklenir.
+            page_df=_v63_add_status_badges(page_df)
+            chron_cols=[
+                'Seç','Tarih','Kaynak_Grubu','Kaynak','Kategori','Başlık','Durum',
+                'İçerik_Özeti','Duygu','Risk_Skoru','Risk_Durumu',
+                'Kaynak_Güvenilirliği','Doğrulama','URL'
+            ]
+            chron_cols=[c for c in chron_cols if c in page_df.columns]
+
+            st.caption(f'{start_i+1}-{end_i} / {len(df)} haber')
+
+            # FORM: checkbox tıklamaları rerun yapmaz. Yalnız işlem butonuna basınca tek rerun olur.
+            with st.form(
+                key=f'v74_chronology_fast_form_{int(page_no)}',
+                clear_on_submit=False
+            ):
+                edited=st.data_editor(
+                    page_df[chron_cols],
+                    column_config={
+                        'Seç':st.column_config.CheckboxColumn('Seç'),
+                        'URL':st.column_config.LinkColumn('Haber Linki'),
+                        'İçerik_Özeti':st.column_config.TextColumn('Kısa İçerik',width='large'),
+                        'Risk_Skoru':st.column_config.NumberColumn('Risk',format='%d/100'),
+                        'Durum':st.column_config.TextColumn('Durum',width='medium')
+                    },
+                    disabled=[x for x in chron_cols if x!='Seç'],
+                    hide_index=True,
+                    use_container_width=True,
+                    height=535,
+                    key=f'v74_chron_editor_{int(page_no)}'
+                )
+
+                st.markdown('### ⚡ Seçilen Haberlerle Hızlı İşlem')
+                c1,c2,c3,c4=st.columns(4)
+                with c1: do_imp=st.form_submit_button('📌 Önemli Gelişmelere Ekle',use_container_width=True)
+                with c2: do_akt=st.form_submit_button('🗂️ AKT Sepetine Ekle',use_container_width=True)
+                with c3: do_pres=st.form_submit_button('🖥️ Sunum Sepetine Ekle',use_container_width=True)
+                with c4: do_note=st.form_submit_button('📝 Detaylı Bilgi Notu Oluştur',use_container_width=True)
+
+            if do_imp or do_akt or do_note or do_pres:
+                selected_mask=edited['Seç'].astype(bool).to_numpy()
+                selected_page=page_df.loc[selected_mask].copy()
+
+                if selected_page.empty:
+                    st.warning('Önce en az bir haberi işaretleyin.')
+                elif do_imp:
+                    n=_v74_fast_add_important(selected_page.to_dict('records'))
+                    st.success(f'✅ {n} yeni haber Önemli Gelişmeler Sepeti’ne eklenmiştir.')
+                elif do_akt:
+                    n=_v74_fast_add_osint(selected_page.to_dict('records'))
+                    st.success(f'✅ {n} yeni haber Açık Kaynak Tarama Sepeti’ne eklenmiştir.')
+                elif do_pres:
+                    n=_v80_add_presentation(selected_page.to_dict('records'))
+                    st.success(f'✅ {n} yeni haber Sunum Sepeti’ne eklenmiştir.')
+                elif do_note:
+                    with st.spinner(
+                        f'{len(selected_page)} seçili haber için ayrıntılı bilgi notu hazırlanmaktadır...'
+                    ):
+                        try:
+                            # Tam içerik için kısa page_df yerine ana df'deki aynı URL'leri kullan.
+                            selected_urls=set(selected_page['URL'].fillna('').astype(str))
+                            full_selected=df[df['URL'].fillna('').astype(str).isin(selected_urls)].copy()
+                            if full_selected.empty:
+                                full_selected=selected_page.copy()
+                            st.session_state['v74_chron_note_bytes']=make_analyst_docx(
+                                full_selected,
+                                title='SANAYİ & TEKNOLOJİ BİLGİ NOTU'
+                            )
+                            _v63_mark_notes(full_selected.to_dict('records'))
+                            _v73_invalidate_status_cache()
+                            st.success('✅ Bilgi notu hazırlanmıştır.')
+                        except Exception as e:
+                            st.session_state['v74_chron_note_bytes']=None
+                            st.error(f'Bilgi notu hazırlanamadı: {e}')
+
+            if st.session_state.get('v74_chron_note_bytes'):
+                st.download_button(
+                    '⬇️ KRONOLOJİDEN HAZIRLANAN BİLGİ NOTUNU İNDİR',
+                    data=st.session_state['v74_chron_note_bytes'],
+                    file_name=f'Sanayi_Teknoloji_Bilgi_Notu_{date.today()}.docx',
+                    mime='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                    use_container_width=True,
+                    key='v74_chron_note_download'
+                )
+
+        elif view=='⚠️ Negatif':
+            _section_select_table(
+                'negative_view',
+                df[df.Duygu=='Negatif'],
+                ['Tarih','Kaynak','Kategori','Başlık','Risk_Skoru','Risk_Gerekçesi','Doğrulama','URL'],
+                height=600
+            )
+
+        elif view=='🚨 Yüksek Risk':
+            _section_select_table(
+                'highrisk_view',
+                df[df.Risk_Durumu=='Yüksek Risk'],
+                ['Tarih','Kaynak','Kategori','Başlık','Risk_Skoru','Risk_Gerekçesi','Doğrulama','URL'],
+                height=600
+            )
+
+        elif view=='🇹🇷 Türk':
+            _section_select_table(
+                'turkish_view',
+                df[df.Kaynak_Grubu.astype(str).str.startswith('🇹🇷')],
+                ['Tarih','Kaynak','Kategori','Başlık','Risk_Skoru','Duygu','URL'],
+                height=600
+            )
+
+        elif view=='🇬🇷 Yunan':
+            _section_select_table(
+                'greek_view',
+                df[df.Kaynak_Grubu.astype(str).str.startswith('🇬🇷')],
+                ['Tarih','Kaynak','Kategori','Başlık','Risk_Skoru','Duygu','URL'],
+                height=600
+            )
+
+        elif view=='🧩 Olaylar':
+            ev=build_event_summary(df)
+            st.dataframe(ev,hide_index=True,use_container_width=True,height=480)
+            chosen=st.selectbox('Olay zaman çizelgesini göster:',ev['Olay_ID'].tolist() if not ev.empty else [])
+            if chosen:
+                g=df[df.Olay_ID==chosen].sort_values('Tarih_dt',ascending=True)
+                _section_select_table(
+                    f'event_{chosen}',
+                    g,
+                    ['Tarih','Kaynak','Kategori','Başlık','Risk_Skoru','Doğrulama','URL'],
+                    height=min(500,80+40*len(g))
+                )
+
+        elif view=='📈 Trend / Analiz':
+            st.subheader('📊 Konu yoğunluğu')
+            tr=trend_table(df)
+            if not tr.empty:
+                st.bar_chart(tr.set_index('Kategori')['Haber'])
+            st.subheader('📈 Gündem yoğunluğu')
+            tmp=df[df['Tarih_dt'].notna()].copy()
+            tmp['Saat']=tmp['Tarih_dt'].dt.strftime('%Y-%m-%d %H:00')
+            if not tmp.empty:
+                st.line_chart(tmp.groupby('Saat').size())
+            st.subheader('🧭 Yoğun konular')
+            for _,r in tr.head(10).iterrows():
+                st.write(f"**{r['Kategori']}** — {int(r['Haber'])} haber")
+
+        elif view=='⭐ Takip Listesi':
+            hits=watchlist_hits(df,watch)
+            st.write(f'Listede eşleşen: **{len(hits)}** haber')
+            if not hits.empty:
+                _section_select_table(
+                    'watchlist_view',
+                    hits,
+                    ['Tarih','Kaynak','Kategori','Başlık','Risk_Skoru','Duygu','URL'],
+                    height=550
+                )
+
+
+
+
+        # V34 — ÖNEMLİ GELİŞMELER SEPETİ
+        # ---------------------------------------------------------
+        st.subheader('📌 24 Saatlik Önemli Gelişmeler Sepeti')
+        st.caption('Gün boyunca önemli gördüğünüz haberleri burada biriktirin; vardiya sonunda Word olarak alın.')
+
+        # V74: Kronoloji artık kendi hızlı işlem düğmelerine sahiptir.
+        # Burada yalnız diğer bölümlerdeki seçili kayıtlar toplanır.
+        selected_from_sections=_collect_section_selected_from_main_df(df)
+
+        if st.button('➕ BÖLÜMLERDE İŞARETLEDİKLERİMİ ÖNEMLİ GELİŞMELER SEPETİNE EKLE',use_container_width=True):
+            if selected_from_sections.empty:
+                st.warning('Önce herhangi bir bölümde haberlerin yanındaki kutucuklardan seçim yapın.')
+            else:
+                added=_add_rows_to_important_basket(selected_from_sections.to_dict('records'))
+                st.success(f'{added} yeni gelişme sepete eklendi.')
+
+        basket=_load_important_basket()
+        if basket.empty:
+            st.info('Önemli gelişmeler sepeti şu anda boş.')
+        else:
+            # -----------------------------------------------------
+            # V78 — ÖGN SEPETİ: SİLME ve BİLGİ NOTU TAMAMEN AYRI
+            # -----------------------------------------------------
+            basket_view=basket[['id','news_time','source','category','title','risk_score','risk_status','url']].copy()
+
+            # A) Sadece silme işlemi için checkbox.
+            delete_view=basket_view.copy()
+            delete_view.insert(0,'Sil',False)
+            with st.form('v78_important_basket_delete_form',clear_on_submit=False):
+                edited_delete=st.data_editor(
+                    delete_view,
+                    column_config={
+                        'Sil':st.column_config.CheckboxColumn('Sil'),
+                        'url':st.column_config.LinkColumn('Haber Linki'),
+                        'risk_score':st.column_config.NumberColumn('Risk',format='%d/100')
+                    },
+                    disabled=[c for c in delete_view.columns if c!='Sil'],
+                    hide_index=True,use_container_width=True,
+                    height=min(430,80+36*len(delete_view)),
+                    key='v78_important_basket_delete_editor'
+                )
+                remove_btn=st.form_submit_button(
+                    '🗑️ İŞARETLENENLERİ SEPETTEN ÇIKAR',
+                    use_container_width=True
+                )
+
+            if remove_btn:
+                ids=edited_delete.loc[edited_delete['Sil']==True,'id'].astype(int).tolist()
+                removed=_remove_basket_ids(ids)
+                st.success(f'{removed} kayıt sepetten çıkarıldı.')
+
+            # B) Bilgi notunda TEK HABER seçilir. Sepetin tamamı hiçbir şekilde
+            # make_analyst_docx'e gönderilmez.
+            st.markdown('### 📝 Sepetten Seçilen Tek Haberden Detaylı Bilgi Notu')
+            option_rows=[]
+            for _,r in basket.iterrows():
+                clean_title=_clean_note_text(r.get('title',''))
+                option_rows.append((
+                    int(r.get('id')),
+                    f"{clean_title} — {_clean_note_text(r.get('source',''))}"
+                ))
+
+            label_to_id={label:rid for rid,label in option_rows}
+            selected_label=st.selectbox(
+                'Bilgi notu oluşturulacak haber',
+                options=list(label_to_id.keys()),
+                key='v78_ogn_note_single_select'
+            ) if option_rows else None
+
+            if st.button(
+                '📝 SEÇİLEN TEK HABERDEN DETAYLI BİLGİ NOTU OLUŞTUR',
+                use_container_width=True,
+                key='v78_ogn_note_single_button'
+            ):
+                if not selected_label:
+                    st.warning('Bilgi notu için bir haber seçin.')
+                else:
+                    selected_id=int(label_to_id[selected_label])
+                    # Kesin tek satır: ID eşleşmesi + head(1).
+                    selected_basket=basket[basket['id'].astype(int)==selected_id].head(1).copy()
+
+                    if selected_basket.empty:
+                        st.error('Seçilen haber sepette bulunamadı.')
+                    else:
+                        r=selected_basket.iloc[0]
+                        important_note_rows=pd.DataFrame([{
+                            'Tarih':_clean_note_text(r.get('news_time','')),
+                            'Kaynak':_clean_note_text(r.get('source','')),
+                            'Başlık':_clean_note_text(r.get('title','')),
+                            'İçerik_Özeti':_clean_note_text(r.get('summary','')),
+                            'URL':str(r.get('url','') or ''),
+                            'Kategori':_clean_note_text(r.get('category','')),
+                            'Risk_Skoru':r.get('risk_score',0),
+                            'Risk_Durumu':_clean_note_text(r.get('risk_status',''))
+                        }])
+
+                        # Güvenlik kontrolü: make_analyst_docx'e asla 1'den fazla satır gitmesin.
+                        important_note_rows=important_note_rows.head(1)
+
+                        with st.spinner('Seçilen tek haberin tam metni okunuyor ve detaylı bilgi notu hazırlanıyor...'):
+                            try:
+                                st.session_state['v78_ogn_note_bytes']=make_analyst_docx(
+                                    important_note_rows,
+                                    title='SANAYİ & TEKNOLOJİ BİLGİ NOTU'
+                                )
+                                st.session_state['v78_ogn_note_title']=important_note_rows.iloc[0]['Başlık']
+                                _v63_mark_notes(important_note_rows.to_dict('records'))
+                                _v73_invalidate_status_cache()
+                                st.success('✅ Bilgi notu yalnızca seçilen tek haberden hazırlanmıştır.')
+                            except Exception as e:
+                                st.session_state['v78_ogn_note_bytes']=None
+                                st.error(f'Bilgi notu hazırlanamadı: {e}')
+
+            if st.session_state.get('v78_ogn_note_bytes'):
+                st.info(
+                    'Bilgi notuna alınan tek haber: '
+                    + _clean_note_text(st.session_state.get('v78_ogn_note_title',''))
+                )
+                st.download_button(
+                    '⬇️ SEÇİLEN TEK HABERİN DETAYLI BİLGİ NOTUNU İNDİR',
+                    data=st.session_state['v78_ogn_note_bytes'],
+                    file_name=f'OGN_Secilen_Haber_Bilgi_Notu_{date.today()}.docx',
+                    mime='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                    use_container_width=True,
+                    key='v78_ogn_note_download'
+                )
+
+            if selected_label and st.button('🖥️ SEÇİLEN ÖNEMLİ GELİŞMEYİ SUNUM SEPETİNE EKLE',use_container_width=True,key='v81_ogn_to_pres'):
+                _one=basket[basket['id'].astype(int)==int(label_to_id[selected_label])].head(1)
+                st.success(f"✅ {_v80_add_presentation(_v81_basket_to_rows(_one))} haber Sunum Sepeti’ne eklenmiştir.")
+
+            # V90: önceki sürümlerden kalan Word bytes kesinlikle kullanılmaz.
+            if st.session_state.get('_ogn_engine_version') != V90_OGN_ENGINE_VERSION:
+                st.session_state['_ogn_engine_version']=V90_OGN_ENGINE_VERSION
+                st.session_state.pop('v90_ogn_docx_bytes',None)
+                st.session_state.pop('basket_docx_bytes',None)
+
+            b1,b2=st.columns(2)
+            with b1:
+                if st.button('📄 ÖNEMLİ GELİŞMELER WORD OLUŞTUR',use_container_width=True,key='v90_make_ogn_word'):
+                    # Her basışta eski çıktı silinir ve V90 motoruyla baştan hazırlanır.
+                    st.session_state.pop('v90_ogn_docx_bytes',None)
+                    with st.spinner('Önemli gelişmeler gerçek haber içeriklerinden resmî biçimde özetleniyor...'):
+                        st.session_state['v90_ogn_docx_bytes']=make_important_basket_docx_v95(basket)
+                if st.session_state.get('v90_ogn_docx_bytes'):
+                    st.download_button(
+                        '⬇️ 24 SAATLİK ÖNEMLİ GELİŞMELER / WORD — V95',
+                        st.session_state['v90_ogn_docx_bytes'],
+                        file_name=f'24_Saatlik_Onemli_Gelismeler_V95_{date.today()}.docx',
+                        mime='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                        use_container_width=True,
+                        key='v90_download_ogn_word'
+                    )
+            with b2:
+                if st.button('🧹 SEPETİ TAMAMEN TEMİZLE',use_container_width=True):
+                    removed=_clear_important_basket()
+                    st.success(f'{removed} kayıt silindi.')
+
+
+        st.markdown('---')
+        st.subheader('🗂️ Açık Kaynak Tarama Çalışması Sepeti')
+        st.caption('14:00 açık kaynak tarama raporuna girecek haberleri gün boyunca ayrı bir sepette biriktirin.')
+
+        osint_selected_now=df[df.get('Seç',False)==True] if 'Seç' in df.columns else pd.DataFrame()
+        osint_selected_sections=_collect_section_selected_from_main_df(df)
+
+        o1,o2=st.columns(2)
+        with o1:
+            if st.button('➕ KRONOLOJİDE SEÇİLİ HABERLERİ AKT SEPETİNE EKLE',use_container_width=True):
+                if osint_selected_now.empty:
+                    st.warning('Önce kronolojik görünümden haber seçin ve seçimleri kaydedin.')
+                else:
+                    added=_add_rows_to_osint_basket(osint_selected_now.to_dict('records'))
+                    st.success(f'{added} haber AKT sepetine eklendi.')
+        with o2:
+            if st.button('➕ BÖLÜMLERDE İŞARETLEDİKLERİMİ AKT SEPETİNE EKLE',use_container_width=True):
+                if osint_selected_sections.empty:
+                    st.warning('Önce herhangi bir bölümde seçim yapın.')
+                else:
+                    added=_add_rows_to_osint_basket(osint_selected_sections.to_dict('records'))
+                    st.success(f'{added} haber AKT sepetine eklendi.')
+
+        osint_basket=_load_osint_basket()
+        if osint_basket.empty:
+            st.info('Açık kaynak tarama çalışması sepeti boş.')
+        else:
+            # -----------------------------------------------------
+            # V79 — AKT SEPETİ: ÖGN İLE AYNI TEK HABER BİLGİ NOTU MANTIĞI
+            # -----------------------------------------------------
+            osint_view=osint_basket[['id','news_time','source','category','title','risk_score','risk_status','url']].copy()
+
+            # A) Silme işlemi ayrı checkbox formunda kalır.
+            delete_osint_view=osint_view.copy()
+            delete_osint_view.insert(0,'Sil',False)
+            with st.form('v79_osint_basket_delete_form',clear_on_submit=False):
+                edited_osint=st.data_editor(
+                    delete_osint_view,
+                    column_config={
+                        'Sil':st.column_config.CheckboxColumn('Sil'),
+                        'url':st.column_config.LinkColumn('Haber Linki'),
+                        'risk_score':st.column_config.NumberColumn('Risk',format='%d/100')
+                    },
+                    disabled=[c for c in delete_osint_view.columns if c!='Sil'],
+                    hide_index=True,use_container_width=True,
+                    height=min(430,80+36*len(delete_osint_view)),
+                    key='v79_osint_basket_delete_editor'
+                )
+                remove_osint=st.form_submit_button(
+                    '🗑️ İŞARETLENENLERİ AKT SEPETİNDEN ÇIKAR',
+                    use_container_width=True
+                )
+
+            if remove_osint:
+                ids=edited_osint.loc[edited_osint['Sil']==True,'id'].astype(int).tolist()
+                removed=_remove_osint_basket_ids(ids)
+                st.success(f'{removed} kayıt AKT sepetinden çıkarıldı.')
+
+            # AKT raporu sepetin tamamından hazırlanabilir; bu davranış korunur.
+            osint_rows=[]
+            for _,r in osint_basket.iterrows():
+                osint_rows.append({
+                    'Tarih':_clean_note_text(r.get('news_time','')),
+                    'Kaynak':_clean_note_text(r.get('source','')),
+                    'Başlık':_clean_note_text(r.get('title','')),
+                    'İçerik_Özeti':_clean_note_text(r.get('summary','')),
+                    'URL':str(r.get('url','') or ''),
+                    'Kategori':_clean_note_text(r.get('category','')),
+                    'Risk_Skoru':r.get('risk_score',0),
+                    'Risk_Durumu':_clean_note_text(r.get('risk_status','')),
+                    'Yayıncı':_clean_note_text(r.get('source','')),
+                    'Yayıncı_URL':''
+                })
+
+            _akt_pres_opts={f"{_clean_note_text(r.get('title',''))} — {_clean_note_text(r.get('source',''))}":int(r.get('id')) for _,r in osint_basket.iterrows()}
+            _akt_pres_label=st.selectbox('Sunuma eklenecek AKT haberi',list(_akt_pres_opts.keys()),key='v81_akt_pres_select') if _akt_pres_opts else None
+            if st.button('🖥️ SEÇİLEN AKT HABERİNİ SUNUM SEPETİNE EKLE',use_container_width=True,key='v81_akt_to_pres'):
+                if _akt_pres_label:
+                    _one=osint_basket[osint_basket['id'].astype(int)==_akt_pres_opts[_akt_pres_label]].head(1)
+                    st.success(f"✅ {_v80_add_presentation(_v81_basket_to_rows(_one))} haber Sunum Sepeti’ne eklenmiştir.")
+
+            ob1,ob2=st.columns(2)
+            with ob1:
+                if st.button('📝 AKT SEPETİNDEN WORD HAZIRLA',use_container_width=True,key='v79_akt_report'):
+                    with st.spinner('AKT sepetindeki haberler rapora hazırlanıyor...'):
+                        st.session_state.docx_bytes=make_docx(osint_rows)
+                if st.session_state.get('docx_bytes'):
+                    st.download_button(
+                        '⬇️ AKT SEPETİNDEN AÇIK KAYNAK RAPORU / WORD',
+                        st.session_state.docx_bytes,
+                        file_name=f'Sanayi_Teknoloji_Acik_Kaynak_Sepet_{date.today()}.docx',
+                        mime='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                        use_container_width=True,
+                        key='v79_akt_report_download'
+                    )
+            with ob2:
+                if st.button('🧹 AKT SEPETİNİ TAMAMEN TEMİZLE',use_container_width=True,key='v79_clear_akt'):
+                    removed=_clear_osint_basket()
+                    st.success(f'{removed} kayıt silindi.')
+
+            # B) Bilgi notu için yalnız TEK HABER seçilir.
+            st.markdown('### 📝 AKT Sepetinden Seçilen Tek Haberden Detaylı Bilgi Notu')
+
+            akt_option_rows=[]
+            for _,r in osint_basket.iterrows():
+                clean_title=_clean_note_text(r.get('title',''))
+                akt_option_rows.append((
+                    int(r.get('id')),
+                    f"{clean_title} — {_clean_note_text(r.get('source',''))}"
+                ))
+
+            akt_label_to_id={label:rid for rid,label in akt_option_rows}
+            selected_akt_label=st.selectbox(
+                'Bilgi notu oluşturulacak AKT haberi',
+                options=list(akt_label_to_id.keys()),
+                key='v79_akt_note_single_select'
+            ) if akt_option_rows else None
+
+            if st.button(
+                '📝 SEÇİLEN TEK AKT HABERİNDEN DETAYLI BİLGİ NOTU OLUŞTUR',
+                use_container_width=True,
+                key='v79_akt_note_single_button'
+            ):
+                if not selected_akt_label:
+                    st.warning('Bilgi notu için bir AKT haberi seçin.')
+                else:
+                    selected_akt_id=int(akt_label_to_id[selected_akt_label])
+                    # Kesin tek satır: ID eşleşmesi ve head(1).
+                    selected_akt=osint_basket[
+                        osint_basket['id'].astype(int)==selected_akt_id
+                    ].head(1).copy()
+
+                    if selected_akt.empty:
+                        st.error('Seçilen AKT haberi sepette bulunamadı.')
+                    else:
+                        r=selected_akt.iloc[0]
+                        akt_note_df=pd.DataFrame([{
+                            'Tarih':_clean_note_text(r.get('news_time','')),
+                            'Kaynak':_clean_note_text(r.get('source','')),
+                            'Başlık':_clean_note_text(r.get('title','')),
+                            'İçerik_Özeti':_clean_note_text(r.get('summary','')),
+                            'URL':str(r.get('url','') or ''),
+                            'Kategori':_clean_note_text(r.get('category','')),
+                            'Risk_Skoru':r.get('risk_score',0),
+                            'Risk_Durumu':_clean_note_text(r.get('risk_status',''))
+                        }]).head(1)
+
+                        with st.spinner('Seçilen tek AKT haberinin tam metni okunuyor ve detaylı bilgi notu hazırlanıyor...'):
+                            try:
+                                st.session_state['v79_akt_note_bytes']=make_analyst_docx(
+                                    akt_note_df,
+                                    title='SANAYİ & TEKNOLOJİ BİLGİ NOTU'
+                                )
+                                st.session_state['v79_akt_note_title']=akt_note_df.iloc[0]['Başlık']
+                                _v63_mark_notes(akt_note_df.to_dict('records'))
+                                _v73_invalidate_status_cache()
+                                st.success('✅ Bilgi notu yalnızca seçilen tek AKT haberinden hazırlanmıştır.')
+                            except Exception as e:
+                                st.session_state['v79_akt_note_bytes']=None
+                                st.error(f'Bilgi notu hazırlanamadı: {e}')
+
+            if st.session_state.get('v79_akt_note_bytes'):
+                st.info(
+                    'Bilgi notuna alınan tek AKT haberi: '
+                    + _clean_note_text(st.session_state.get('v79_akt_note_title',''))
+                )
+                st.download_button(
+                    '⬇️ SEÇİLEN TEK AKT HABERİNİN DETAYLI BİLGİ NOTUNU İNDİR',
+                    data=st.session_state['v79_akt_note_bytes'],
+                    file_name=f'AKT_Secilen_Haber_Bilgi_Notu_{date.today()}.docx',
+                    mime='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                    use_container_width=True,
+                    key='v79_akt_note_download'
+                )
+
+
+        st.markdown('---')
+        st.subheader('🖥️ Sunum Sepeti')
+        st.caption('Önemli Gelişmeler ve AKT sepetlerinin hemen altında yer almaktadır.')
+        _pb=_v80_load_presentation()
+        if _pb.empty:
+            st.info('Sunum sepeti boş.')
+        else:
+            _pv=_pb[['id','news_time','source','title','url']].copy(); _pv.insert(0,'Seç',False)
+            with st.form('v81_presentation_basket_form',clear_on_submit=False):
+                _ped=st.data_editor(_pv,column_config={'Seç':st.column_config.CheckboxColumn('Seç'),'url':st.column_config.LinkColumn('Haber Linki')},
+                    disabled=[c for c in _pv.columns if c!='Seç'],hide_index=True,use_container_width=True,height=min(420,80+36*len(_pv)))
+                p1,p2,p3,p4=st.columns(4)
+                with p1: _toimp=st.form_submit_button('📌 Önemli Gelişmelere Ekle',use_container_width=True)
+                with p2: _toakt=st.form_submit_button('🗂️ AKT Sepetine Ekle',use_container_width=True)
+                with p3: _pnote=st.form_submit_button('📝 Bilgi Notu Oluştur',use_container_width=True)
+                with p4: _prem=st.form_submit_button('🗑️ Sepetten Çıkar',use_container_width=True)
+            _ids=_ped.loc[_ped['Seç']==True,'id'].astype(int).tolist()
+            _sel=_pb[_pb['id'].astype(int).isin(_ids)]
+            _rows=_v81_basket_to_rows(_sel)
+            if _toimp:
+                if _rows: st.success(f"✅ {_v74_fast_add_important(_rows)} haber Önemli Gelişmeler Sepeti’ne eklenmiştir.")
+                else: st.warning('Önce haber seçin.')
+            if _toakt:
+                if _rows: st.success(f"✅ {_v74_fast_add_osint(_rows)} haber AKT Sepeti’ne eklenmiştir.")
+                else: st.warning('Önce haber seçin.')
+            if _prem:
+                st.success(f"✅ {_v81_remove_presentation_ids(_ids)} haber çıkarılmıştır.")
+            if _pnote:
+                if len(_rows)!=1: st.warning('Detaylı bilgi notu için yalnızca bir haber seçin.')
+                else:
+                    with st.spinner('Seçilen sunum haberinden detaylı bilgi notu hazırlanıyor...'):
+                        st.session_state['v81_pres_note_bytes']=make_analyst_docx(pd.DataFrame(_rows).head(1),title='SANAYİ & TEKNOLOJİ BİLGİ NOTU')
+            if st.session_state.get('v81_pres_note_bytes'):
+                st.download_button('⬇️ SUNUM SEPETİ BİLGİ NOTUNU İNDİR',st.session_state['v81_pres_note_bytes'],
+                    file_name=f'Sunum_Sepeti_Bilgi_Notu_{date.today()}.docx',mime='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                    use_container_width=True,key='v81_pres_note_download')
+
+        st.markdown('---')
+        st.subheader('🏛️ Resmî Kaynak Radarı')
+        st.caption('Sanayi ve Teknoloji Bakanlığı, TÜBİTAK, KOSGEB, TÜRKPATENT, TSE, SSB, TÜİK ve diğer birincil kamu kaynaklarından gelen içerikleri ayrı gösterir.')
+        official_radar=_official_radar_rows(df)
+        if official_radar.empty:
+            st.info('Bu taramada resmî/birincil kaynaklardan eşleşen yeni içerik bulunamadı.')
+        else:
+            _section_select_table(
+                'official_radar',
+                official_radar.head(30),
+                ['Tarih','Kaynak','Kategori','Başlık','İçerik_Özeti','Risk_Skoru','Doğrulama','URL'],
+                height=min(600,90+38*min(len(official_radar),30))
+            )
+
+        st.markdown('---')
+        st.subheader('🔎 Resmî Açıklama – Medya Karşılaştırması')
+        st.caption(
+            'Bu alan sabittir. Aynı taramadaki medya haberlerini resmî/birincil kaynak açıklamalarıyla '
+            'otomatik eşleştirir; olayın medya anlatımı ile resmî açıklaması arasındaki belirgin farkları gösterir.'
+        )
+        official_media_cmp=_official_media_comparison(df)
+        if official_media_cmp.empty:
+            st.info('Bu taramada medya haberiyle eşleşen resmî/birincil açıklama bulunamadı.')
+        else:
+            _section_select_table(
+                'official_media_comparison',
+                official_media_cmp.head(25),
+                ['Tarih','Medya_Kaynağı','Medya_Haberi','Resmî_Kaynak','Resmî_Açıklama',
+                 'Karşılaştırma','Eşleşme','Medya_URL','Resmî_URL'],
+                height=min(650,110+54*min(len(official_media_cmp),25))
+            )
+
+        st.markdown('---')
+        st.subheader('🧭 Olay Yaşam Döngüsü')
+        st.caption(
+            'Aynı olayın mevcut taramadaki gelişim aşamasını otomatik gösterir: '
+            'İlk Sinyal → Gelişiyor → Teyit Edildi → Sonuçlandı. Bu alan sabittir.'
+        )
+        lifecycle=_v58_event_lifecycle_table(df,25)
+        if lifecycle.empty:
+            st.info('Bu taramada yaşam döngüsü oluşturulabilecek olay bulunamadı.')
+        else:
+            _section_select_table(
+                'v58_event_lifecycle',
+                lifecycle,
+                ['Tarih','Aşama','Başlık','Kategori','Kaynak_Sayısı','Haber_Sayısı',
+                 'Doğrulama','Risk_Skoru','Aşama_Gerekçesi','URL'],
+                height=min(700,100+40*len(lifecycle))
+            )
+
+
+        st.markdown('---')
+        st.subheader('📋 Gün Sonu Performans Özeti')
+        st.caption('Bugün sistemde oluşan tarama ve çalışma çıktılarının operasyonel özeti.')
+        _perf=_v60_day_end_performance(df)
+        p1,p2,p3,p4,p5,p6,p7=st.columns(7)
+        p1.metric('Tarama',_perf['Taramalar'])
+        p2.metric('Benzersiz Olay',_perf['Benzersiz Olay'])
+        p3.metric('Negatif',_perf['Negatif'])
+        p4.metric('Yüksek Risk',_perf['Yüksek Risk'])
+        p5.metric('Önemli Sepet',_perf['Önemli Sepete Eklenen'])
+        p6.metric('AKT Sepet',_perf['AKT Sepete Eklenen'])
+        p7.metric('Kritik Sanayi',_perf['Kritik Sanayi'])
+
+        st.write(
+            f"Bugün {_perf['Taramalar']} tarama gerçekleştirilmiş; geçmiş kayıtlarında "
+            f"{_perf['Benzersiz Olay']} benzersiz olay, {_perf['Negatif']} negatif ve "
+            f"{_perf['Yüksek Risk']} yüksek riskli gelişme kaydedilmiştir. "
+            f"{_perf['Önemli Sepete Eklenen']} içerik önemli gelişmeler sepetine, "
+            f"{_perf['AKT Sepete Eklenen']} içerik açık kaynak tarama sepetine eklenmiştir."
+        )
+
+        st.markdown('---'); st.subheader('📝 Seçilen haberlerden çıktı üret')
+        # Form gönderildiyse session_state güncellenmiştir; aksi halde mevcut kayıtlı seçimleri kullan.
+        current_rows=st.session_state.rows or []
+        selected_df=pd.DataFrame(current_rows)
+        if not selected_df.empty and 'Tarih_dt' in selected_df.columns:
+            selected_df['Tarih_dt']=pd.to_datetime(selected_df['Tarih_dt'],utc=True,errors='coerce')
+        selected=selected_df[selected_df.get('Seç',False)==True] if not selected_df.empty and 'Seç' in selected_df.columns else pd.DataFrame()
+        st.write(f'{len(selected)} haber seçildi. Tarama sırasında görsel/tam metin indirilmez; yalnızca seçtiğiniz içerikler için derin zenginleştirme yapılır.')
+        c1,c2=st.columns(2)
+        with c1:
+            if st.button('📝 AÇIK KAYNAK RAPORU / WORD',type='primary',use_container_width=True):
+                if selected.empty: st.warning('Önce haber seçin.')
+                else:
+                    with st.spinner(f'{len(selected)} haber zenginleştiriliyor...'): st.session_state.docx_bytes=make_docx(selected.to_dict('records'))
+            if st.session_state.docx_bytes: st.download_button('⬇️ Açık Kaynak Raporu DOCX',st.session_state.docx_bytes,file_name=f'Sanayi_Teknoloji_Acik_Kaynak_{date.today()}.docx',mime='application/vnd.openxmlformats-officedocument.wordprocessingml.document',use_container_width=True)
+        with c2:
+            if st.button('📌 AYRINTILI BİLGİ NOTU / WORD',use_container_width=True):
+                if selected.empty: st.warning('Önce haber seçin.')
+                else:
+                    with st.spinner(f'{len(selected)} haberin tam haber metni okunuyor ve ayrıntılı bilgi notu hazırlanıyor...'):
+                        st.session_state.note_bytes=make_analyst_docx(selected,title='SANAYİ & TEKNOLOJİ BİLGİ NOTU')
+            if st.session_state.note_bytes: st.download_button('⬇️ Bilgi Notu DOCX',st.session_state.note_bytes,file_name=f'Sanayi_Teknoloji_Bilgi_Notu_{date.today()}.docx',mime='application/vnd.openxmlformats-officedocument.wordprocessingml.document',use_container_width=True)
+
+st.caption('İlk açılışta otomatik tarama yoktur. Her yenileme yeni ağ taraması yapar. Haberler en yeni → en eski sıralanır; olay kümeleri, risk gerekçesi, kaynak güvenilirliği, doğrulama, trend ve takip listesi tarama sonucunda yer alır. DOCX aşamasında seçilen haberlerin gerçek yayıncı sayfası, görseli, linki ve geniş içeriği alınır.')
