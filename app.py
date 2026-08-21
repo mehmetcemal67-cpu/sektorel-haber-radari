@@ -2797,6 +2797,8 @@ def _add_rows_to_important_basket(rows):
                 if cur.rowcount:
                     added+=1
             conn.commit()
+        if added:
+            _v73_invalidate_status_cache()
         return added
     except Exception:
         return 0
@@ -2843,6 +2845,8 @@ def _add_rows_to_osint_basket(rows):
                 if cur.rowcount:
                     added+=1
             conn.commit()
+        if added:
+            _v73_invalidate_status_cache()
         return added
     except Exception:
         return 0
@@ -4156,9 +4160,21 @@ def _v63_mark_notes(rows):
     except Exception:
         pass
 
+def _v73_invalidate_status_cache():
+    st.session_state.pop('_v73_status_sets_cache',None)
+
 def _v63_status_sets():
+    """
+    V73 performans: aynı Streamlit rerun'ında/her bölümde SQLite'ı tekrar tekrar okumaz.
+    Sepet durumları session cache'den gelir; sepet değiştiğinde cache temizlenir.
+    """
+    cached=st.session_state.get('_v73_status_sets_cache')
+    if cached is not None:
+        return cached
+
     imp=set(); akt=set(); notes=set()
-    if not _init_history_db(): return imp,akt,notes
+    if not _init_history_db():
+        return imp,akt,notes
     try:
         with _history_connect() as conn:
             for table,target in [('important_basket',imp),('osint_report_basket',akt),('note_history',notes)]:
@@ -4167,7 +4183,9 @@ def _v63_status_sets():
                     target.add(str(url).strip() if str(url or '').strip() else title_key(str(title or '')))
     except Exception:
         pass
-    return imp,akt,notes
+    result=(imp,akt,notes)
+    st.session_state['_v73_status_sets_cache']=result
+    return result
 
 def _v63_add_status_badges(df):
     if df is None or df.empty: return df
@@ -4252,279 +4270,6 @@ def _v63_load_tomorrow():
         return pd.DataFrame()
 
 
-
-# -----------------------------
-# V70 — STRATEJİK SİNYAL MOTORU + MUHTEMEL AMİR SORULARI
-# -----------------------------
-V70_SIGNAL_THEMES={
-    'Savunma ve Havacılık':['savunma','füze','uçak','iha','siha','kaan','kızılelma','aselsan','tusaş','roketsan','havelsan','ssb'],
-    'Yapay Zekâ ve Dijital Teknolojiler':['yapay zeka','yapay zekâ','ai ','çip','yarı iletken','siber','veri merkezi','bulut','dijital'],
-    'Otomotiv ve Mobilite':['otomotiv','togg','araç','elektrikli araç','batarya','mobilite'],
-    'Üretim ve Yatırım':['yatırım','fabrika','tesis','kapasite','üretim','osb','teşvik'],
-    'İhracat ve Dış Pazar':['ihracat','dış satım','sözleşme','teslimat','pazar','sipariş'],
-    'Ar-Ge, Patent ve Teknoloji':['ar-ge','arge','tübitak','patent','teknoloji','inovasyon','prototip'],
-    'Enerji ve Kritik Kaynaklar':['enerji','nükleer','güneş','rüzgar','batarya','kritik mineral','maden'],
-    'Uzay ve Uydu':['uzay','uydu','türksat','fırlatma','roket']
-}
-
-def _v70_signal_history_days(days=60):
-    """Yerel tarama hafızasından son N günün olaylarını alır."""
-    if not _init_history_db():
-        return pd.DataFrame()
-    try:
-        cutoff=(datetime.now().astimezone()-timedelta(days=days)).isoformat()
-        with _history_connect() as conn:
-            return pd.read_sql_query("""
-                SELECT es.*, s.scanned_at
-                FROM event_snapshots es
-                JOIN scans s ON s.scan_id=es.scan_id
-                WHERE s.scanned_at>=?
-                ORDER BY s.scanned_at DESC
-            """,conn,params=(cutoff,))
-    except Exception:
-        return pd.DataFrame()
-
-def _v70_theme_for_text(text):
-    t=norm(text)
-    scores={}
-    for theme,terms in V70_SIGNAL_THEMES.items():
-        scores[theme]=sum(1 for x in terms if norm(x) in t)
-    if not scores or max(scores.values())<=0:
-        return None,0
-    theme=max(scores,key=scores.get)
-    return theme,scores[theme]
-
-def _v72_entity_names(text):
-    """Başlık/metinden tekrar izlenebilecek kurum/şirket/proje adaylarını çıkarır."""
-    raw=str(text or '')
-    known=[
-        'TÜBİTAK','TÜBİTAK SAGE','ASELSAN','TUSAŞ','ROKETSAN','HAVELSAN','BAYKAR',
-        'TEI','STM','TÜRKSAT','TÜBİTAK BİLGEM','KOSGEB','TÜRKPATENT','TSE',
-        'Sanayi ve Teknoloji Bakanlığı','Savunma Sanayii Başkanlığı','SSB',
-        'TOGG','BOTAŞ','TAI','FORD OTOSAN','TOFAŞ','ARÇELİK','VESTEL'
-    ]
-    out=[]
-    nt=norm(raw)
-    for x in known:
-        if norm(x) in nt: out.append(x)
-    # Büyük harfli marka/kurum/proje adlarını da aday olarak yakala.
-    for x in re.findall(r'\b[A-ZÇĞİÖŞÜ][A-ZÇĞİÖŞÜ0-9\-]{2,}(?:\s+[A-ZÇĞİÖŞÜ][A-ZÇĞİÖŞÜ0-9\-]{2,}){0,2}\b',raw):
-        if x not in {'TÜRKİYE','ABD','AB','OSB','AR GE'} and len(x)<=45:
-            out.append(x.strip())
-    return list(dict.fromkeys(out))[:8]
-
-def _v72_event_type(text):
-    """Küçük olayın zincirdeki anlamını sınıflandırır."""
-    t=norm(text)
-    rules=[
-        ('🏢 Kuruluş / yapılanma',['şirket kur','kuruldu','kuruluş','yeni şirket','ortak girişim']),
-        ('👨‍💻 İnsan kaynağı',['mühendis ilan','iş ilan','personel al','istihdam','mühendis arıyor','kariyer']),
-        ('🧪 Ar-Ge / çağrı',['tübitak çağrı','çağrıya kat','proje çağrı','arge projes','ar-ge projes','hibe program']),
-        ('🏗️ Yatırım / tesis',['yatırım','yeni tesis','fabrika','kapasite artır','üretim hattı','teşvik belgesi']),
-        ('🤝 İş birliği / ortaklık',['iş birliği','işbirliği','mutabakat','ortaklık','protokol','konsorsiyum']),
-        ('📜 İhale / sözleşme',['ihale','sözleşme','sipariş','anlaşma imz']),
-        ('🧩 Ürün / prototip',['prototip','yeni ürün','tanıttı','tanıtıldı','ilk kez','test edildi','test atışı']),
-        ('🏭 Üretim / teslimat',['seri üretim','üretime başladı','teslimat','envantere girdi','üretim başladı']),
-        ('🌍 İhracat / dış pazar',['ihracat','ihraç','yurt dışı','yurtdışı','dış pazar','ülkeye teslim']),
-        ('🏛️ Resmî teyit / açıklama',['bakanlık açıklad','resmi açıkl','resmî açıkl','ssb açıklad','tübitak açıklad','duyurdu']),
-        ('💰 Finansman / destek',['yatırım aldı','finansman','fon','hibe','destek program','kredi']),
-        ('📈 Veri / performans',['istatistik','veri','ciro','büyüme','yüzde','%','milyon','milyar'])
-    ]
-    for label,terms in rules:
-        if any(x in t for x in terms): return label
-    return '📰 Diğer gelişme'
-
-def _v72_chain_signals(df,limit=6,lookback_days=120):
-    """
-    V72 Stratejik Sinyal:
-    Haber hacmine BAKMAZ. Aynı şirket/kurum/proje etrafındaki farklı zamanlı,
-    farklı nitelikte küçük olayları zincirler.
-    Örn: kuruluş -> mühendis alımı -> TÜBİTAK çağrısı -> yatırım -> prototip.
-    """
-    cols=['Varlık','Sinyal','Güven','Brifing','İlk_Gelişme','Son_Gelişme',
-          'Zincir','Neden_Şimdi','Değerlendirme','İzlenecek_Göstergeler']
-    hist=_v70_signal_history_days(max(120,lookback_days))
-    events=[]
-
-    if not hist.empty:
-        for _,r in hist.iterrows():
-            dt=pd.to_datetime(r.get('scanned_at'),utc=True,errors='coerce')
-            text=f"{r.get('title','')} {r.get('summary','')}"
-            for ent in _v72_entity_names(text):
-                events.append({
-                    'entity':ent,'dt':dt,'title':str(r.get('title','')),
-                    'text':text,'etype':_v72_event_type(text),
-                    'source':str(r.get('source','')),'verification':str(r.get('verification',''))
-                })
-
-    if df is not None and not df.empty:
-        for _,r in df.iterrows():
-            dt=pd.to_datetime(r.get('Tarih_dt'),utc=True,errors='coerce')
-            text=f"{r.get('Başlık','')} {r.get('İçerik_Özeti','')}"
-            for ent in _v72_entity_names(text):
-                events.append({
-                    'entity':ent,'dt':dt,'title':str(r.get('Başlık','')),
-                    'text':text,'etype':_v72_event_type(text),
-                    'source':str(r.get('Kaynak','')),'verification':str(r.get('Doğrulama',''))
-                })
-
-    if not events: return pd.DataFrame(columns=cols)
-    ev=pd.DataFrame(events).dropna(subset=['dt'])
-    ev=ev.drop_duplicates(subset=['entity','title','etype'])
-    now=pd.Timestamp.now(tz='UTC')
-    ev=ev[ev['dt']>=now-pd.Timedelta(days=lookback_days)]
-
-    rows=[]
-    for ent,g in ev.groupby('entity'):
-        g=g.sort_values('dt')
-        # Aynı haberin tekrar görülmesi sinyal değildir; farklı olay türleri gerekir.
-        types=list(dict.fromkeys(g['etype'].tolist()))
-        meaningful=[x for x in types if x!='📰 Diğer gelişme']
-        if len(g)<2 or len(meaningful)<2: continue
-
-        first=g.iloc[0]; last=g.iloc[-1]
-        gap=(last['dt']-first['dt']).days
-        # Zincir gerçekten zaman içinde oluşmalı; aynı günkü haber çoğalması yeterli değildir.
-        distinct_days=g['dt'].dt.date.nunique()
-        if distinct_days<2: continue
-
-        official=sum(
-            1 for _,r in g.iterrows()
-            if any(x in norm(r.get('verification','')) for x in ['resmi','resmî','birincil','teyit'])
-        )
-        chain=[]
-        for _,r in g.tail(6).iterrows():
-            chain.append(f"{r['dt'].strftime('%d.%m.%Y')} — {r['etype']}: {r['title']}")
-        chain_text='  →  '.join(chain)
-
-        strength=min(100, 35 + len(meaningful)*12 + min(distinct_days,5)*5 + min(official,3)*6)
-        confidence='Yüksek' if strength>=82 else ('Orta-Yüksek' if strength>=65 else 'Orta')
-        briefing='🟠 Sabah Brifingine Al' if strength>=78 else '🟡 İzlemeye Devam Et'
-
-        # Son olay, önceki küçük olayların anlamını değiştiriyorsa bunu açıkça anlat.
-        previous=g.iloc[-2]
-        why=(
-            f"{ent} hakkında {previous['dt'].strftime('%d.%m.%Y')} tarihinde “{previous['title']}” gelişmesi görülmüştür. "
-            f"{last['dt'].strftime('%d.%m.%Y')} tarihinde ise “{last['title']}” gelişmesi tespit edilmiştir. "
-            f"Son gelişme, önceki olaydan bağımsız değerlendirilmek yerine aynı varlığın ilerleyen faaliyet zincirinin yeni halkası olarak izlenmektedir."
-        )
-        assessment=(
-            f"{ent} bakımından {', '.join(meaningful[:5])} aşamalarının farklı tarihlerde art arda görülmesi, "
-            f"tekil haberlerden ziyade faaliyetlerin somutlaşmasına ilişkin bir gelişim çizgisi bulunduğuna işaret etmektedir. "
-            f"Bu tespit haber sayısındaki artışa değil, olayların birbirini tamamlayan niteliğine dayanmaktadır."
-        )
-        indicators='Yeni personel ilanları; TÜBİTAK/KOSGEB/SSB çağrı ve destekleri; yatırım/teşvik kararları; sözleşmeler; prototip/test; üretim ve teslimat; ihracat'
-        rows.append({
-            '_strength':strength,'Varlık':ent,
-            'Sinyal':f"{meaningful[0]} → {meaningful[-1]}",
-            'Güven':confidence,'Brifing':briefing,
-            'İlk_Gelişme':first['dt'].strftime('%d.%m.%Y'),
-            'Son_Gelişme':last['dt'].strftime('%d.%m.%Y'),
-            'Zincir':chain_text,'Neden_Şimdi':why,
-            'Değerlendirme':assessment,'İzlenecek_Göstergeler':indicators
-        })
-
-    if not rows: return pd.DataFrame(columns=cols)
-    out=pd.DataFrame(rows).sort_values('_strength',ascending=False).head(limit)
-    return out.drop(columns=['_strength'])[cols]
-
-# Geriye dönük UI uyumluluğu: eski fonksiyon adı artık olay-zinciri motorunu çağırır.
-def _v70_strategic_signals(df,limit=6):
-    return _v72_chain_signals(df,limit=limit,lookback_days=120)
-
-
-def _v71_proactive_brief_candidates(df,limit=5):
-    """
-    Analistin seçim yapmasını beklemeden 'amir sorabilir' denebilecek konuları seçer.
-    Öncelik: resmî açıklama/teyit, veri-istatistik, somut ürün-teknoloji gelişmesi,
-    yüksek değer ve çoklu kaynak. Sırf sansasyonel/popüler olması yeterli değildir.
-    """
-    if df is None or df.empty:
-        return []
-    value=_v52_event_value_table(df,max(30,limit*6))
-    if value.empty:
-        return []
-
-    data_terms=[
-        'istatistik','veri','oran','endeks','sanayi üretimi','kapasite kullanım',
-        'ihracat','ithalat','ciro','istihdam','işsizlik','büyüme','yatırım teşvik',
-        'arge','ar-ge','patent','başvuru','milyar','milyon','yüzde','%'
-    ]
-    product_terms=[
-        'ürün tanıt','tanıtıldı','tanıttı','yeni ürün','yeni teknoloji','prototip',
-        'seri üretim','ilk teslimat','envantere','platform','sistem geliştir',
-        'füze','uydu','çip','yarı iletken','yapay zeka','yapay zekâ'
-    ]
-    picked=[]
-    seen=set()
-    for _,v in value.iterrows():
-        row=_v53_find_event_row(df,v)
-        if row is None: continue
-        title=str(row.get('Başlık','') or v.get('Gelişme',''))
-        url=str(row.get('URL','') or v.get('URL','')).strip()
-        k=url or title_key(title)
-        if k in seen: continue
-        text=norm(f"{title} {row.get('İçerik_Özeti','')} {row.get('Kategori','')} {row.get('Doğrulama','')}")
-        official=_is_official_radar_row(row)
-        ver=norm(row.get('Doğrulama',''))
-        verified=official or any(x in ver for x in ['resmi','resmî','birincil','teyit'])
-        data_stat=any(x in text for x in data_terms)
-        product=any(x in text for x in product_terms)
-        score=int(v.get('Değer_Skoru',0) or 0)
-        sources=int(v.get('Kaynak_Sayısı',0) or 0)
-
-        # Proaktif eşik: en az bir güçlü kurumsal gerekçe olmalı.
-        if not (official or verified or data_stat or product):
-            continue
-        rank=score + (24 if official else 0) + (18 if verified else 0) + (18 if data_stat else 0) + (10 if product else 0) + min(sources,4)*4
-        reasons=[]
-        if official: reasons.append('resmî açıklama/birincil kaynak')
-        elif verified: reasons.append('resmî/teyitli bilgi')
-        if data_stat: reasons.append('veri/istatistiki bilgi')
-        if product: reasons.append('somut ürün/teknoloji gelişmesi')
-        if sources>=2: reasons.append(f'{sources} farklı kaynak')
-        if score>=65: reasons.append('yüksek analitik değer')
-
-        probability='🔴 Sorulma ihtimali yüksek' if rank>=105 else ('🟠 Sorulabilir' if rank>=80 else '🟡 Hazır bulunmak faydalı')
-        picked.append((rank,probability,reasons,row))
-        seen.add(k)
-
-    picked.sort(key=lambda x:x[0],reverse=True)
-    return picked[:limit]
-
-def _v70_boss_questions(row):
-    """Önemli olay için amirin sorabileceği sorulara kaynakta mevcut bilgilerden hızlı cevap kartı üretir."""
-    title=str(row.get('Başlık','') or '')
-    summary=str(row.get('İçerik_Özeti','') or '')
-    text=re.sub(r'\s+',' ',summary).strip()
-    sentences=_sentence_chunks(text)
-    nums=re.findall(r'(?<!\w)(?:%?\d+(?:[.,]\d+)?(?:\s*(?:milyar|milyon|bin|adet|yüzde|km|ton|MW|GW|TL|dolar|avro|euro))?)',text,flags=re.I)
-    verification=str(row.get('Doğrulama','') or '')
-    source=str(row.get('Kaynak','') or '')
-    risk=int(row.get('Risk_Skoru',0) or 0)
-    short=' '.join(sentences[:2]) if sentences else title
-    detail=' '.join(sentences[2:5]) if len(sentences)>2 else (sentences[0] if sentences else title)
-    numbers=', '.join(dict.fromkeys(x.strip() for x in nums[:8])) if nums else 'Haberde belirgin sayısal veri tespit edilmemiştir.'
-    verified='Resmî/birincil teyit bulunmaktadır.' if any(x in norm(verification) for x in ['resmi','resmî','birincil','teyit']) or _is_official_radar_row(row) else 'Mevcut kayıtta resmî/birincil teyit açık biçimde görülmemektedir.'
-    importance=('Gelişme yüksek risk/etki düzeyindedir ve yakından takip edilmesi uygun olacaktır.' if risk>=60
-                else 'Gelişmenin sanayi ve teknoloji alanındaki etkisinin yeni açıklamalarla birlikte takip edilmesi uygun olacaktır.')
-    return [
-        ('Ne olmuştur?',_v66_formalize_sentence_endings(short)),
-        ('Kritik ayrıntılar nelerdir?',_v66_formalize_sentence_endings(detail)),
-        ('Öne çıkan rakamlar nelerdir?',numbers),
-        ('Bilgi teyitli midir?',f'{verified} Mevcut kaynak: {source}.'),
-        ('Neden önemlidir?',importance),
-        ('Bundan sonra ne takip edilmelidir?','Yeni resmî açıklamalar, ilave sayısal veriler, uygulama/teslimat takvimi ve olayın sektör üzerindeki somut etkileri takip edilmelidir.')
-    ]
-
-def _v70_30sec_brief(row):
-    qs=dict(_v70_boss_questions(row))
-    return (
-        f"{qs.get('Ne olmuştur?','')} "
-        f"{qs.get('Öne çıkan rakamlar nelerdir?','')} "
-        f"{qs.get('Bilgi teyitli midir?','')} "
-        f"{qs.get('Neden önemlidir?','')}"
-    )
 
 # -----------------------------
 # V68 — ANALİST KOMUTA MERKEZİ / SONRAKİ EN İYİ İŞLEM
@@ -4677,25 +4422,50 @@ def _v68_analyst_command_center(df,limit=8):
     return out[cols],phase,phase_hint
 
 
+def _v73_row_keys(df):
+    """apply(axis=1) yerine hızlı, vektörize haber anahtarı üretir."""
+    if df is None or df.empty:
+        return pd.Series(dtype=str)
+    urls=df['URL'].fillna('').astype(str).str.strip() if 'URL' in df.columns else pd.Series('',index=df.index)
+    titles=df['Başlık'].fillna('').astype(str) if 'Başlık' in df.columns else pd.Series('',index=df.index)
+    # title_key yalnız URL'siz satırlarda çalışır.
+    fallback=titles.map(title_key)
+    return urls.where(urls.ne(''),fallback)
+
+def _v73_main_selected(selected_keys):
+    """
+    Ana tarama DataFrame'ini yalnız kullanıcı gerçekten bir işlem butonuna bastığında oluşturur/eşleştirir.
+    Checkbox işaretlemek artık yüzlerce satır üzerinde gereksiz tekrar filtrelemesi başlatmaz.
+    """
+    if not selected_keys:
+        return pd.DataFrame()
+    main_rows=st.session_state.get('rows') or []
+    if not main_rows:
+        return pd.DataFrame()
+    main_df=pd.DataFrame(main_rows)
+    keys=_v73_row_keys(main_df)
+    return main_df[keys.isin(selected_keys)].copy()
+
 def _section_select_table(section_key, data, columns, height=420):
-    """Her haber bölümünde kutucuk gösterir; seçilenler sepete eklenebilir veya doğrudan bilgi notuna dönüştürülebilir."""
+    """
+    V73 HIZLI SEÇİM:
+    - checkbox değişiminde yalnız görünür tablo işlenir,
+    - ana tarama tablosu yalnız işlem butonuna basılırsa eşleştirilir,
+    - sepet rozetleri SQLite'dan her bölüm için tekrar okunmaz.
+    """
     if data is None or data.empty:
         return pd.DataFrame()
 
     tbl=_v63_add_status_badges(data.copy())
-    # Durum rozeti tüm ortak haber tablolarında başlığın yanında görünür.
     if 'Durum' not in columns:
         columns=list(columns)
         insert_at=columns.index('Başlık')+1 if 'Başlık' in columns else 0
         columns.insert(insert_at,'Durum')
-    tbl['_row_key']=[
-        str(r.get('URL','')) if str(r.get('URL','')).strip()
-        else title_key(str(r.get('Başlık','')))
-        for _,r in tbl.iterrows()
-    ]
+
+    tbl['_row_key']=_v73_row_keys(tbl).values
     selected_map=st.session_state.section_selections.get(section_key,{})
     if 'Seç' in tbl.columns:
-        tbl['Seç']=[bool(selected_map.get(k, bool(v))) for k,v in zip(tbl['_row_key'], tbl['Seç'].tolist())]
+        tbl['Seç']=[bool(selected_map.get(k,bool(v))) for k,v in zip(tbl['_row_key'],tbl['Seç'].tolist())]
     else:
         tbl.insert(0,'Seç',[bool(selected_map.get(k,False)) for k in tbl['_row_key']])
 
@@ -4711,68 +4481,50 @@ def _section_select_table(section_key, data, columns, height=420):
             'Değer_Skoru':st.column_config.ProgressColumn('Değer Skoru',min_value=0,max_value=100,format='%d/100'),
             'Risk':st.column_config.NumberColumn('Risk',format='%d/100'),
             'Risk_Skoru':st.column_config.NumberColumn('Risk',format='%d/100'),
-            'Risk':st.column_config.NumberColumn('Risk',format='%d/100'),
             '_row_key':None
         },
         disabled=[c for c in show_cols if c!='Seç']+['_row_key'],
         hide_index=True,use_container_width=True,height=height,
         key=f'section_editor_{section_key}'
     )
-    st.session_state.section_selections[section_key]={
-        str(r['_row_key']):bool(r['Seç']) for _,r in edited.iterrows()
-    }
-    selected_keys={str(r['_row_key']) for _,r in edited.iterrows() if bool(r['Seç'])}
-    selected=data[
-        data.apply(
-            lambda r:(str(r.get('URL','')) if str(r.get('URL','')).strip() else title_key(str(r.get('Başlık','')))) in selected_keys,
-            axis=1
-        )
-    ].copy()
 
-    # Kullanıcı kronolojiye dönmeden, seçtiği haberleri bulunduğu bölümden sepete atabilsin.
+    st.session_state.section_selections[section_key]=dict(
+        zip(edited['_row_key'].astype(str),edited['Seç'].astype(bool))
+    )
+    selected_keys=set(edited.loc[edited['Seç'].astype(bool),'_row_key'].astype(str))
+    selected=data[_v73_row_keys(data).isin(selected_keys)].copy()
+
     if selected_keys:
-        main_rows=pd.DataFrame(st.session_state.get('rows') or [])
-        if not main_rows.empty:
-            main_selected=main_rows[
-                main_rows.apply(
-                    lambda r:(str(r.get('URL','')) if str(r.get('URL','')).strip() else title_key(str(r.get('Başlık','')))) in selected_keys,
-                    axis=1
-                )
-            ].copy()
-        else:
-            main_selected=pd.DataFrame()
-
-        # V56: Kullanıcı bulunduğu bölümden ayrılmadan üç işlemi de yapabilir.
         a1,a2,a3=st.columns(3)
         with a1:
-            if st.button('📌 Önemli Gelişmelere Ekle',key=f'imp_{section_key}',use_container_width=True):
-                if main_selected.empty:
-                    st.warning('Seçilen haber ana tarama kayıtlarıyla eşleştirilemedi.')
-                else:
-                    n=_add_rows_to_important_basket(main_selected.to_dict('records'))
-                    st.success(f'{n} haber önemli gelişmeler sepetine eklendi.')
+            do_imp=st.button('📌 Önemli Gelişmelere Ekle',key=f'imp_{section_key}',use_container_width=True)
         with a2:
-            if st.button('🗂️ Açık Kaynak Sepetine Ekle',key=f'akt_{section_key}',use_container_width=True):
-                if main_selected.empty:
-                    st.warning('Seçilen haber ana tarama kayıtlarıyla eşleştirilemedi.')
-                else:
-                    n=_add_rows_to_osint_basket(main_selected.to_dict('records'))
-                    st.success(f'{n} haber açık kaynak tarama sepetine eklendi.')
+            do_akt=st.button('🗂️ Açık Kaynak Sepetine Ekle',key=f'akt_{section_key}',use_container_width=True)
         with a3:
-            if st.button('📌 BİLGİ NOTU HAZIRLA / WORD',key=f'note_{section_key}',use_container_width=True):
-                if main_selected.empty:
-                    st.warning('Seçilen haber ana tarama kayıtlarıyla eşleştirilemedi.')
-                else:
-                    with st.spinner(f'{len(main_selected)} seçili haberin tam metni okunuyor ve ayrıntılı bilgi notu hazırlanıyor...'):
-                        try:
-                            st.session_state[f'section_note_bytes_{section_key}']=make_analyst_docx(
-                                main_selected,
-                                title='SANAYİ & TEKNOLOJİ BİLGİ NOTU'
-                            )
-                            _v63_mark_notes(main_selected.to_dict('records'))
-                        except Exception as e:
-                            st.session_state[f'section_note_bytes_{section_key}']=None
-                            st.error(f'Bilgi notu hazırlanamadı: {e}')
+            do_note=st.button('📌 BİLGİ NOTU HAZIRLA / WORD',key=f'note_{section_key}',use_container_width=True)
+
+        # Ağır ana tablo eşleştirmesi sadece gerçek işlem anında yapılır.
+        if do_imp or do_akt or do_note:
+            main_selected=_v73_main_selected(selected_keys)
+            if main_selected.empty:
+                st.warning('Seçilen haber ana tarama kayıtlarıyla eşleştirilemedi.')
+            elif do_imp:
+                n=_add_rows_to_important_basket(main_selected.to_dict('records'))
+                st.success(f'{n} haber önemli gelişmeler sepetine eklendi.')
+            elif do_akt:
+                n=_add_rows_to_osint_basket(main_selected.to_dict('records'))
+                st.success(f'{n} haber açık kaynak tarama sepetine eklendi.')
+            elif do_note:
+                with st.spinner(f'{len(main_selected)} seçili haberin tam metni okunuyor ve ayrıntılı bilgi notu hazırlanıyor...'):
+                    try:
+                        st.session_state[f'section_note_bytes_{section_key}']=make_analyst_docx(
+                            main_selected,title='SANAYİ & TEKNOLOJİ BİLGİ NOTU'
+                        )
+                        _v63_mark_notes(main_selected.to_dict('records'))
+                        _v73_invalidate_status_cache()
+                    except Exception as e:
+                        st.session_state[f'section_note_bytes_{section_key}']=None
+                        st.error(f'Bilgi notu hazırlanamadı: {e}')
 
         section_note_bytes=st.session_state.get(f'section_note_bytes_{section_key}')
         if section_note_bytes:
@@ -4784,7 +4536,6 @@ def _section_select_table(section_key, data, columns, height=420):
                 use_container_width=True,
                 key=f'note_download_{section_key}'
             )
-
     return selected
 
 def _collect_section_selected_from_main_df(df):
@@ -4797,10 +4548,7 @@ def _collect_section_selected_from_main_df(df):
                 keys.add(str(k))
     if not keys:
         return pd.DataFrame()
-    mask=df.apply(
-        lambda r:(str(r.get('URL','')) if str(r.get('URL','')).strip() else title_key(str(r.get('Başlık','')))) in keys,
-        axis=1
-    )
+    mask=_v73_row_keys(df).isin(keys)
     return df[mask].copy()
 
 
@@ -5350,6 +5098,7 @@ st.markdown('---')
 # ============================================================
 # V68 — ANALİST KOMUTA MERKEZİ
 # ============================================================
+st.caption('⚡ V73 performans modu: ağır geçmiş-zincir analizleri kaldırılmış, sepet işlemleri hızlandırılmıştır.')
 st.subheader('🎛️ Analist Komuta Merkezi')
 st.caption(
     'Bu alan çalışma saatine ve içeriğin niteliğine göre işlem önermektedir: Bilgi Notu için veri/istatistik, '
@@ -5410,75 +5159,6 @@ else:
         total=len(df); negc=int((df.Duygu=='Negatif').sum()); riskc=int((df.Risk_Durumu=='Yüksek Risk').sum()); trc=int(df.Kaynak_Grubu.astype(str).str.startswith('🇹🇷').sum()); grc=int(df.Kaynak_Grubu.astype(str).str.startswith('🇬🇷').sum()); events=df['Olay_ID'].nunique()
         a,b,c,d,e,f=st.columns(6); a.metric('Toplam',total); b.metric('Olay',events); c.metric('Negatif',negc); d.metric('Yüksek Risk',riskc); e.metric('🇹🇷 Türk',trc); f.metric('🇬🇷 Yunan',grc)
 
-
-        # ---------------------------------------------------------
-        # V72 — STRATEJİK SİNYAL / OLAY ZİNCİRİ MOTORU
-        # ---------------------------------------------------------
-        st.subheader('🧠 Stratejik Sinyal Motoru — Olay Zinciri')
-        st.caption(
-            'Bu alan haber sayısındaki artışı sinyal kabul etmemektedir. Aynı şirket, kurum veya proje hakkında '
-            'farklı günlerde ortaya çıkan küçük gelişmeleri birbirine bağlamaktadır: kuruluş → personel alımı → '
-            'Ar-Ge/çağrı → yatırım → prototip → üretim → ihracat gibi.'
-        )
-        _signals=_v72_chain_signals(df,6,120)
-        if _signals.empty:
-            st.info(
-                'Henüz birbirini tamamlayan en az iki farklı tarihli ve iki farklı nitelikte gelişmeden oluşan '
-                'bir olay zinciri tespit edilmemiştir. Tarama hafızası biriktikçe sistem aynı şirket/projeleri geriye dönük eşleştirecektir.'
-            )
-        else:
-            for _si,_sr in _signals.iterrows():
-                with st.expander(
-                    f"{_sr['Brifing']} | {_sr['Varlık']} | {_sr['Sinyal']} | Güven: {_sr['Güven']}",
-                    expanded=(_si==0)
-                ):
-                    c1,c2,c3=st.columns(3)
-                    c1.metric('İlk gelişme',_sr['İlk_Gelişme'])
-                    c2.metric('Son gelişme',_sr['Son_Gelişme'])
-                    c3.metric('Güven',_sr['Güven'])
-                    st.markdown('**🔗 Olay zinciri**')
-                    st.write(_sr['Zincir'])
-                    st.markdown(f"**Neden şimdi bildirilmektedir?** {_sr['Neden_Şimdi']}")
-                    st.markdown(f"**Analitik değerlendirme:** {_sr['Değerlendirme']}")
-                    st.markdown(f"**Bundan sonra izlenecek göstergeler:** {_sr['İzlenecek_Göstergeler']}")
-            st.caption(
-                'Önemli: Aynı konuda 1.000 haber çıkması tek başına stratejik sinyal oluşturmamaktadır. '
-                'Sinyal için aynı varlık etrafında zaman içinde birbirini tamamlayan farklı olay türleri aranır.'
-            )
-
-        # ---------------------------------------------------------
-        # V71 — PROAKTİF AMİR BRİFİNGİ
-        # ---------------------------------------------------------
-        st.subheader('🎤 Bana Sorulmadan Önce Cevabı Hazırla — Proaktif Brifing')
-        st.caption(
-            'Sistem seçim yapmanızı beklemeden resmî açıklama, veri/istatistik, resmî teyitli bilgi ve '
-            'somut ürün/teknoloji gelişmeleri arasından amirin sorabileceği konuları kendisi belirlemekte '
-            've cevapları önceden hazırlamaktadır.'
-        )
-        _proactive=_v71_proactive_brief_candidates(df,5)
-        if not _proactive:
-            st.success('Şu anda ayrıca proaktif brifing hazırlanmasını gerektiren güçlü bir konu tespit edilmemiştir.')
-        else:
-            st.markdown(f'**Bugün sorulma ihtimali bulunan {len(_proactive)} konu için cevap hazırdır.**')
-            for _pi,(_rank,_prob,_reasons,_br) in enumerate(_proactive,1):
-                _title=str(_br.get('Başlık','') or 'Gelişme')
-                with st.expander(f'{_pi}. {_prob} | {_title}',expanded=(_pi==1)):
-                    st.markdown('**Neden önceden hazırlanmıştır?** ' + ' • '.join(_reasons))
-                    st.markdown('**Muhtemel Amir Soruları ve Hazır Cevaplar**')
-                    for _q,_a in _v70_boss_questions(_br):
-                        st.markdown(f'**{_q}**')
-                        st.write(_a)
-                    st.markdown('**🎙️ 30 Saniyelik Sözlü Brifing**')
-                    st.info(_v70_30sec_brief(_br))
-                    _u=str(_br.get('URL','') or '')
-                    if _u:
-                        st.link_button('🔗 Haberi / Kaynağı Aç',_u,key=f'v71_source_{_pi}')
-            st.caption(
-                'Proaktif seçimde yalnız popülerlik esas alınmamaktadır. Kurumsal değer, resmî/teyitli bilgi, '
-                'veri-istatistik niteliği ve somut teknoloji gelişmesi önceliklendirilmektedir.'
-            )
-
-        st.markdown('---')
 
         # ---------------------------------------------------------
         # V34 — VARDİYA BAŞLANGIÇ ÖZETİ
