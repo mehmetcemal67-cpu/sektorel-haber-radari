@@ -3257,6 +3257,194 @@ def _v87_safe_tr(text):
         t=t.replace(a,b)
     return re.sub(r'\s+',' ',t).strip()
 
+
+@st.cache_data(ttl=3600,show_spinner=False)
+def _v88_cached_article_detail(title,source,url,fallback,news_time):
+    """Same article is not fetched again for one hour."""
+    try:
+        return article_detail({
+            'Başlık':title,
+            'Kaynak':source,
+            'URL':url,
+            'Yayıncı_URL':url,
+            'İçerik_Özeti':fallback,
+            'Tarih':news_time
+        })
+    except Exception:
+        return {
+            'title':title,'source':source,'canonical':url,
+            'published':news_time,'text':fallback,'images':[]
+        }
+
+def _v88_title_core(title,source=''):
+    """Remove publisher suffixes and headline clutter."""
+    t=_v87_safe_tr(title)
+    source=_v87_safe_tr(source)
+    # Common Google News/source suffix.
+    if source:
+        t=re.sub(r'\s*[-–—]\s*'+re.escape(source)+r'\s*$','',t,flags=re.I)
+    t=re.sub(r'\s*[-–—]\s*(Haberler|Haber|Son Dakika|Gündem)\s*$','',t,flags=re.I)
+    t=re.sub(r'\s+',' ',t).strip(' -–—|')
+    return t
+
+def _v88_sentence_bad(s):
+    s=_v87_safe_tr(s)
+    bad_chars=('Ã','Ä','Å','Â',' ',' ','','')
+    if any(x in s for x in bad_chars):
+        return True
+    n=norm(s)
+    noise=[
+        'sıralamayı değiştirmek','kartları yukarı','tüvtürk en sık',
+        'samsung sevilen modelin','benzer haber','ilgili haber',
+        'devamını oku','çerez','cookie','reklam','foto galeri','video galeri',
+        'ekonomi gazetesi »','araç sahipleri dikkat'
+    ]
+    if any(x in n for x in noise):
+        return True
+    if s.endswith(('…','...')) or re.search(r'\bve k$',s,re.I):
+        return True
+    return False
+
+def _v88_clean_sentences(text):
+    out=[]; seen=set()
+    for s in _sentence_chunks(_v87_safe_tr(text)):
+        s=_v87_safe_tr(s).strip(" []'\";-:")
+        if len(s)<35 or len(s)>430 or _v88_sentence_bad(s):
+            continue
+        k=title_key(s)
+        if not k or k in seen:
+            continue
+        seen.add(k); out.append(s)
+    return out
+
+def _v88_keywords(title):
+    stop={'haber','haberi','son','dakika','bugün','yeni','ile','ve','bir','için','olan','oldu',
+          'olacak','dedi','açıkladı','duyurdu','türkiye','türk'}
+    words=[w for w in re.findall(r'[a-zçğıöşü0-9]+',norm(title)) if len(w)>=4 and w not in stop]
+    return set(words[:12])
+
+def _v88_formal(s):
+    s=_v87_safe_tr(s)
+    pairs=[
+        (r'\baçıkladı\b','açıklamıştır'),(r'\bbelirtti\b','belirtmiştir'),
+        (r'\bduyurdu\b','duyurmuştur'),(r'\bkaydetti\b','kaydetmiştir'),
+        (r'\bifade etti\b','ifade etmiştir'),(r'\bbaşladı\b','başlamıştır'),
+        (r'\btamamladı\b','tamamlamıştır'),(r'\bkazandı\b','kazanmıştır'),
+        (r'\barttı\b','artmıştır'),(r'\bazaldı\b','azalmıştır'),
+        (r'\bgeriledi\b','gerilemiştir'),(r'\byükseldi\b','yükselmiştir'),
+        (r'\bulaştı\b','ulaşmıştır'),(r'\bgerçekleşti\b','gerçekleşmiştir'),
+        (r'\boldu\b','olmuştur'),(r'\byer alacak\b','yer alacaktır'),
+        (r'\bbaşlayacak\b','başlayacaktır'),(r'\bsağlanacak\b','sağlanacaktır'),
+        (r'\bverilecek\b','verilecektir'),(r'\bseçilecek\b','seçilecektir'),
+        (r'\bkazandırılacak\b','kazandırılacaktır'),(r'\bdevam ediyor\b','devam etmektedir'),
+        (r'\bgösteriyor\b','göstermektedir'),(r'\bsağlıyor\b','sağlamaktadır'),
+        (r'\bdikkat çekiyor\b','dikkat çekmektedir')
+    ]
+    for pat,val in pairs:
+        s=re.sub(pat,val,s,flags=re.I)
+    s=_v66_formalize_sentence_endings(s)
+    s=_v87_safe_tr(s).strip()
+    if s:
+        s=s[0].upper()+s[1:]
+    return s
+
+def _v88_summary(title,source,body,fallback):
+    """
+    2-3 complete sentences:
+      1) who/what/where/time introduction
+      2) most critical figure/detail
+      3) result/target if useful
+    Never inserts unrelated article snippets.
+    """
+    title=_v88_title_core(title,source)
+    text=_v87_safe_tr(body or fallback)
+    sents=_v88_clean_sentences(text)
+    if len(sents)<2:
+        sents=_v88_clean_sentences(fallback)
+
+    if not sents:
+        fb=_v87_safe_tr(fallback)
+        if fb:
+            fb=_v88_formal(fb)
+            return fb[:500].rstrip(' ,;')
+        return _v88_formal(title)
+
+    kw=_v88_keywords(title)
+    actor_terms=['cumhurbaşkan','bakan','bakanlık','başkan','tüik','tübitak','tcmb','tse',
+                 'türkpatent','ssb','valili','üniversite','şirket','genel müdür','türk telekom',
+                 'kardemir','togg','aselsan','roketsan','gezeravcı','zeytinoğlu']
+    action_terms=['açıkla','duyur','başlat','gerçekleştir','tamamla','imzala','kazan','yatırım',
+                  'test','görev','üret','satış','başvuru','düzenlen']
+    detail_terms=['%','yüzde','milyon','milyar','bin ','adet','mw','gwh','mwh','km','puan',
+                  'kapasite','ihracat','üretim','satış','hibe','öğrenci','madalya','rekor']
+    result_terms=['hedef','beklen','sağla','katkı','devreye','art','azal','ulaş','rekor',
+                  'başarı','destek','plan','başvuru']
+
+    def overlap(s):
+        sw=set(re.findall(r'[a-zçğıöşü0-9]+',norm(s)))
+        return len(kw & sw)
+    def intro_score(s):
+        n=norm(s)
+        return 5*overlap(s)+3*sum(x in n for x in actor_terms)+3*sum(x in n for x in action_terms)
+    def detail_score(s):
+        n=norm(s)
+        return 4*overlap(s)+3*sum(x in n for x in detail_terms)+min(len(re.findall(r'\d',s)),5)
+    def result_score(s):
+        n=norm(s)
+        return 3*overlap(s)+3*sum(x in n for x in result_terms)+sum(x in n for x in detail_terms)
+
+    # Restrict to topic-related sentences when possible.
+    related=[s for s in sents if overlap(s)>0]
+    pool=related if len(related)>=2 else sents[:10]
+
+    intro=max(pool[:8],key=lambda s:(intro_score(s),-sents.index(s)))
+    chosen=[intro]
+
+    rem=[s for s in pool if s not in chosen]
+    if rem:
+        d=max(rem,key=lambda s:(detail_score(s),-sents.index(s)))
+        if detail_score(d)>0:
+            chosen.append(d)
+
+    rem=[s for s in pool if s not in chosen]
+    if rem:
+        r=max(rem,key=lambda s:(result_score(s),-sents.index(s)))
+        if result_score(r)>0:
+            chosen.append(r)
+
+    if len(chosen)<2:
+        for s in pool:
+            if s not in chosen:
+                chosen.append(s); break
+
+    chosen=sorted(chosen,key=lambda s:sents.index(s))
+    formal=[]
+    for s in chosen[:3]:
+        fs=_v88_formal(s)
+        if fs and not _v88_sentence_bad(fs):
+            formal.append(fs)
+
+    # Remove direct headline duplicates.
+    core=title_key(title)
+    formal=[x for x in formal if title_key(x)!=core] or formal
+
+    # Approx 4 Word lines: max 2-3 complete sentences / ~480 chars.
+    kept=[]; total=0
+    for s in formal:
+        if s and s[-1] not in '.!?':
+            s+='.'
+        add=len(s)+(1 if kept else 0)
+        if kept and total+add>480:
+            break
+        kept.append(s); total+=add
+        if len(kept)>=3:
+            break
+
+    out=' '.join(kept).strip()
+    if not out:
+        out=_v88_formal(fallback or title)
+    return _v87_safe_tr(out)
+
 def _v87_ogn_summary(title, body, fallback):
     """
     Simple, deterministic recovery summarizer:
@@ -3303,8 +3491,11 @@ def _v87_ogn_summary(title, body, fallback):
 
 def make_important_basket_docx(basket_df):
     """
-    V87 recovery: Word is generated ONLY when user presses the button.
-    No item is silently dropped. Uses article_detail if available, then stable fallback.
+    V88:
+    - article fetches run in parallel instead of one-by-one,
+    - results cached for 1 hour,
+    - output order remains basket order,
+    - no item is silently dropped.
     """
     doc=Document(); sec=doc.sections[0]
     sec.top_margin=Cm(2); sec.bottom_margin=Cm(2); sec.left_margin=Cm(2.5); sec.right_margin=Cm(2.5)
@@ -3321,30 +3512,41 @@ def make_important_basket_docx(basket_df):
     if basket_df is None or basket_df.empty:
         doc.add_paragraph('Kayıtlı önemli gelişme bulunmamaktadır.')
     else:
-        for _,rr in basket_df.iterrows():
-            title=_v87_safe_tr(rr.get('title',''))
-            fallback=_v87_safe_tr(rr.get('summary',''))
-            body=fallback
-            try:
-                detail=article_detail({
-                    'Başlık':title,
-                    'Kaynak':_v87_safe_tr(rr.get('source','')),
-                    'URL':str(rr.get('url','') or ''),
-                    'Yayıncı_URL':str(rr.get('url','') or ''),
-                    'İçerik_Özeti':fallback,
-                    'Tarih':_v87_safe_tr(rr.get('news_time',''))
-                })
-                candidate=_v87_safe_tr(detail.get('text',''))
-                if len(candidate)>len(body):
-                    body=candidate
-            except Exception:
-                pass
+        records=basket_df.to_dict('records')
 
-            txt=_v87_ogn_summary(title,body,fallback)
-            # Never silently omit an item.
+        def fetch_one(item):
+            title=_v87_safe_tr(item.get('title',''))
+            source=_v87_safe_tr(item.get('source',''))
+            fallback=_v87_safe_tr(item.get('summary',''))
+            url=str(item.get('url','') or '')
+            news_time=_v87_safe_tr(item.get('news_time',''))
+
+            # If saved summary is already substantial, don't delay Word just to fetch again.
+            # Full article is requested mainly for short/snippet-like summaries.
+            detail={}
+            if len(fallback)<380:
+                detail=_v88_cached_article_detail(title,source,url,fallback,news_time)
+            body=_v87_safe_tr((detail or {}).get('text','') or fallback)
+            return _v88_summary(title,source,body,fallback)
+
+        summaries=['']*len(records)
+        max_workers=min(6,max(1,len(records)))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as ex:
+            futmap={ex.submit(fetch_one,r):idx for idx,r in enumerate(records)}
+            for fut in concurrent.futures.as_completed(futmap):
+                idx=futmap[fut]
+                try:
+                    summaries[idx]=fut.result()
+                except Exception:
+                    rr=records[idx]
+                    summaries[idx]=_v88_summary(
+                        rr.get('title',''),rr.get('source',''),
+                        rr.get('summary',''),rr.get('summary','')
+                    )
+
+        for rr,txt in zip(records,summaries):
             if not txt:
-                txt=fallback or title
-
+                txt=_v88_formal(_v87_safe_tr(rr.get('summary','') or rr.get('title','')))
             p=doc.add_paragraph()
             p.alignment=WD_ALIGN_PARAGRAPH.JUSTIFY
             p.paragraph_format.space_after=Pt(5)
@@ -6247,7 +6449,7 @@ else:
             b1,b2=st.columns(2)
             with b1:
                 if st.button('📄 ÖNEMLİ GELİŞMELER WORD OLUŞTUR',use_container_width=True,key='v87_make_ogn_word'):
-                    with st.spinner('Önemli gelişmeler Word dosyası hazırlanıyor...'):
+                    with st.spinner('Önemli gelişmeler hızlı biçimde özetleniyor ve Word hazırlanıyor...'):
                         st.session_state.basket_docx_bytes=make_important_basket_docx(basket)
                 if st.session_state.get('basket_docx_bytes'):
                     st.download_button(
