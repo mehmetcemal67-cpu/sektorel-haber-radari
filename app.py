@@ -733,6 +733,26 @@ def classify(title,snippet,source_domain=''):
         score=max(0,score-min(8,2*positive_count))
         reasons.append('karma/olumlu unsurlar mevcut')
 
+    # V85 — Açık başarı / ödül / ilerleyen test haberlerini yanlış negatiften koru.
+    # Yalnız başlık açıkça olumluysa ve gerçek ağır olumsuz olay yoksa uygulanır.
+    _tn=norm(title)
+    _positive_title_patterns=[
+        r'\b\d+\s*(?:madalya|ödül)\b', r'\bmadalya kazand', r'\bödül kazand',
+        r'\bşampiyon oldu', r'\bbaşarı elde', r'\brekor kır', r'\btestleri devam ediyor',
+        r'\btestler devam ediyor', r'\btest başarıyla', r'\bbaşarıyla tamamla',
+        r'\bihracat.*art', r'\büretim.*art', r'\bsatış.*art'
+    ]
+    _explicit_bad=any(x in _tn for x in [
+        'başarısız','testi geçemedi','test başarısız','kaza','yangın','patlama','ölüm',
+        'yaralan','iptal','gecik','arıza','iflas','konkordato','siber saldırı','veri sızıntısı',
+        'eleştiri','eleştirdi','yetersiz','tehlikeli','kriz','sorun'
+    ])
+    _clear_positive=any(re.search(p,_tn,re.I) for p in _positive_title_patterns)
+    if _clear_positive and not _explicit_bad and not severe_active:
+        neg=[]; risk=[]; structural=set(); critical_negative=set(); directional=False; persistent=False
+        score=min(score,12)
+        reasons=['açık başarı/olumlu ilerleme haberi; negatif sinyal bastırıldı']
+
     score=max(0,min(100,score))
 
     # En kritik değişiklik: gerçek ve bağlamsal negatif sinyal bulunduysa,
@@ -3150,76 +3170,81 @@ def _v84_score_result(s):
             'kazandır','devreye','pilot','kullanıl','rekor','destek','katkı','başarı']
     return 4*sum(x in ns for x in result)+min(len(re.findall(r'\d',s)),3)
 
+def _v85_title_terms(title):
+    stop={'ve','ile','için','bir','bu','da','de','ile','olan','olarak','son','yeni','türk','türkiye','haber','haberi'}
+    return {w for w in re.findall(r"[a-zA-ZçğıöşüÇĞİÖŞÜ0-9]+",norm(title)) if len(w)>=4 and w not in stop}
+
+def _v85_related_sentence(s,title_terms):
+    ns=norm(s)
+    if not title_terms: return True
+    return sum(1 for w in title_terms if w in ns)>=1
+
+def _v85_formal_intro(title, first_sentence=''):
+    """Başlıktan haber ortası değil, kurumsal bir giriş üretir."""
+    t=_v81_sentence_case_title(_v84_hard_repair_text(title)).strip(' -–—:;')
+    # Kişi/Kurum: açıklama biçimli başlıklar
+    if ':' in t:
+        actor,claim=t.split(':',1)
+        actor=actor.strip(); claim=claim.strip(' “”\"')
+        if actor and claim:
+            return _v84_formalize(f'{actor}, {claim}')
+    # Başlık zaten yüklem taşıyorsa resmileştir.
+    x=_v84_formalize(t)
+    if x and not x.endswith(('.', '!', '?')): x+='.'
+    return x
+
 def _v80_reference_important_summary(title,summary,full_text=''):
-    """
-    V84: Önce düzgün bir giriş cümlesi, sonra kritik rakam/detay, sonra sonuç/önem.
-    2-3 tam cümle; cümle ortasında kesme yok; Word'de yaklaşık 4 satır hedefi.
-    """
-    title=_v81_sentence_case_title(_v84_hard_repair_text(title))
+    """V85: başlıktan düzgün giriş + aynı olaya ait en kritik 2 ayrıntı; 4 satır hedefi."""
+    title=_v84_hard_repair_text(title)
     body=_v84_hard_repair_text(full_text or summary)
-    good=_v84_clean_article_sentences(body)
+    raw=_v84_clean_article_sentences(body)
+    if len(raw)<2:
+        raw=_v84_clean_article_sentences(str(summary)+' '+str(full_text))
+    terms=_v85_title_terms(title)
+    related=[x for x in raw if _v85_related_sentence(x,terms)]
+    if len(related)<2: related=raw[:5]
 
-    if len(good)<2:
-        good=_v84_clean_article_sentences(str(summary)+' '+str(full_text))
-    if not good:
-        return _v84_formalize(title)
+    intro=_v85_formal_intro(title, related[0] if related else '')
+    candidates=[]
+    intro_key=title_key(intro)
+    for x in related:
+        fx=_v84_formalize(x)
+        if not fx or not _v84_sentence_is_clean(fx): continue
+        if title_key(fx)==intro_key: continue
+        candidates.append(fx)
 
-    # Giriş asla haberin ortasından başlamasın: aktör + eylem taşıyan cümleyi seç.
-    intro_candidates=good[:12]
-    intro=max(intro_candidates,key=lambda s:(_v84_score_intro(s),-good.index(s)))
-    if _v84_score_intro(intro)<4:
-        # Güçlü giriş bulunamazsa ilk temiz cümleyi kullan.
-        intro=good[0]
+    # Kritik rakam/yer/kurum içeren cümleleri öne al; aynı haberden en fazla iki ayrıntı.
+    def score(x):
+        ns=norm(x)
+        nums=min(len(re.findall(r'\\d',x)),5)
+        keys=['yüzde','milyon','milyar','bin ','adet','km','mw','gwh','tübitak','tüik','tcmb','bakanlık',
+              'ankara','istanbul','antalya','amasya','kocaeli','hedef','program','yatırım','ihracat','üretim','kapasite']
+        return 3*nums+sum(2 for k in keys if k in ns)
+    candidates=sorted(enumerate(candidates),key=lambda z:(score(z[1]),-z[0]),reverse=True)
+    details=[x for _,x in candidates[:2]]
 
-    chosen=[intro]
-
-    rem=[s for s in good if s not in chosen]
-    if rem:
-        detail=max(rem,key=lambda s:(_v84_score_detail(s),-good.index(s)))
-        if _v84_score_detail(detail)>0:
-            chosen.append(detail)
-
-    rem=[s for s in good if s not in chosen]
-    if rem:
-        result=max(rem,key=lambda s:(_v84_score_result(s),-good.index(s)))
-        if _v84_score_result(result)>0:
-            chosen.append(result)
-
-    # En az iki cümle olsun.
-    if len(chosen)<2:
-        for s in good:
-            if s not in chosen:
-                chosen.append(s)
-                break
-
-    chosen=sorted(chosen,key=lambda s:good.index(s))
-    formal=[_v84_formalize(s) for s in chosen[:3] if _v84_sentence_is_clean(_v84_formalize(s))]
-    text=_clean_note_text(' '.join(formal))
-
-    # Çok uzun cümleler nedeniyle 4 satırı aşmaması için sıkı sınır:
-    # 2 veya 3 TAM cümle, yaklaşık 500 karakter.
-    sents=_sentence_split_tr(text)
+    parts=[intro]+details
+    # Cümle ortasında kesmeden sıkı 4 satır hedefi (~430 karakter).
     kept=[]; total=0
-    for sent in sents:
-        add=len(sent)+(1 if kept else 0)
-        if kept and total+add>500:
-            break
-        kept.append(sent); total+=add
-        if len(kept)>=3:
-            break
-
-    # Eğer ilk cümle tek başına çok uzunsa, güvenli cümle sınırında sıkıştır.
-    if kept and len(' '.join(kept))>520:
-        kept=kept[:2]
-
-    result=' '.join(kept).strip()
-
-    # Son güvenlik: bozuk yabancı karakter kalırsa o cümleyi düşür.
-    final_sents=[s for s in _sentence_split_tr(result) if _v84_sentence_is_clean(s)]
-    return ' '.join(final_sents[:3]).strip()
+    for part in parts:
+        part=_clean_note_text(part).strip()
+        if not part: continue
+        if not part.endswith(('.', '!', '?')): part+='.'
+        add=len(part)+(1 if kept else 0)
+        if kept and total+add>430: continue
+        kept.append(part); total+=add
+        if len(kept)>=3: break
+    if len(kept)==1 and candidates:
+        # Tek başlık kalmasın; en kısa anlamlı ayrıntıyı zorunlu ekle.
+        short=sorted([x for _,x in candidates],key=len)
+        for x in short:
+            if len(x)<220:
+                kept.append(x if x.endswith('.') else x+'.'); break
+    result=' '.join(kept[:3])
+    return _v84_hard_repair_text(result).strip()
 
 def make_important_basket_docx(basket_df):
-    """V83: 5N1K + kritik veri + kurumsal dil esaslı Önemli Gelişmeler Notu."""
+    """V85: kurumsal giriş + kritik ayrıntı + yanlış negatif koruması."""
     doc=Document(); sec=doc.sections[0]
     sec.top_margin=Cm(2); sec.bottom_margin=Cm(2); sec.left_margin=Cm(2.5); sec.right_margin=Cm(2.5)
     normal=doc.styles['Normal']
