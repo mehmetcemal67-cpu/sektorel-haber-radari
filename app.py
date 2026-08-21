@@ -4599,143 +4599,90 @@ def make_important_basket_docx_v92(basket_df):
 
 def make_important_basket_docx_v90(basket_df):
     """
-    V90 ÖGN motoru. Her haber için gerçek metni paralel alır, sırayı korur.
-    Hiçbir haber boş kalmaz; en azından başlık bazlı bir cümle üretilir.
+    Önemli Gelişmeler Word motoru – V90 (güncellenmiş).
+    Her haber için tek, resmî, bilgi dolu bir cümle üretir (≈4 satır).
     """
-    doc=Document(); sec=doc.sections[0]
-    sec.top_margin=Cm(2); sec.bottom_margin=Cm(2)
-    sec.left_margin=Cm(2.5); sec.right_margin=Cm(2.5)
-    normal=doc.styles['Normal']
-    normal.font.name='Times New Roman'; normal.font.size=Pt(12)
-    normal._element.rPr.rFonts.set(qn('w:eastAsia'),'Times New Roman')
+    doc = Document()
+    sec = doc.sections[0]
+    sec.top_margin = Cm(2)
+    sec.bottom_margin = Cm(2)
+    sec.left_margin = Cm(2.5)
+    sec.right_margin = Cm(2.5)
+    normal = doc.styles['Normal']
+    normal.font.name = 'Times New Roman'
+    normal.font.size = Pt(12)
+    normal._element.rPr.rFonts.set(qn('w:eastAsia'), 'Times New Roman')
 
-    now=datetime.now().astimezone()
-    p=doc.add_paragraph(); p.alignment=WD_ALIGN_PARAGRAPH.RIGHT
-    p.add_run(now.strftime('%d/%m/%Y')).bold=True
-    p=doc.add_paragraph()
-    p.add_run('Konu: ').bold=True
+    now = datetime.now().astimezone()
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    p.add_run(now.strftime('%d/%m/%Y')).bold = True
+
+    p = doc.add_paragraph()
+    p.add_run('Konu: ').bold = True
     p.add_run('STB Temsilciliği Önemli Gelişmeler Notu')
 
-    records=[] if basket_df is None else basket_df.to_dict('records')
+    records = [] if basket_df is None else basket_df.to_dict('records')
     if not records:
         doc.add_paragraph('Kayıtlı önemli gelişme bulunmamaktadır.')
     else:
         def process(item):
-            title=_v87_safe_tr(item.get('title',''))
-            source=_v87_safe_tr(item.get('source',''))
-            fallback=_v87_safe_tr(item.get('summary',''))
-            url=str(item.get('url','') or '')
-            news_time=_v87_safe_tr(item.get('news_time',''))
+            title = _v87_safe_tr(item.get('title', ''))
+            source = _v87_safe_tr(item.get('source', ''))
+            fallback = _v87_safe_tr(item.get('summary', ''))
+            url = str(item.get('url', '') or '')
+            news_time = _v87_safe_tr(item.get('news_time', ''))
 
-            detail=_v90_fetch_detail(title,source,url,fallback,news_time)
-            body=_v87_safe_tr((detail or {}).get('text','') or fallback)
-            txt=_v90_item_summary(title,source,body,fallback)
+            # Gerçek haber metnini al (aynı Bilgi Notu mantığı)
+            detail = _v90_fetch_detail(title, source, url, fallback, news_time)
+            body = _v87_safe_tr((detail or {}).get('text', '') or fallback)
 
-            # Eğer hala boşsa, başlığı kullanarak son bir fallback
-            if not txt:
-                clean_title=_v90_clean_title(title,source)
+            # Ana özet: _v89_single_official_sentence kullan
+            txt = _v89_single_official_sentence(title, source, body, fallback)
+
+            # Eğer boş veya çok kısaysa, başlıktan anlamlı bir cümle oluştur
+            if not txt or len(txt) < 60:
+                clean_title = _v90_clean_title(title, source)
                 if clean_title:
-                    txt=_v90_formalize(f"{clean_title} başlıklı gelişme açık kaynaklarda yer almıştır.").rstrip(' .;')+'.'
+                    txt = _v90_formalize(
+                        f"{source} sitesinde yayımlanan haberde {clean_title} konusu ele alınmıştır."
+                    ).rstrip(' .;') + '.'
                 else:
-                    txt="Konuya ilişkin açık kaynak içeriği tespit edilmiştir."
+                    txt = "Konuya ilişkin açık kaynak içeriği tespit edilmiştir."
+
             return txt
 
-        summaries=['']*len(records)
-        workers=min(8,max(1,len(records)))
+        summaries = [''] * len(records)
+        workers = min(8, max(1, len(records)))
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
-            fmap={ex.submit(process,r):i for i,r in enumerate(records)}
+            fmap = {ex.submit(process, r): i for i, r in enumerate(records)}
             for fut in concurrent.futures.as_completed(fmap):
-                idx=fmap[fut]
+                idx = fmap[fut]
                 try:
-                    summaries[idx]=fut.result()
+                    summaries[idx] = fut.result()
                 except Exception:
-                    # Hata durumunda başlıktan basit bir cümle oluştur
-                    rr=records[idx]
-                    fallback_title=_v90_clean_title(rr.get('title',''), rr.get('source',''))
-                    summaries[idx]=_v90_formalize(f"{fallback_title} başlıklı gelişme değerlendirilmiştir.").rstrip(' .;')+'.'
+                    rr = records[idx]
+                    fallback_title = _v90_clean_title(rr.get('title', ''), rr.get('source', ''))
+                    summaries[idx] = _v90_formalize(
+                        f"{fallback_title} başlıklı gelişme değerlendirilmiştir."
+                    ).rstrip(' .;') + '.'
 
-        for rr,txt in zip(records,summaries):
+        for rr, txt in zip(records, summaries):
             if not txt:
-                txt="Gelişmeye ilişkin içerik özetlenememiştir."
-            p=doc.add_paragraph()
-            p.alignment=WD_ALIGN_PARAGRAPH.JUSTIFY
-            p.paragraph_format.space_after=Pt(6)
-            p.paragraph_format.line_spacing=1.0
-            p.add_run(_v87_safe_tr(txt).rstrip(' .;')+' (STB).')
+                txt = "Gelişmeye ilişkin içerik özetlenememiştir."
+            p = doc.add_paragraph()
+            p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+            p.paragraph_format.space_after = Pt(6)
+            p.paragraph_format.line_spacing = 1.0
+            p.add_run(_v87_safe_tr(txt).rstrip(' .;') + ' (STB).')
 
-    p=doc.add_paragraph()
-    p.paragraph_format.space_before=Pt(8)
+    p = doc.add_paragraph()
+    p.paragraph_format.space_before = Pt(8)
     p.add_run('Arz olunur.')
 
-    bio=BytesIO(); doc.save(bio); bio.seek(0)
-    return bio.getvalue()
-def make_important_basket_docx(basket_df):
-    """
-    V88:
-    - article fetches run in parallel instead of one-by-one,
-    - results cached for 1 hour,
-    - output order remains basket order,
-    - no item is silently dropped.
-    """
-    doc=Document(); sec=doc.sections[0]
-    sec.top_margin=Cm(2); sec.bottom_margin=Cm(2); sec.left_margin=Cm(2.5); sec.right_margin=Cm(2.5)
-    normal=doc.styles['Normal']
-    normal.font.name='Times New Roman'; normal.font.size=Pt(12)
-    normal._element.rPr.rFonts.set(qn('w:eastAsia'),'Times New Roman')
-
-    now=datetime.now().astimezone()
-    p=doc.add_paragraph(); p.alignment=WD_ALIGN_PARAGRAPH.RIGHT
-    p.add_run(now.strftime('%d/%m/%Y')).bold=True
-    p=doc.add_paragraph(); p.add_run('Konu: ').bold=True
-    p.add_run('STB Temsilciliği Önemli Gelişmeler Notu')
-
-    if basket_df is None or basket_df.empty:
-        doc.add_paragraph('Kayıtlı önemli gelişme bulunmamaktadır.')
-    else:
-        records=basket_df.to_dict('records')
-
-        def fetch_one(item):
-            title=_v87_safe_tr(item.get('title',''))
-            source=_v87_safe_tr(item.get('source',''))
-            fallback=_v87_safe_tr(item.get('summary',''))
-            url=str(item.get('url','') or '')
-            news_time=_v87_safe_tr(item.get('news_time',''))
-
-            # If saved summary is already substantial, don't delay Word just to fetch again.
-            # Full article is requested mainly for short/snippet-like summaries.
-            detail={}
-            if len(fallback)<380:
-                detail=_v88_cached_article_detail(title,source,url,fallback,news_time)
-            body=_v87_safe_tr((detail or {}).get('text','') or fallback)
-            return _v88_summary(title,source,body,fallback)
-
-        summaries=['']*len(records)
-        max_workers=min(6,max(1,len(records)))
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as ex:
-            futmap={ex.submit(fetch_one,r):idx for idx,r in enumerate(records)}
-            for fut in concurrent.futures.as_completed(futmap):
-                idx=futmap[fut]
-                try:
-                    summaries[idx]=fut.result()
-                except Exception:
-                    rr=records[idx]
-                    summaries[idx]=_v88_summary(
-                        rr.get('title',''),rr.get('source',''),
-                        rr.get('summary',''),rr.get('summary','')
-                    )
-
-        for rr,txt in zip(records,summaries):
-            if not txt:
-                txt=_v88_formal(_v87_safe_tr(rr.get('summary','') or rr.get('title','')))
-            p=doc.add_paragraph()
-            p.alignment=WD_ALIGN_PARAGRAPH.JUSTIFY
-            p.paragraph_format.space_after=Pt(5)
-            p.paragraph_format.line_spacing=1.0
-            p.add_run(_v87_safe_tr(txt).rstrip(' .;')+' (STB).')
-
-    p=doc.add_paragraph(); p.paragraph_format.space_before=Pt(8)
-    p.add_run('Arz olunur.')
-    bio=BytesIO(); doc.save(bio); bio.seek(0)
+    bio = BytesIO()
+    doc.save(bio)
+    bio.seek(0)
     return bio.getvalue()
 
 # -----------------------------
