@@ -400,6 +400,191 @@ def _shift_start_summary(df,current_scan_id=None):
 # _v107_unique_sentences içindeki hashlenemeyen set, frozenset olarak saklanmaktadır.
 # V107 olay/kaynak zenginleştirme mantığı korunmuştur.
 
+
+# ============================================================
+# V109 — PANEL GELİŞTİRMELERİ
+# ============================================================
+
+def _v109_numbers(text):
+    return set(re.findall(
+        r'\b\d+(?:[.,]\d+)?(?:\s*(?:%|yüzde|milyon|milyar|bin|adet|tl|dolar|euro|avro|mw|gw|gwh|mwh|km))?',
+        norm(text)
+    ))
+
+def _v109_sentences(text):
+    out=[]
+    for s in _sentence_chunks(_clean_note_text(text)):
+        s=_clean_note_text(s).strip()
+        if len(s)>=35:
+            out.append(s)
+    return out
+
+def _v109_direct_difference(prev,cur,kind):
+    prev_text=_clean_note_text((prev.get('title') or '')+' '+(prev.get('summary') or ''))
+    cur_text=_clean_note_text((cur.get('title') or '')+' '+(cur.get('summary') or ''))
+
+    if 'RİSK ARTTI' in kind:
+        return (
+            f"Önceki taramada risk düzeyi {int(prev.get('risk_score') or 0)}/100 iken, "
+            f"yeni taramada {int(cur.get('risk_score') or 0)}/100 seviyesine yükselmiştir."
+        )
+    if 'TEYİT GÜÇLENDİ' in kind:
+        return (
+            f"Önceki taramada doğrulama düzeyi “{prev.get('verification','')}” iken, "
+            f"yeni taramada “{cur.get('verification','')}” seviyesine yükselmiştir."
+        )
+    if 'YENİ OLAY' in kind:
+        return 'Önceki karşılaştırma taramasında aynı olaya ilişkin yeterli eşleşme bulunmamaktadır; gelişme yeni olay olarak değerlendirilmiştir.'
+
+    prev_nums=_v109_numbers(prev_text)
+    cur_nums=_v109_numbers(cur_text)
+    new_nums=[x for x in cur_nums if x not in prev_nums]
+    prev_tok=set(_history_tokens(prev_text))
+
+    candidates=[]
+    for s in _v109_sentences(cur.get('summary') or cur_text):
+        toks=set(_history_tokens(s))
+        fresh=[t for t in toks-prev_tok if len(t)>=5 and t not in _V104_GENERIC_EVENT_WORDS]
+        nums=_v109_numbers(s)-prev_nums
+        score=len(fresh)*2+len(nums)*5
+        if score>0:
+            candidates.append((score,s))
+    if candidates:
+        best=max(candidates,key=lambda x:x[0])[1]
+        best=_v66_formalize_sentence_endings(best).strip()
+        if best and best[-1] not in '.!?': best+='.'
+        return (
+            'Önceki taramada yer almayan yeni sayısal/olgusal bilgi tespit edilmiştir: '+best
+            if new_nums else
+            'Önceki taramaya göre yeni ayrıntı eklenmiştir: '+best
+        )
+
+    if new_nums:
+        return 'Önceki taramada bulunmayan yeni sayısal bilgiler açıklanmıştır: '+', '.join(sorted(new_nums)[:5])+'.'
+    return 'Olayın içeriğinde önceki taramaya göre anlamlı yeni ayrıntılar tespit edilmiştir.'
+
+def _compare_since_previous(df,current_scan_id=None):
+    """V109 — yalnız gerçek değişiklikler ve doğrudan 'Ne Değişti?' açıklaması."""
+    current=_v104_event_representatives(df)
+    prev_id=_previous_scan_id(current_scan_id)
+    previous=_load_scan_events(prev_id)
+    if current is None or current.empty:
+        return pd.DataFrame(),None,None
+    if previous.empty:
+        return pd.DataFrame(),prev_id,None
+
+    prev_records=[p.to_dict() for _,p in previous.iterrows()]
+    changes=[]
+    for _,r in current.iterrows():
+        c={
+            'title':str(r.get('Başlık','') or ''),'source':str(r.get('Kaynak','') or ''),
+            'url':str(r.get('URL','') or ''),'category':str(r.get('Kategori','') or ''),
+            'summary':str(r.get('İçerik_Özeti','') or ''),'risk_score':int(r.get('Risk_Skoru',0) or 0),
+            'risk_status':str(r.get('Risk_Durumu','') or ''),'verification':str(r.get('Doğrulama','') or ''),
+            'source_count':int(r.get('Olay_Kaynak_Sayisi',1) or 1)
+        }
+
+        best=None; best_sim=0.0
+        for pr in prev_records:
+            sim=_v104_event_similarity(c['title'],c['summary'],pr.get('title',''),pr.get('summary',''))
+            if c['url'] and c['url']==str(pr.get('url','') or ''):
+                sim=max(sim,0.98)
+            if sim>best_sim:
+                best_sim=sim; best=pr
+
+        if best is None or best_sim<0.50:
+            kind='🆕 YENİ OLAY'; priority=100+c['risk_score']; prev_risk='—'
+            diff=_v109_direct_difference({},c,kind)
+        else:
+            risk_up,verify_up,material,_,_=_v104_material_change(best,c)
+            if risk_up:
+                kind='⚠️ RİSK ARTTI'; priority=95+c['risk_score']
+            elif verify_up:
+                kind='✅ TEYİT GÜÇLENDİ'; priority=90+c['risk_score']
+            elif material:
+                kind='🔄 YENİ BİLGİ'; priority=80+c['risk_score']
+            else:
+                continue
+            prev_risk=int(best.get('risk_score') or 0)
+            diff=_v109_direct_difference(best,c,kind)
+
+        changes.append({
+            'Değişim':kind,'Ne Değişti?':diff,'Başlık':c['title'],'Kaynak':c['source'],
+            'Kategori':c['category'],'Risk':c['risk_score'],'Önceki Risk':prev_risk,
+            'Kaynak Sayısı':c['source_count'],'URL':c['url'],'_priority':priority
+        })
+
+    out=pd.DataFrame(changes)
+    if not out.empty:
+        out['_sig']=out.apply(
+            lambda r:' '.join(sorted(_v104_event_tokens(r.get('Başlık',''),r.get('Ne Değişti?','')))),
+            axis=1
+        )
+        out=out.sort_values(['_priority','Risk'],ascending=[False,False]).drop_duplicates('_sig',keep='first')
+        out=out.drop(columns=['_priority','_sig'],errors='ignore')
+    prev_time=str(previous.iloc[0].get('scanned_at','')) if not previous.empty else None
+    return out,prev_id,prev_time
+
+def _v109_chronology_events(df):
+    if df is None or df.empty:
+        return pd.DataFrame()
+    x=df.copy()
+    x['Tarih_dt']=pd.to_datetime(x.get('Tarih_dt'),utc=True,errors='coerce')
+    rows=[]
+    groups=x.groupby('Olay_ID',dropna=False) if 'Olay_ID' in x.columns else [(f'ROW-{i}',x.iloc[[i]]) for i in range(len(x))]
+    for oid,g in groups:
+        g=g.sort_values('Tarih_dt',ascending=False,na_position='last')
+        recs=g.to_dict('records')
+        rep=max(recs,key=_v107_source_quality) if recs else g.iloc[0].to_dict()
+        latest=g.iloc[0]
+        rep=dict(rep)
+        rep['Tarih_dt']=latest.get('Tarih_dt')
+        rep['Tarih']=latest.get('Tarih')
+        domains={str(v) for v in g.get('Domain',pd.Series(dtype=str)).tolist() if str(v).strip()}
+        sources=list(dict.fromkeys(str(v) for v in g.get('Kaynak',pd.Series(dtype=str)).tolist() if str(v).strip()))
+        rep['Kaynak Sayısı']=max(len(domains),len(sources),int(rep.get('Olay_Kaynak_Sayisi',0) or 0))
+        rep['Haber Sayısı']=len(g)
+        rep['Kaynaklar']=' • '.join(sources[:8])
+        rep['_Olay_ID']=str(oid)
+        rows.append(rep)
+    return pd.DataFrame(rows).sort_values('Tarih_dt',ascending=False,na_position='last').reset_index(drop=True)
+
+def _v109_event_sources(df,event_id):
+    if df is None or df.empty or not event_id or 'Olay_ID' not in df.columns:
+        return pd.DataFrame()
+    x=df[df['Olay_ID'].astype(str)==str(event_id)].copy()
+    if x.empty: return x
+    x['Tarih_dt']=pd.to_datetime(x.get('Tarih_dt'),utc=True,errors='coerce')
+    return x.sort_values('Tarih_dt',ascending=False,na_position='last')
+
+def _v109_official_source_type(r):
+    text=norm(f"{r.get('Kaynak','')} {r.get('Domain','')} {r.get('Başlık','')} {r.get('URL','')}")
+    if 'tuik' in text or 'tüik' in text or 'turkiye istatistik' in text: return 'TÜİK'
+    if 'tubitak' in text or 'tübitak' in text: return 'TÜBİTAK'
+    if 'kosgeb' in text: return 'KOSGEB'
+    if 'turkpatent' in text or 'türkpatent' in text: return 'TÜRKPATENT'
+    if re.search(r'\btse\b',text) or 'türk standartları' in text: return 'TSE'
+    if 'ssb.gov' in text or 'savunma sanayii başkan' in text or 'savunma sanayii baskan' in text: return 'SSB'
+    if 'sanayi.gov' in text or 'sanayi ve teknoloji bakan' in text: return 'Bakanlık'
+    if 'resmigazete' in text or 'resmî gazete' in text or 'resmi gazete' in text: return 'Resmî Gazete'
+    return 'Diğer Resmî'
+
+def _official_radar_rows(df):
+    if df is None or df.empty:
+        return pd.DataFrame()
+    x=df[df.apply(_is_official_radar_row,axis=1)].copy()
+    if x.empty: return x
+    x['Kurum Türü']=x.apply(_v109_official_source_type,axis=1)
+    x=x.sort_values('Tarih_dt',ascending=False,na_position='last')
+    return x.drop_duplicates(subset=['URL','Başlık'])
+
+# ============================================================
+# /V109
+# ============================================================
+
+# V109 — doğrudan fark, olay bazlı kronoloji ve kurum türü filtreli Resmî Kaynak Radarı.
+# V108 kaynak zenginleştirme ve V106 kararlı çekirdek korunmuştur.
+
 st.set_page_config(page_title='Sanayi & Teknoloji OSINT Radarı', page_icon='🛡️', layout='wide')
 
 # ============================================================
@@ -9138,7 +9323,7 @@ else:
                 _section_select_table(
                     'changes',
                     changes_view,
-                    ['Değişim','Başlık','Kaynak','Kategori','Risk','Önceki Risk','Kaynak Sayısı','Açıklama','URL'],
+                    ['Değişim','Ne Değişti?','Başlık','Kaynak','Kategori','Risk','Önceki Risk','Kaynak Sayısı','URL'],
                     height=min(560,70+35*min(len(changes_view),25))
                 )
 
@@ -9295,29 +9480,34 @@ else:
                 '☑️ Hızlı işlem modu: kutucuklara tıklarken sayfa yeniden çalıştırılmaz. '
                 'Seçiminizi yaptıktan sonra aşağıdaki işlem düğmelerinden birine basmanız yeterlidir.'
             )
+            group_events=st.toggle(
+                '🧩 Aynı olayı tek satırda göster',
+                value=True,
+                key='v109_chron_group_events',
+                help='Aynı gelişmenin farklı kaynaklardaki haberlerini tek olay satırında birleştirir.'
+            )
+            chronology_base=_v109_chronology_events(df) if group_events else df.copy()
+
             page_size=40
-            total_pages=max(1,(len(df)+page_size-1)//page_size)
+            total_pages=max(1,(len(chronology_base)+page_size-1)//page_size)
             page_no=st.number_input(
                 'Sayfa',min_value=1,max_value=total_pages,value=1,step=1,
                 key='news_page'
             )
             start_i=(int(page_no)-1)*page_size
-            end_i=min(start_i+page_size,len(df))
-            page_df=df.iloc[start_i:end_i].copy()
+            end_i=min(start_i+page_size,len(chronology_base))
+            page_df=chronology_base.iloc[start_i:end_i].copy()
 
-            # Tarayıcı yükünü azalt: yalnız görünür sayfadaki kısa özet gönderilir.
             page_df['İçerik_Özeti']=page_df['İçerik_Özeti'].astype(str).str.slice(0,220)
-
-            # Durum rozetleri tek cache okumasıyla eklenir.
             page_df=_v63_add_status_badges(page_df)
             chron_cols=[
-                'Seç','Tarih','Kaynak_Grubu','Kaynak','Kategori','Başlık','Durum',
-                'İçerik_Özeti','Duygu','Risk_Skoru','Risk_Durumu',
-                'Kaynak_Güvenilirliği','Doğrulama','URL'
+                'Seç','Tarih','Kaynak_Grubu','Kaynak','Kaynak Sayısı','Haber Sayısı',
+                'Kategori','Başlık','Durum','İçerik_Özeti','Duygu','Risk_Skoru',
+                'Risk_Durumu','Kaynak_Güvenilirliği','Doğrulama','URL'
             ]
             chron_cols=[c for c in chron_cols if c in page_df.columns]
 
-            st.caption(f'{start_i+1}-{end_i} / {len(df)} haber')
+            st.caption(f'{start_i+1}-{end_i} / {len(chronology_base)} kayıt' + (' (olay bazlı)' if group_events else ' haber'))
 
             # FORM: checkbox tıklamaları rerun yapmaz. Yalnız işlem butonuna basınca tek rerun olur.
             with st.form(
@@ -9331,6 +9521,8 @@ else:
                         'URL':st.column_config.LinkColumn('Haber Linki'),
                         'İçerik_Özeti':st.column_config.TextColumn('Kısa İçerik',width='large'),
                         'Risk_Skoru':st.column_config.NumberColumn('Risk',format='%d/100'),
+                        'Kaynak Sayısı':st.column_config.NumberColumn('Kaynak',format='%d'),
+                        'Haber Sayısı':st.column_config.NumberColumn('Haber',format='%d'),
                         'Durum':st.column_config.TextColumn('Durum',width='medium')
                     },
                     disabled=[x for x in chron_cols if x!='Seç'],
@@ -9392,6 +9584,33 @@ else:
                     use_container_width=True,
                     key='v74_chron_note_download'
                 )
+
+
+            if group_events and not page_df.empty and '_Olay_ID' in page_df.columns:
+                with st.expander('🔎 Olayın tüm kaynaklarını aç',False):
+                    _event_options={
+                        f"{str(r.get('Başlık',''))[:120]} — {int(r.get('Kaynak Sayısı',1) or 1)} kaynak":str(r.get('_Olay_ID',''))
+                        for _,r in page_df.iterrows()
+                    }
+                    if _event_options:
+                        _event_label=st.selectbox(
+                            'Kaynaklarını görmek istediğiniz olay',
+                            list(_event_options.keys()),
+                            key=f'v109_event_source_select_{int(page_no)}'
+                        )
+                        _event_sources=_v109_event_sources(df,_event_options.get(_event_label))
+                        if _event_sources.empty:
+                            st.info('Bu olay için ayrıntılı kaynak kaydı bulunamadı.')
+                        else:
+                            st.dataframe(
+                                _event_sources[['Tarih','Kaynak','Başlık','İçerik_Özeti','URL']].head(20),
+                                column_config={
+                                    'URL':st.column_config.LinkColumn('Haber Linki'),
+                                    'İçerik_Özeti':st.column_config.TextColumn('Kısa İçerik',width='large')
+                                },
+                                hide_index=True,use_container_width=True,
+                                height=min(520,80+42*len(_event_sources.head(20)))
+                            )
 
         elif view=='⚠️ Negatif':
             _section_select_table(
@@ -9855,11 +10074,17 @@ else:
         if official_radar.empty:
             st.info('Bu taramada resmî/birincil kaynaklardan eşleşen yeni içerik bulunamadı.')
         else:
+            _types=['Tümü']+[
+                x for x in ['Bakanlık','TÜİK','TÜBİTAK','KOSGEB','TÜRKPATENT','TSE','SSB','Resmî Gazete','Diğer Resmî']
+                if x in set(official_radar['Kurum Türü'].astype(str))
+            ]
+            _official_type=st.radio('Kaynak türü',_types,horizontal=True,key='v109_official_source_type')
+            _official_show=official_radar if _official_type=='Tümü' else official_radar[official_radar['Kurum Türü']==_official_type]
             _section_select_table(
-                'official_radar',
-                official_radar.head(30),
-                ['Tarih','Kaynak','Kategori','Başlık','İçerik_Özeti','Risk_Skoru','Doğrulama','URL'],
-                height=min(600,90+38*min(len(official_radar),30))
+                'official_radar_'+re.sub(r'[^a-zA-Z0-9]+','_',norm(_official_type)),
+                _official_show.head(30),
+                ['Tarih','Kurum Türü','Kaynak','Kategori','Başlık','İçerik_Özeti','Risk_Skoru','Doğrulama','URL'],
+                height=min(600,90+38*min(len(_official_show),30))
             )
 
         st.markdown('---')
