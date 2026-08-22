@@ -3366,7 +3366,7 @@ def _information_note_candidates(df,current_scan_id=None,limit=10):
     change_map={}
     if not changes.empty:
         for _,c in changes.iterrows():
-            change_map[c['Başlık']]=c['Değişim']
+            change_map[c['Başlık']]=c.get('Değişim',c.get('Tür',''))
 
     rows=[]
     for _,r in events.iterrows():
@@ -8989,6 +8989,140 @@ def _compare_since_previous(df,current_scan_id=None):
 # V110 — V109 düzeltmesi: override sırası düzeltildi; Resmî Kaynak Radarı KeyError giderildi;
 # Dünden Beri Ne Değişti tablosunda 'Ne Değişti?' ana sütun haline getirildi ve benzer yeni olaylar birleştirildi.
 
+
+# ============================================================
+# V111 — DÜNDEN BERİ / PANEL DEVAMLILIĞI DÜZELTMESİ
+# ============================================================
+
+def _compare_since_previous(df,current_scan_id=None):
+    """
+    V111:
+    - 'Ne Değişti?' başlığı tekrar etmez.
+    - Yeni olayda yalnızca olayın önceki taramada bulunmadığını söyler;
+      olayın kendisi zaten Başlık sütununda görülür.
+    - Eski modüller için 'Değişim' alanı korunur; yeni UI için 'Tür' de bulunur.
+      Böylece Bilgi Notu Adayları ve panelin devamı KeyError ile durmaz.
+    """
+    current=_v104_event_representatives(df)
+    prev_id=_previous_scan_id(current_scan_id)
+    previous=_load_scan_events(prev_id)
+
+    empty_cols=['Ne Değişti?','Tür','Değişim','Başlık','Kaynak','Kategori',
+                'Risk','Önceki Risk','Kaynak Sayısı','URL']
+
+    if current is None or current.empty:
+        return pd.DataFrame(columns=empty_cols),None,None
+    if previous.empty:
+        return pd.DataFrame(columns=empty_cols),prev_id,None
+
+    prev_records=[p.to_dict() for _,p in previous.iterrows()]
+    changes=[]
+
+    for _,r in current.iterrows():
+        c={
+            'title':str(r.get('Başlık','') or ''),
+            'source':str(r.get('Kaynak','') or ''),
+            'url':str(r.get('URL','') or ''),
+            'category':str(r.get('Kategori','') or ''),
+            'summary':str(r.get('İçerik_Özeti','') or ''),
+            'risk_score':int(r.get('Risk_Skoru',0) or 0),
+            'risk_status':str(r.get('Risk_Durumu','') or ''),
+            'verification':str(r.get('Doğrulama','') or ''),
+            'source_count':int(r.get('Olay_Kaynak_Sayisi',1) or 1)
+        }
+
+        best=None
+        best_sim=0.0
+        for pr in prev_records:
+            sim=_v104_event_similarity(
+                c['title'],c['summary'],
+                pr.get('title',''),pr.get('summary','')
+            )
+            if c['url'] and c['url']==str(pr.get('url','') or ''):
+                sim=max(sim,0.98)
+            if sim>best_sim:
+                best_sim=sim
+                best=pr
+
+        if best is None or best_sim<0.50:
+            kind='🆕 YENİ OLAY'
+            priority=100+c['risk_score']
+            prev_risk='—'
+            # Başlık zaten ayrı sütunda. Burada onu yeniden yazma.
+            if c['source']:
+                diff=(
+                    f"Bu olaya ilişkin kayıt önceki taramada bulunmamaktadır; "
+                    f"gelişme mevcut taramada ilk kez {c['source']} kaynağında tespit edilmiştir."
+                )
+            else:
+                diff=(
+                    "Bu olaya ilişkin kayıt önceki taramada bulunmamaktadır; "
+                    "gelişme mevcut taramada ilk kez tespit edilmiştir."
+                )
+        else:
+            risk_up,verify_up,material,_,_=_v104_material_change(best,c)
+
+            if risk_up:
+                kind='⚠️ RİSK ARTTI'
+                priority=95+c['risk_score']
+            elif verify_up:
+                kind='✅ TEYİT GÜÇLENDİ'
+                priority=90+c['risk_score']
+            elif material:
+                kind='🔄 YENİ BİLGİ'
+                priority=80+c['risk_score']
+            else:
+                continue
+
+            prev_risk=int(best.get('risk_score') or 0)
+            diff=_v109_direct_difference(best,c,kind)
+
+        changes.append({
+            'Ne Değişti?':diff,
+            'Tür':kind,
+            # Geriye dönük uyumluluk: mevcut aday/özet fonksiyonları bunu kullanıyor.
+            'Değişim':kind,
+            'Başlık':c['title'],
+            'Kaynak':c['source'],
+            'Kategori':c['category'],
+            'Risk':c['risk_score'],
+            'Önceki Risk':prev_risk,
+            'Kaynak Sayısı':c['source_count'],
+            'URL':c['url'],
+            '_priority':priority
+        })
+
+    out=pd.DataFrame(changes)
+    if out.empty:
+        return pd.DataFrame(columns=empty_cols),prev_id,str(previous.iloc[0].get('scanned_at',''))
+
+    # Aynı yeni olayın farklı kaynaklarını tek satırda birleştir.
+    out=_v110_merge_change_rows(out)
+
+    # Birleştirme sonrası iki isim de kesinlikle bulunsun.
+    if 'Tür' not in out.columns and 'Değişim' in out.columns:
+        out['Tür']=out['Değişim']
+    if 'Değişim' not in out.columns and 'Tür' in out.columns:
+        out['Değişim']=out['Tür']
+
+    out=out.sort_values(['_priority','Risk'],ascending=[False,False],na_position='last')
+    out=out.drop(columns=['_priority'],errors='ignore')
+
+    # UI başlığı tekrar etmesin; fakat eski fonksiyonlar Değişim'i kullanabilsin.
+    ordered=[c for c in empty_cols if c in out.columns]
+    extras=[c for c in out.columns if c not in ordered]
+    out=out[ordered+extras]
+
+    prev_time=str(previous.iloc[0].get('scanned_at','')) if not previous.empty else None
+    return out,prev_id,prev_time
+
+# ============================================================
+# /V111
+# ============================================================
+
+# V111 — Bilgi Notu Adayları KeyError düzeltildi; panelin devamı artık yüklenir.
+# 'Ne Değişti?' yeni olaylarda başlığı tekrar etmez; Değişim/Tür çift alanı ile geriye dönük uyumluluk sağlanmıştır.
+
 # -----------------------------
 # UI
 # -----------------------------
@@ -9470,10 +9604,11 @@ else:
             if changes.empty:
                 st.success('Önceki taramaya göre anlamlı yeni olay, risk artışı, teyit artışı veya içerik güncellemesi tespit edilmedi.')
             else:
-                new_n=int(changes['Tür'].astype(str).str.contains('YENİ OLAY').sum())
-                upd_n=int(changes['Tür'].astype(str).str.contains('YENİ BİLGİ').sum())
-                risk_n=int(changes['Tür'].astype(str).str.contains('RİSK ARTTI').sum())
-                ver_n=int(changes['Tür'].astype(str).str.contains('TEYİT').sum())
+                _change_type_col='Tür' if 'Tür' in changes.columns else 'Değişim'
+                new_n=int(changes[_change_type_col].astype(str).str.contains('YENİ OLAY').sum())
+                upd_n=int(changes[_change_type_col].astype(str).str.contains('YENİ BİLGİ').sum())
+                risk_n=int(changes[_change_type_col].astype(str).str.contains('RİSK ARTTI').sum())
+                ver_n=int(changes[_change_type_col].astype(str).str.contains('TEYİT').sum())
                 q1,q2,q3,q4=st.columns(4)
                 q1.metric('Yeni Olay',new_n)
                 q2.metric('Yeni Bilgi',upd_n)
