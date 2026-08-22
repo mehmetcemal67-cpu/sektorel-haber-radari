@@ -392,6 +392,14 @@ def _shift_start_summary(df,current_scan_id=None):
 # Yalnızca görünür 'Resmî Açıklama – Medya Karşılaştırması' paneli kaldırılmıştır.
 # Sorgu/negatif tarama yardımcı fonksiyonları ve V104 çekirdeği korunmuştur.
 
+# V107 — Sepete eklemede aynı olayın mevcut taramadaki kaynakları otomatik zenginleştirilir.
+# Yerel/kısa sürüm seçilse bile resmî/ana akım/daha ayrıntılı sürüm ve kritik veriler birleştirilir.
+# Ek ağ isteği yapılmaz; V106 kararlı çekirdeği korunur.
+
+# V108 — V107 zenginleştirme TypeError düzeltmesi:
+# _v107_unique_sentences içindeki hashlenemeyen set, frozenset olarak saklanmaktadır.
+# V107 olay/kaynak zenginleştirme mantığı korunmuştur.
+
 st.set_page_config(page_title='Sanayi & Teknoloji OSINT Radarı', page_icon='🛡️', layout='wide')
 
 # ============================================================
@@ -3319,6 +3327,7 @@ def _shift_start_summary(df,current_scan_id=None):
     return stats,top,baseline_label
 
 def _add_rows_to_important_basket(rows):
+    rows=_v107_enrich_selected_rows(rows)
     if rows is None or len(rows)==0 or not _init_history_db():
         return 0
     added=0
@@ -3367,6 +3376,7 @@ def _load_important_basket():
 
 
 def _add_rows_to_osint_basket(rows):
+    rows=_v107_enrich_selected_rows(rows)
     if rows is None or len(rows)==0 or not _init_history_db():
         return 0
     added=0
@@ -3938,7 +3948,7 @@ def _v87_ogn_summary(title, body, fallback):
     return out or (fallback[:520].strip() if fallback else title[:520].strip())
 
 
-V90_OGN_ENGINE_VERSION='v103_tek_cumle_liste_filtresi_20260822_1'
+V90_OGN_ENGINE_VERSION='v104_mevcut_bolum_olgunlastirma_20260822_1'
 
 def _v90_clean_title(title,source=''):
     t=_v87_safe_tr(title)
@@ -4926,37 +4936,6 @@ _V99_NEWS_SPEECH = [
     (r'\bseçilecek\b', 'seçilecektir'),
     (r'\byetiştireceğiz\b', 'yetiştirilmesi planlanmaktadır'),
     (r'\bkazandıracağız\b', 'kazandırılması hedeflenmektedir'),
-    # V103 — sık görülen ek fiiller (önceki liste yaygın birkaç fiili kapsıyordu).
-    (r'\boldu\b', 'olmuştur'),
-    (r'\btanıttı\b', 'tanıtmıştır'),
-    (r'\bsergilendi\b', 'sergilenmiştir'),
-    (r'\bkatıldı\b', 'katılmıştır'),
-    (r'\bimzaladı\b', 'imzalamıştır'),
-    (r'\bimzalandı\b', 'imzalanmıştır'),
-    (r'\bgerçekleştirdi\b', 'gerçekleştirmiştir'),
-    (r'\bdüzenlendi\b', 'düzenlenmiştir'),
-    (r'\bsundu\b', 'sunmuştur'),
-    (r'\büretti\b', 'üretmiştir'),
-    (r'\bgeliştirdi\b', 'geliştirmiştir'),
-    (r'\bbaşlattı\b', 'başlatmıştır'),
-    (r'\bteslim etti\b', 'teslim etmiştir'),
-    (r'\bziyaret etti\b', 'ziyaret etmiştir'),
-    (r'\bdeğerlendirdi\b', 'değerlendirmiştir'),
-    (r'\bvurguladı\b', 'vurgulamıştır'),
-    (r'\bplanladı\b', 'planlamıştır'),
-    (r'\belde etti\b', 'elde etmiştir'),
-    (r'\bdevretti\b', 'devretmiştir'),
-    (r'\bkurdu\b', 'kurmuştur'),
-    (r'\baçtı\b', 'açmıştır'),
-    (r'\byaptı\b', 'yapmıştır'),
-    (r'\bsattı\b', 'satmıştır'),
-    (r'\bkazandı\b', 'kazanmıştır'),
-    (r'\byer aldı\b', 'yer almıştır'),
-    (r'\bindirildi\b', 'indirilmiştir'),
-    (r'\bteslim edildi\b', 'teslim edilmiştir'),
-    (r'\bentegre edildi\b', 'entegre edilmiştir'),
-    (r'\binşa edildi\b', 'inşa edilmiştir'),
-    (r'\baçıklandı\b', 'açıklanmıştır'),
 ]
 
 def _v99_clean_article_text(text, source=''):
@@ -4977,13 +4956,10 @@ def _v99_clean_article_text(text, source=''):
     t=' '.join(kept)
 
     # Kaynak adını cümle başından/sonundan temizle.
-    # NOT: ayırıcı karakter ZORUNLUDUR (en az bir tanesi). Aksi hâlde "TÜİK
-    # tarafından açıklandı" gibi kaynağın haberin GERÇEK ÖZNESİ olduğu
-    # cümlelerde de kaynak adı site adı sanılıp silinir, cümle öznesiz kalır.
     if source:
         ss=re.escape(_v98_safe_tr(source))
-        t=re.sub(r'^\s*'+ss+r'\s*[-:»|]+\s*','',t,flags=re.I)
-        t=re.sub(r'\s*[-:»|]+\s*'+ss+r'\s*$','',t,flags=re.I)
+        t=re.sub(r'^\s*'+ss+r'\s*[-:»|]*\s*','',t,flags=re.I)
+        t=re.sub(r'\s*[-:»|]*\s*'+ss+r'\s*$','',t,flags=re.I)
 
     # Genel domainleri ve tipik gazete navigasyonunu kaldır.
     t=re.sub(r'\b[\w.-]+\.(?:com\.tr|com|net|org|gov\.tr|edu\.tr)\b',' ',t,flags=re.I)
@@ -5565,205 +5541,6 @@ def _v101_analyst_paragraph(title,source,body,fallback=''):
     text=re.sub(r'\s+[A-ZÇĞİÖŞÜ0-9][A-ZÇĞİÖŞÜ0-9\s\'’-]{8,}\s*!?\s*(?=\.|$)','',text)
     text=re.sub(r'\s+',' ',text).strip()
     return text
-
-# ===================== V103: ÖGN — TEK CÜMLE + LİSTE-SAYFASI FİLTRESİ =====================
-# V101/V102, her haber için birden fazla cümleyi (giriş+gelişme+sonuç) yan yana
-# ekliyordu. Gerçek kullanımda bu şu sorunlara yol açtı:
-#   - "En iyi 10 X" tipi liste sayfalarından sızan, boşluksuz madde numaraları
-#     ("8.Mercedes-Benz" gibi) ve dengesiz parantezli model karşılaştırmaları
-#     paragrafın içine karışıyordu,
-#   - Habere hiç konu bakımından yakın olmayan (yanlış sayfa eşleşmesi)
-#     cümleler de skorlama sırasında seçilebiliyordu,
-#   - Bir habere ait ayrı ayrı (bazen tekrarlayan) cümleler birleştirilince
-#     örnek STB notunda hiç görülmeyen parçalı bir metin ortaya çıkıyordu.
-# V103 örnek notla birebir aynı biçimi hedefler: HER MADDE TEK CÜMLEDİR ve bu
-# cümle mutlaka başlıkla konu bakımından ilişkilidir.
-
-def _v103_bad_fragment(s):
-    """
-    Liste/spec sayfalarından sızan madde numaralandırması, dengesiz parantez
-    veya art arda model/ürün karşılaştırması (çoklu '/') gibi örüntüleri
-    tespit eder. Bunlardan biri varsa cümle ÖGN'ye asla alınmaz.
-    """
-    if s.count('(')!=s.count(')'):
-        return True
-    # "8.Mercedes-Benz", "9.Toyota" gibi boşluksuz liste numaralandırması;
-    # normal cümlelerde noktadan sonra bitişik büyük harf neredeyse hiç olmaz.
-    if re.search(r'\b\d{1,2}\.(?=[A-ZÇĞİÖŞÜ])', s):
-        return True
-    # Aynı cümlede ikiden fazla '/' -> genelde model/ürün/karşılaştırma listesi.
-    if s.count('/')>=2:
-        return True
-    return False
-
-def _v103_title_sentence(title, source=''):
-    """
-    Haber gövdesinden konuyla ilgili/kullanılabilir cümle çıkarılamadığında
-    (ör. içerik alınamadı ya da yanlış sayfa eşleşti) başlıktan TEK resmî
-    cümle üretir. Uydurma bilgi eklemez.
-    """
-    t=_v100_title_topic(title,source) if source else _v101_clean_unicode(title)
-    t=_v101_clean_unicode(t).strip(' -–—:;')
-    if not t:
-        return ''
-
-    # '"Alıntı" Aktör: açıklama' / '"Alıntı" Aktör' biçimli açıklama
-    # başlıklarını "Aktör, ... açıklamasında bulunmuştur." cümlesine çevir.
-    qm=re.match(r'^["“]([^"”]{4,180})["”]\s*(.+)$',t)
-    if qm:
-        quote,rest=qm.group(1).strip(),qm.group(2).strip(' -–—:;')
-        if ':' in rest:
-            actor,extra=rest.split(':',1)
-            actor=actor.strip(); extra=extra.strip(' "\u201c\u201d\u2018\u2019')
-        else:
-            actor,extra=rest.strip(),''
-        if actor:
-            if extra:
-                body=_v101_formal_sentence(extra).strip()
-                if body:
-                    if body[-1] not in '.!?': body+='.'
-                    t=f'{actor}, {body}'
-                    return t[:1].upper()+t[1:]
-            quote_fmt=quote[:1].upper()+quote[1:]
-            return f'{actor}, "{quote_fmt}" açıklamasında bulunmuştur.'
-
-    # "Aktör: açıklama" biçimli başlıkları "Aktör, açıklama" cümlesine çevir.
-    if ':' in t:
-        actor,claim=t.split(':',1)
-        actor=actor.strip(); claim=claim.strip(' "\u201c\u201d\u2018\u2019')
-        if actor and claim:
-            t=f'{actor}, {claim}'
-    s=_v101_formal_sentence(t).strip()
-    if not s:
-        return ''
-    if s[-1] not in '.!?':
-        s+='.'
-    return s[:1].upper()+s[1:]
-
-def _v103_single_sentence(title, source, body, fallback=''):
-    """
-    V103 — ÖGN maddesi TEK, tam, resmî ve KONUYLA İLGİLİ bir cümle olarak
-    üretilir. Örnek STB notundaki her madde bu biçimdedir (bkz. sınıf yorumu).
-    """
-    title=_v101_clean_unicode(title)
-    source=_v101_clean_unicode(source)
-    body=_v99_clean_article_text(_v101_clean_unicode(body),source)
-    fallback=_v99_clean_article_text(_v101_clean_unicode(fallback),source)
-
-    candidate=body
-    if not candidate or _v99_is_title_only(title,candidate):
-        candidate=fallback
-
-    raw=_v96_unique_sentences(title,candidate)
-    sents=[]
-    for s in raw:
-        s=_v99_clean_article_text(_v101_clean_unicode(s),source)
-        if _v101_bad_sentence(s) or _v99_is_title_only(title,s):
-            continue
-        if _v103_bad_fragment(s):
-            continue
-        # Başlıkla EN AZ 1 anlamlı kelime paylaşmayan cümle, habere ait
-        # olmayabilir (yanlış sayfa eşleşmesi); bu ihtimale karşı reddedilir.
-        if _v101_sentence_overlap(title,s)==0:
-            continue
-        sents.append(s)
-
-    if not sents:
-        return _v103_title_sentence(title,source)
-
-    intro,_=_v101_build_intro(title,source,sents)
-    if not intro:
-        return _v103_title_sentence(title,source)
-
-    s=_v101_formal_sentence(intro).strip()
-    if not s or _v103_bad_fragment(s):
-        return _v103_title_sentence(title,source)
-    if s[-1] not in '.!?':
-        s+='.'
-    s=s[:1].upper()+s[1:]
-
-    # Başlığın birebir tekrarı olmasın.
-    if title_key(s)==title_key(title):
-        alt=_v103_title_sentence(title,source)
-        if alt and title_key(alt)!=title_key(title):
-            return alt
-
-    text=_v101_clean_unicode(s)
-    text=re.sub(r'\s+[A-ZÇĞİÖŞÜ0-9][A-ZÇĞİÖŞÜ0-9\s\'’-]{8,}\s*!?\s*(?=\.|$)','',text)
-    text=re.sub(r'\s+',' ',text).strip()
-    return text
-
-def make_important_basket_docx_v103(basket_df):
-    """
-    V103 — STB Önemli Gelişmeler Notu örneğiyle birebir uyumlu biçim:
-    her madde TEK, tam ve resmî bir cümledir; liste-sayfası sızıntıları ve
-    başlıkla ilgisiz içerikler otomatik olarak elenir.
-    """
-    doc=Document()
-    sec=doc.sections[0]
-    sec.top_margin=Cm(2); sec.bottom_margin=Cm(2)
-    sec.left_margin=Cm(2.5); sec.right_margin=Cm(2.5)
-
-    normal=doc.styles['Normal']
-    normal.font.name='Times New Roman'
-    normal.font.size=Pt(11)
-    normal._element.rPr.rFonts.set(qn('w:eastAsia'),'Times New Roman')
-
-    now=datetime.now().astimezone()
-    p=doc.add_paragraph(); p.alignment=WD_ALIGN_PARAGRAPH.RIGHT
-    p.add_run(now.strftime('%d/%m/%Y')).bold=True
-    p=doc.add_paragraph()
-    p.add_run('Konu: ').bold=True
-    p.add_run('STB Temsilciliği Önemli Gelişmeler Notu')
-
-    rows=[] if basket_df is None else basket_df.to_dict('records')
-
-    def process_row(r):
-        title=_v101_clean_unicode(r.get('title',''))
-        source=_v101_clean_unicode(r.get('source',''))
-        summary=_v101_clean_unicode(r.get('summary',''))
-        url=str(r.get('url','') or '')
-        news_time=_v101_clean_unicode(r.get('news_time',''))
-
-        detail={}
-        try:
-            detail=article_detail({
-                'Başlık':title,'Kaynak':source,'URL':url,'Yayıncı_URL':url,
-                'İçerik_Özeti':summary,'Tarih':news_time
-            }) or {}
-        except Exception:
-            pass
-
-        text=_v103_single_sentence(title,source,detail.get('text') or '',summary)
-        if not text and summary:
-            text=_v103_single_sentence(title,source,summary,summary)
-        return text
-
-    outputs=['']*len(rows)
-    if rows:
-        with concurrent.futures.ThreadPoolExecutor(max_workers=min(6,len(rows))) as ex:
-            jobs={ex.submit(process_row,r):i for i,r in enumerate(rows)}
-            for fut in concurrent.futures.as_completed(jobs):
-                idx=jobs[fut]
-                try: outputs[idx]=fut.result()
-                except Exception: outputs[idx]=''
-
-    for idx,r in enumerate(rows):
-        text=_v101_clean_unicode(outputs[idx] if idx<len(outputs) else '')
-        if not text:
-            # İçeriksiz/konu dışı kayıt sahte bir özetle doldurulmuyor; atlanır.
-            continue
-        p=doc.add_paragraph()
-        p.alignment=WD_ALIGN_PARAGRAPH.JUSTIFY
-        p.paragraph_format.line_spacing=1.0
-        p.paragraph_format.space_after=Pt(6)
-        p.add_run(text.rstrip(' .;')+' (STB).')
-
-    p=doc.add_paragraph()
-    p.paragraph_format.space_before=Pt(8)
-    p.add_run('Arz olunur.')
-    bio=BytesIO(); doc.save(bio); bio.seek(0)
-    return bio.getvalue()
 
 def make_important_basket_docx_v101(basket_df):
     doc=Document()
@@ -8253,6 +8030,158 @@ def _v73_row_keys(df):
     return urls.where(urls.ne(''),fallback)
 
 
+
+# ============================================================
+# V107 — OLAY BAZLI KAYNAK ZENGİNLEŞTİRME
+# Kullanıcı yerel/kısa bir haberi seçse bile aynı taramadaki aynı olayın
+# ana akım/resmî/daha ayrıntılı sürümleri birleştirilerek sepete aktarılır.
+# Ek web isteği YOKTUR; yalnız mevcut tarama havuzu kullanılır.
+# ============================================================
+
+def _v107_source_quality(row):
+    """Bir olay kümesinde hangi haber sürümünün ana taşıyıcı olacağını puanlar."""
+    d=str(row.get('Domain','') or '')
+    source=str(row.get('Kaynak','') or '')
+    text=_clean_note_text(row.get('İçerik_Özeti',''))
+    score=0
+    if d in TR_OFFICIAL:
+        score+=80
+    elif d in TR_MAIN:
+        score+=55
+    elif d in TR_TECH:
+        score+=45
+    elif d in SOCIAL:
+        score+=5
+    else:
+        score+=20
+    # Ayrıntılı gövdeyi ödüllendir; aşırı uzun portal artıklarına sınırsız puan verme.
+    score+=min(len(text)//180,30)
+    score+=min(len(re.findall(r'\b\d+(?:[.,]\d+)?\b',text))*2,16)
+    if _verification_rank(row.get('Doğrulama',''))>=3:
+        score+=12
+    if source and norm(source) not in {'google','google news','google haberler','açık kaynak'}:
+        score+=4
+    return score
+
+def _v107_same_event(selected, candidate):
+    """V104 olay mantığını kullanarak seçili haberle gerçekten aynı olayı sınar."""
+    su=str(selected.get('URL','') or '').strip()
+    cu=str(candidate.get('URL','') or '').strip()
+    if su and cu and su==cu:
+        return True
+    soid=str(selected.get('Olay_ID','') or '').strip()
+    coid=str(candidate.get('Olay_ID','') or '').strip()
+    if soid and coid and soid==coid:
+        return True
+    sim=_v104_event_similarity(
+        selected.get('Başlık',''),selected.get('İçerik_Özeti',''),
+        candidate.get('Başlık',''),candidate.get('İçerik_Özeti','')
+    )
+    return sim>=0.50
+
+def _v107_unique_sentences(rows, max_chars=8000):
+    """
+    En iyi kaynaklardan gelen tamamlayıcı cümleleri birleştirir.
+    Aynı cümleyi/çok benzer bilgiyi tekrar eklemez; kritik rakamları korur.
+    """
+    out=[]; seen=set()
+    for row in rows:
+        raw=_v84_hard_repair_text(row.get('İçerik_Özeti',''))
+        sentences=_v84_clean_article_sentences(raw)
+        if not sentences and raw:
+            sentences=[raw]
+        for s in sentences:
+            s=_clean_note_text(s).strip()
+            if len(s)<25:
+                continue
+            k=title_key(s)
+            toks=set(_history_tokens(s))
+            duplicate=False
+            for oldk,oldtoks in seen:
+                if k==oldk:
+                    duplicate=True; break
+                oldtoks=set(oldtoks)
+                if toks and oldtoks:
+                    jac=len(toks&oldtoks)/max(1,len(toks|oldtoks))
+                    if jac>=0.72:
+                        duplicate=True; break
+            if duplicate:
+                continue
+            out.append(s)
+            # V108 düzeltmesi: set nesnesi hashlenemez; frozenset olarak saklanır.
+            seen.add((k,frozenset(toks)))
+            if len(' '.join(out))>=max_chars:
+                break
+        if len(' '.join(out))>=max_chars:
+            break
+    return ' '.join(out)[:max_chars]
+
+def _v107_enrich_selected_rows(rows):
+    """
+    Seçilen her haberi, st.session_state['rows'] içindeki aynı olayın diğer
+    sürümleriyle zenginleştirir. Bir olaydan sepete yalnız bir kayıt gider.
+    """
+    if rows is None or len(rows)==0:
+        return []
+    selected=[dict(r) for r in rows]
+    pool=st.session_state.get('rows') or []
+    if not pool:
+        return selected
+
+    enriched=[]
+    used_event_sigs=set()
+
+    for sel in selected:
+        matches=[]
+        for cand in pool:
+            try:
+                if _v107_same_event(sel,cand):
+                    matches.append(dict(cand))
+            except Exception:
+                continue
+        if not matches:
+            matches=[sel]
+
+        # Yanlış geniş kümeyi engelle: en fazla en güçlü 8 kaynak.
+        matches=sorted(matches,key=_v107_source_quality,reverse=True)[:8]
+        best=matches[0].copy()
+
+        # Seçilen kaydın işlem/risk bağlamını kaybetme.
+        best['Risk_Skoru']=max([int(x.get('Risk_Skoru',0) or 0) for x in matches] or [int(sel.get('Risk_Skoru',0) or 0)])
+        if sel.get('Risk_Durumu'):
+            best['Risk_Durumu']=sel.get('Risk_Durumu')
+        if sel.get('Kategori'):
+            best['Kategori']=sel.get('Kategori')
+
+        merged=_v107_unique_sentences(matches)
+        if merged:
+            best['İçerik_Özeti']=merged
+
+        domains=[]
+        sources=[]
+        urls=[]
+        for x in matches:
+            d=str(x.get('Domain','') or '').strip()
+            s=_clean_note_text(x.get('Kaynak','')).strip()
+            u=str(x.get('URL','') or '').strip()
+            if d and d not in domains: domains.append(d)
+            if s and s not in sources: sources.append(s)
+            if u and u not in urls: urls.append(u)
+
+        best['Olay_Kaynak_Sayisi']=max(len(domains),len(sources),int(best.get('Olay_Kaynak_Sayisi',0) or 0))
+        best['Zenginleştirme_Kaynakları']=' | '.join(sources[:8])
+        best['Zenginleştirme_URLleri']=' | '.join(urls[:8])
+        best['Zenginleştirildi']='Evet' if len(matches)>1 else 'Hayır'
+
+        # Aynı olay kullanıcı tarafından iki farklı satırdan seçildiyse sepete iki kez gitmesin.
+        sig=' '.join(sorted(_v104_event_tokens(best.get('Başlık',''),best.get('İçerik_Özeti',''))))
+        if sig and sig in used_event_sigs:
+            continue
+        if sig: used_event_sigs.add(sig)
+        enriched.append(best)
+
+    return enriched
+
 def _v74_bulk_add_basket(rows,table_name):
     """
     V74: Kronoloji hızlı işlemleri için tek SQLite executemany çağrısı.
@@ -8298,10 +8227,10 @@ def _v74_bulk_add_basket(rows,table_name):
         return 0
 
 def _v74_fast_add_important(rows):
-    return _v74_bulk_add_basket(rows,'important_basket')
+    return _v74_bulk_add_basket(_v107_enrich_selected_rows(rows),'important_basket')
 
 def _v74_fast_add_osint(rows):
-    return _v74_bulk_add_basket(rows,'osint_report_basket')
+    return _v74_bulk_add_basket(_v107_enrich_selected_rows(rows),'osint_report_basket')
 
 def _v80_add_presentation(rows):
     """Her bölümden seçilen haberleri sunum sepetine toplu ekler."""
@@ -9682,7 +9611,7 @@ else:
                     # Her basışta eski çıktı silinir ve V90 motoruyla baştan hazırlanır.
                     st.session_state.pop('v90_ogn_docx_bytes',None)
                     with st.spinner('Önemli gelişmeler gerçek haber içeriklerinden resmî biçimde özetleniyor...'):
-                        st.session_state['v90_ogn_docx_bytes']=make_important_basket_docx_v103(basket)
+                        st.session_state['v90_ogn_docx_bytes']=make_important_basket_docx_v101(basket)
                 if st.session_state.get('v90_ogn_docx_bytes'):
                     st.download_button(
                         '⬇️ 24 SAATLİK ÖNEMLİ GELİŞMELER / WORD — V102',
