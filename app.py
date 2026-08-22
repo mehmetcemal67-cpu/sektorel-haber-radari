@@ -18,6 +18,376 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import parse_xml, OxmlElement
 from docx.oxml.ns import qn
 
+
+# ============================================================
+# V104 — MEVCUT BÖLÜMLERİ OLGUNLAŞTIRMA
+# 1) Aynı olayın daha güçlü tekilleştirilmesi
+# 2) Durum bilgisinin URL'ye değil olay kimliğine de dayanması
+# 3) "Dünden Beri Ne Değişti?" yalnız gerçek/maddi değişiklikler
+# 4) Vardiya Başlangıç Özeti: seçici, 5–8 tekil gelişme
+# ============================================================
+
+_V104_ENTITY_HINTS = {
+    'tüik','tcmb','epdk','tübitak','kosgeb','tse','türkpatent','ssb','aselsan','tusaş','tusas',
+    'roketsan','havelsan','baykar','togg','mke','kaan','kızılelma','kizilelma','hisar','siper',
+    'teknofest','tcg','anadolu','turksat','türksat','thk','thy','turkcell','türk telekom'
+}
+_V104_GENERIC_EVENT_WORDS = {
+    'türkiye','türk','sanayi','teknoloji','haber','son','yeni','ilk','bugün','dün','açıklama',
+    'açıkladı','belirtti','duyurdu','başladı','gerçekleşti','oldu','edildi','yapıldı','kapsamında',
+    'milyon','milyar','bin','yüzde','oran','veri','verileri','program','proje'
+}
+
+def _v104_event_tokens(title, summary=''):
+    """
+    Olay eşleştirmesinde yalnız başlık kelimelerine bağlı kalmaz.
+    Kurum/ürün/yer/özgül sayı ve eylem çekirdeğini kısa bir imzaya dönüştürür.
+    """
+    title_n=norm(title)
+    summary_n=norm(summary)
+    title_tokens=set(_title_tokens(title))
+    # Özellikle başlıkta geçen ayırt edici kurum/ürün kelimelerini koru.
+    entities={x for x in re.findall(r'[a-z0-9çğıöşü]+',title_n)
+              if x in _V104_ENTITY_HINTS or (len(x)>=5 and x not in _V104_GENERIC_EVENT_WORDS)}
+    nums=set(re.findall(r'\b\d+(?:[.,]\d+)?\b',title_n))
+    # Başlık çok kısaysa özetten sınırlı destek al.
+    if len(title_tokens)<4:
+        extra=[x for x in _title_tokens(summary_n) if x not in _V104_GENERIC_EVENT_WORDS]
+        title_tokens.update(extra[:5])
+    return set(title_tokens)|entities|nums
+
+def _v104_event_similarity(a_title,a_summary,b_title,b_summary):
+    a=_v104_event_tokens(a_title,a_summary)
+    b=_v104_event_tokens(b_title,b_summary)
+    if not a or not b:
+        return 0.0
+    jac=len(a&b)/max(1,len(a|b))
+    # Aynı kurum/ürün çekirdeği varsa eşleşmeyi destekle; tek başına yeterli sayma.
+    ae={x for x in a if x in _V104_ENTITY_HINTS}
+    be={x for x in b if x in _V104_ENTITY_HINTS}
+    entity_bonus=0.12 if (ae&be) else 0.0
+    # Aynı özgül sayı/tarih varsa küçük destek.
+    an={x for x in a if re.fullmatch(r'\d+(?:[.,]\d+)?',x)}
+    bn={x for x in b if re.fullmatch(r'\d+(?:[.,]\d+)?',x)}
+    number_bonus=0.06 if (an&bn) else 0.0
+    return min(1.0,jac+entity_bonus+number_bonus)
+
+def _v104_event_representatives(df):
+    """Mevcut Olay_ID'leri ikinci kez birleştirerek yanlış çoğalmayı azaltır."""
+    if df is None or df.empty:
+        return df
+    x=df.copy()
+    if 'Tarih_dt' in x.columns:
+        x['Tarih_dt']=pd.to_datetime(x['Tarih_dt'],utc=True,errors='coerce')
+    # Önce mevcut kümelerden temsilci çıkar.
+    if 'Olay_ID' in x.columns:
+        reps=[]
+        for oid,g in x.groupby('Olay_ID',dropna=False):
+            g=g.sort_values('Tarih_dt',ascending=False,na_position='last')
+            r=g.iloc[0].copy()
+            r['_v104_members']=list(g.index)
+            r['_v104_summary']=' '.join(g.get('İçerik_Özeti',pd.Series(dtype=str)).fillna('').astype(str).head(5))
+            reps.append(r)
+        reps=pd.DataFrame(reps)
+    else:
+        reps=x.copy()
+        reps['_v104_members']=[[i] for i in reps.index]
+        reps['_v104_summary']=reps.get('İçerik_Özeti','')
+
+    # Ters indeks: performansı korur.
+    token_index={}
+    clusters=[]
+    for _,r in reps.sort_values('Tarih_dt',ascending=False,na_position='last').iterrows():
+        toks=_v104_event_tokens(r.get('Başlık',''),r.get('_v104_summary',''))
+        candidates=set()
+        for t in toks:
+            candidates.update(token_index.get(t,set()))
+        best=None; best_sim=0.0
+        for ci in candidates:
+            cr=clusters[ci]['rep']
+            sim=_v104_event_similarity(
+                r.get('Başlık',''),r.get('_v104_summary',''),
+                cr.get('Başlık',''),cr.get('_v104_summary','')
+            )
+            if sim>best_sim:
+                best_sim=sim; best=ci
+        threshold=0.52 if len(toks)>=6 else 0.60
+        if best is None or best_sim<threshold:
+            best=len(clusters)
+            clusters.append({'rep':r,'members':list(r['_v104_members'])})
+        else:
+            clusters[best]['members'].extend(r['_v104_members'])
+            # En yeni temsilciyi koru.
+            try:
+                if pd.to_datetime(r.get('Tarih_dt'),utc=True,errors='coerce') > pd.to_datetime(clusters[best]['rep'].get('Tarih_dt'),utc=True,errors='coerce'):
+                    clusters[best]['rep']=r
+            except Exception:
+                pass
+        for t in toks:
+            token_index.setdefault(t,set()).add(best)
+
+    rows=[]
+    for ci,c in enumerate(clusters,1):
+        g=x.loc[list(dict.fromkeys(c['members']))].copy()
+        g=g.sort_values('Tarih_dt',ascending=False,na_position='last')
+        rep=g.iloc[0].copy()
+        rep['Olay_ID']=f'V104-{ci:04d}'
+        rep['Olay_Haber_Sayisi']=len(g)
+        domains={str(v) for v in g.get('Domain',pd.Series(dtype=str)).tolist() if str(v).strip()}
+        rep['Olay_Kaynak_Sayisi']=max(len(domains),int(pd.to_numeric(g.get('Olay_Kaynak_Sayisi',0),errors='coerce').fillna(0).max() or 0))
+        # Aynı olayın en yüksek risk/teyit bilgisini kaybetme.
+        rep['Risk_Skoru']=int(pd.to_numeric(g.get('Risk_Skoru',0),errors='coerce').fillna(0).max() or 0)
+        rows.append(rep)
+    return pd.DataFrame(rows).drop(columns=['_v104_members','_v104_summary'],errors='ignore')
+
+def _v104_event_status_sets():
+    """
+    Durumu hem URL hem başlık hem de olay-token imzasıyla indeksler.
+    Aynı olay farklı kaynaktan görünse bile kullanıcı işlemi kaybolmaz.
+    """
+    cached=st.session_state.get('_v104_status_cache')
+    if cached is not None:
+        return cached
+    result={'imp':set(),'akt':set(),'notes':set(),'pres':set()}
+    if not _init_history_db():
+        return result
+    try:
+        with _history_connect() as conn:
+            for table,key in [
+                ('important_basket','imp'),('osint_report_basket','akt'),
+                ('note_history','notes'),('presentation_basket','pres')
+            ]:
+                for title,url in conn.execute(f"SELECT title,url FROM {table}").fetchall():
+                    title=str(title or ''); url=str(url or '').strip()
+                    if url: result[key].add('U:'+url)
+                    tk=title_key(title)
+                    if tk: result[key].add('T:'+tk)
+                    sig=' '.join(sorted(_v104_event_tokens(title,'')))
+                    if sig: result[key].add('E:'+sig)
+    except Exception:
+        pass
+    st.session_state['_v104_status_cache']=result
+    return result
+
+def _v104_row_status_keys(r):
+    url=str(r.get('URL',r.get('url','')) or '').strip()
+    title=str(r.get('Başlık',r.get('title','')) or '')
+    summary=str(r.get('İçerik_Özeti',r.get('summary','')) or '')
+    keys=set()
+    if url: keys.add('U:'+url)
+    tk=title_key(title)
+    if tk: keys.add('T:'+tk)
+    sig=' '.join(sorted(_v104_event_tokens(title,summary)))
+    if sig: keys.add('E:'+sig)
+    return keys
+
+def _v63_add_status_badges(df):
+    """V104 — tüm tablolarda olay bazlı güvenilir Durum sütunu."""
+    if df is None or df.empty:
+        return df
+    out=df.copy()
+    sets=_v104_event_status_sets()
+    def badge(r):
+        keys=_v104_row_status_keys(r)
+        b=[]
+        if keys & sets['pres']:  b.append('🖥️ Sunum Sepetinde')
+        if keys & sets['imp']:   b.append('📌 Önemli Gelişmelerde')
+        if keys & sets['notes']: b.append('📝 Bilgi Notu Yapıldı')
+        if keys & sets['akt']:   b.append('📁 AKT Sepetinde')
+        return ' • '.join(b) if b else '—'
+    out['Durum']=out.apply(badge,axis=1)
+    return out
+
+def _v73_invalidate_status_cache():
+    st.session_state.pop('_v73_status_sets_cache',None)
+    st.session_state.pop('_v104_status_cache',None)
+
+def _v104_material_change(prev,cur):
+    """Kaynak sayısındaki sıradan artışı tek başına 'yeni bilgi' saymaz."""
+    prev_risk=int(prev.get('risk_score') or 0)
+    cur_risk=int(cur.get('risk_score') or 0)
+    risk_up=(cur_risk>=prev_risk+15) or (_risk_rank(cur.get('risk_status',''))>_risk_rank(prev.get('risk_status','')))
+    verify_up=_verification_rank(cur.get('verification',''))>_verification_rank(prev.get('verification',''))
+
+    prev_text=(prev.get('title') or '')+' '+(prev.get('summary') or '')
+    cur_text=(cur.get('title') or '')+' '+(cur.get('summary') or '')
+    prev_tokens=set(_history_tokens(prev_text))
+    cur_tokens=set(_history_tokens(cur_text))
+    new_tokens=cur_tokens-prev_tokens
+
+    # Gerçek yeni bilgi için yalnız genel kelimeler değil, sayı/kurum/özgül içerik aranır.
+    prev_nums=set(re.findall(r'\b\d+(?:[.,]\d+)?\b',prev_text))
+    cur_nums=set(re.findall(r'\b\d+(?:[.,]\d+)?\b',cur_text))
+    new_nums=cur_nums-prev_nums
+    meaningful=[t for t in new_tokens if len(t)>=5 and t not in _V104_GENERIC_EVENT_WORDS]
+    materially_updated=(len(meaningful)>=8) or (len(new_nums)>=1 and len(meaningful)>=3)
+
+    return risk_up,verify_up,materially_updated,meaningful,new_nums
+
+def _compare_since_previous(df,current_scan_id=None):
+    """
+    V104 — yalnız gerçek değişiklikler:
+    yeni olay / maddi yeni bilgi / risk artışı / teyit güçlenmesi.
+    Aynı olayın yeni bir sitede tekrar yayımlanması tek başına değişiklik değildir.
+    """
+    current=_v104_event_representatives(df)
+    prev_id=_previous_scan_id(current_scan_id)
+    previous=_load_scan_events(prev_id)
+    if current is None or current.empty:
+        return pd.DataFrame(),None,None
+    if previous.empty:
+        return pd.DataFrame(),prev_id,None
+
+    prev_records=[]
+    for _,p in previous.iterrows():
+        rec=p.to_dict()
+        rec['tokens']=_history_tokens((rec.get('title') or '')+' '+(rec.get('summary') or ''))
+        prev_records.append(rec)
+
+    changes=[]
+    for _,r in current.iterrows():
+        c={
+            'title':str(r.get('Başlık','') or ''),'source':str(r.get('Kaynak','') or ''),
+            'url':str(r.get('URL','') or ''),'category':str(r.get('Kategori','') or ''),
+            'summary':str(r.get('İçerik_Özeti','') or ''),'risk_score':int(r.get('Risk_Skoru',0) or 0),
+            'risk_status':str(r.get('Risk_Durumu','') or ''),'verification':str(r.get('Doğrulama','') or ''),
+            'source_count':int(r.get('Olay_Kaynak_Sayisi',1) or 1)
+        }
+        best=None; best_sim=0.0
+        for p in prev_records:
+            sim=_v104_event_similarity(c['title'],c['summary'],p.get('title',''),p.get('summary',''))
+            if c['url'] and c['url']==str(p.get('url','') or ''):
+                sim=max(sim,0.98)
+            if sim>best_sim:
+                best_sim=sim; best=p
+
+        if best is None or best_sim<0.50:
+            changes.append({
+                'Değişim':'🆕 YENİ OLAY','Başlık':c['title'],'Kaynak':c['source'],'Kategori':c['category'],
+                'Risk':c['risk_score'],'Önceki Risk':'—','Kaynak Sayısı':c['source_count'],
+                'Açıklama':'Önceki taramada aynı olaya ilişkin yeterli eşleşme bulunmamıştır.',
+                'URL':c['url'],'_priority':100+c['risk_score']
+            })
+            continue
+
+        risk_up,verify_up,material,new_words,new_nums=_v104_material_change(best,c)
+        if risk_up:
+            kind='⚠️ RİSK ARTTI'
+            expl=f"Risk {int(best.get('risk_score') or 0)}/100 seviyesinden {c['risk_score']}/100 seviyesine yükselmiştir."
+            priority=95+c['risk_score']
+        elif verify_up:
+            kind='✅ TEYİT GÜÇLENDİ'
+            expl=f"Doğrulama seviyesi {best.get('verification','')} düzeyinden {c['verification']} düzeyine yükselmiştir."
+            priority=90+c['risk_score']
+        elif material:
+            kind='🔄 YENİ BİLGİ'
+            bits=[]
+            if new_nums: bits.append('yeni sayısal veri: '+', '.join(sorted(new_nums)[:4]))
+            if new_words: bits.append('yeni içerik: '+', '.join(sorted(new_words)[:6]))
+            expl='; '.join(bits) if bits else 'Olay hakkında maddi yeni bilgi tespit edilmiştir.'
+            priority=80+c['risk_score']
+        else:
+            continue
+
+        changes.append({
+            'Değişim':kind,'Başlık':c['title'],'Kaynak':c['source'],'Kategori':c['category'],
+            'Risk':c['risk_score'],'Önceki Risk':int(best.get('risk_score') or 0),
+            'Kaynak Sayısı':c['source_count'],'Açıklama':expl,'URL':c['url'],'_priority':priority
+        })
+
+    out=pd.DataFrame(changes)
+    if not out.empty:
+        # Aynı olayın değişiklik listesinde de yalnız bir kez görünmesi.
+        out['_sig']=out.apply(lambda r:' '.join(sorted(_v104_event_tokens(r.get('Başlık',''),r.get('Açıklama','')))),axis=1)
+        out=out.sort_values(['_priority','Risk'],ascending=[False,False]).drop_duplicates('_sig',keep='first')
+        out=out.drop(columns=['_priority','_sig'],errors='ignore')
+    prev_time=str(previous.iloc[0].get('scanned_at','')) if not previous.empty else None
+    return out,prev_id,prev_time
+
+def _v104_shift_priority(r):
+    text=norm(f"{r.get('Başlık','')} {r.get('İçerik_Özeti','')} {r.get('Kategori','')}")
+    official=_is_official_radar_row(r) or _verification_rank(r.get('Doğrulama',''))>=4
+    data_terms=['tüik','tcmb','epdk','istatistik','veri','endeks','oran','kapasite kullanım',
+                'sanayi üretimi','ihracat','ithalat','istihdam','milyar','milyon','yüzde','%']
+    strategic_terms=['yatırım','üretim','tesis','fabrika','çip','yarı iletken','yapay zeka','yapay zekâ',
+                     'siber','ar-ge','arge','patent','teşvik','kritik teknoloji','otomotiv','enerji']
+    defence_terms=['savunma','aselsan','tusaş','tusas','roketsan','havelsan','baykar','kaan','kızılelma',
+                   'füze','iha','siha','uzay','uydu','teknofest']
+    has_data=any(x in text for x in data_terms) or bool(re.search(r'\d',text))
+    strategic=any(x in text for x in strategic_terms)
+    defence=any(x in text for x in defence_terms)
+    critical=(int(r.get('Risk_Skoru',0) or 0)>=70 or r.get('Duygu')=='Negatif' or
+              bool(critical_industrial_incident(r.get('Başlık',''),r.get('İçerik_Özeti',''))))
+    verified=_verification_rank(r.get('Doğrulama',''))>=3
+
+    # Kullanıcının istediği açık öncelik sırası.
+    if official and has_data: tier=5
+    elif official: tier=5
+    elif strategic: tier=4
+    elif critical: tier=3
+    elif defence: tier=2
+    elif verified: tier=1
+    else: tier=0
+
+    score=tier*100
+    score+=min(int(r.get('Risk_Skoru',0) or 0),100)
+    score+=min(int(r.get('Olay_Kaynak_Sayisi',0) or 0)*5,20)
+    if has_data: score+=15
+    return score,tier
+
+def _shift_start_summary(df,current_scan_id=None):
+    """
+    V104 — sabah ilk bakış: 5–8 adet gerçekten önemli, olay bazında tekil gelişme.
+    Öncelik: resmî veri/açıklama > stratejik sanayi-teknoloji > kritik negatif >
+    savunma/uzay/teknoloji programı > yüksek teyitli yeni gelişme.
+    """
+    if df is None or df.empty:
+        return {},pd.DataFrame(),""
+
+    baseline,baseline_label,baseline_scan_id=_shift_baseline(current_scan_id)
+    x=df.copy()
+    x['Tarih_dt']=pd.to_datetime(x.get('Tarih_dt'),utc=True,errors='coerce')
+    since=x[(x['Tarih_dt'].isna()) | (x['Tarih_dt']>=baseline)].copy() if baseline is not None else x.copy()
+
+    changes,_,_=_compare_since_previous(df,current_scan_id)
+    new_events=int(changes['Değişim'].astype(str).str.contains('YENİ OLAY').sum()) if not changes.empty else 0
+    risk_up=int(changes['Değişim'].astype(str).str.contains('RİSK ARTTI').sum()) if not changes.empty else 0
+    verify_up=int(changes['Değişim'].astype(str).str.contains('TEYİT').sum()) if not changes.empty else 0
+
+    reps=_v104_event_representatives(since) if not since.empty else pd.DataFrame()
+    if not reps.empty:
+        scored=reps.apply(_v104_shift_priority,axis=1)
+        reps['_V104_Puan']=[v[0] for v in scored]
+        reps['_V104_Kademe']=[v[1] for v in scored]
+        # Önemsiz/generic içerik sabah özetini doldurmasın.
+        eligible=reps[reps['_V104_Kademe']>0].copy()
+        eligible=eligible.sort_values(['_V104_Puan','Tarih_dt'],ascending=[False,False],na_position='last')
+        # En az 5 uygun olay varsa 5; güçlü aday çoksa en fazla 8.
+        top_n=min(8,max(5,min(len(eligible),8))) if len(eligible)>=5 else len(eligible)
+        top=eligible.head(top_n).drop(columns=['_V104_Puan','_V104_Kademe'],errors='ignore')
+    else:
+        top=pd.DataFrame()
+
+    high=0; osb=0
+    if not reps.empty:
+        high=int((reps.get('Risk_Durumu',pd.Series(dtype=str))=='Yüksek Risk').sum())
+        osb=sum(bool(critical_industrial_incident(r.get('Başlık',''),r.get('İçerik_Özeti',''))) for _,r in reps.iterrows())
+
+    stats={
+        'new_news':len(since),
+        'new_important_events':new_events,
+        'high_risk':high,
+        'risk_up':risk_up,
+        'verify_up':verify_up,
+        'osb':osb,
+        'baseline_label':baseline_label
+    }
+    return stats,top,baseline_label
+
+# ============================================================
+# /V104
+# ============================================================
+
 st.set_page_config(page_title='Sanayi & Teknoloji OSINT Radarı', page_icon='🛡️', layout='wide')
 
 # ============================================================
@@ -3564,7 +3934,7 @@ def _v87_ogn_summary(title, body, fallback):
     return out or (fallback[:520].strip() if fallback else title[:520].strip())
 
 
-V90_OGN_ENGINE_VERSION='v102_status_20260821_1'
+V90_OGN_ENGINE_VERSION='v104_mevcut_bolum_olgunlastirma_20260822_1'
 
 def _v90_clean_title(title,source=''):
     t=_v87_safe_tr(title)
@@ -8534,7 +8904,7 @@ else:
         # Performans: Streamlit tabs içindeki TÜM içerikleri arka planda çalıştırır.
         # Bu nedenle tek seferde yalnızca seçilen görünümü üretiriz.
         st.subheader('🌅 Vardiya Başlangıç Özeti')
-        st.caption('Sabah ilk analitik bakış: yalnızca negatif haberleri değil; sanayi ve teknoloji açısından en önemli, stratejik, etkili, teyitli ve dikkat gerektiren gelişmeleri öne çıkarır.')
+        st.caption('Sabah ilk analitik bakış: aynı olay tekilleştirilir; resmî veri/açıklama, stratejik sanayi-teknoloji gelişmesi, kritik negatif, savunma/uzay/teknoloji programı ve yüksek teyitli yeni gelişmeler önceliklendirilir.')
         shift_stats,shift_top,shift_baseline_label=_shift_start_summary(
             df,
             st.session_state.get('current_scan_id')
@@ -8549,7 +8919,7 @@ else:
             s5.metric('Teyit güçlenmesi',shift_stats['verify_up'])
             s6.metric('OSB olayı',shift_stats['osb'])
 
-            st.markdown('**Sabah ilk bakılması gereken 5 gelişme**')
+            st.markdown('**Sabah ilk bakılması gereken 5–8 gelişme**')
             if shift_top.empty:
                 st.info('Öne çıkan gelişme bulunamadı.')
             else:
