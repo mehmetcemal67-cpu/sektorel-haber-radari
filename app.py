@@ -9123,6 +9123,404 @@ def _compare_since_previous(df,current_scan_id=None):
 # V111 — Bilgi Notu Adayları KeyError düzeltildi; panelin devamı artık yüklenir.
 # 'Ne Değişti?' yeni olaylarda başlığı tekrar etmez; Değişim/Tür çift alanı ile geriye dönük uyumluluk sağlanmıştır.
 
+
+# ============================================================
+# V112 — DURUM TARİHİ + HIZ OPTİMİZASYONU
+# 1) Durum rozetlerinde işlemin yapıldığı tarih/saat gösterilir.
+# 2) Bilgi notu üretiminde mevcut olay zenginleştirmesi + detay cache kullanılır.
+# 3) Sepet silme işlemleri tek hızlı SQLite transaction ile yapılır.
+# 4) Aynı taramadaki pahalı "Dünden beri" karşılaştırması rerun'larda cache'lenir.
+# ============================================================
+
+def _v112_status_key_variants(title='',url='',summary=''):
+    keys=set()
+    url=str(url or '').strip()
+    title=str(title or '')
+    summary=str(summary or '')
+    if url:
+        keys.add('U:'+url)
+    tk=title_key(title)
+    if tk:
+        keys.add('T:'+tk)
+    try:
+        sig=' '.join(sorted(_v104_event_tokens(title,summary)))
+        if sig:
+            keys.add('E:'+sig)
+    except Exception:
+        pass
+    return keys
+
+def _v112_parse_status_time(value):
+    try:
+        dt=pd.to_datetime(value,utc=True,errors='coerce')
+        if pd.isna(dt):
+            return None
+        return dt
+    except Exception:
+        return None
+
+def _v112_format_status_time(value):
+    dt=_v112_parse_status_time(value)
+    if dt is None:
+        return ''
+    try:
+        local_tz=datetime.now().astimezone().tzinfo
+        dt=dt.tz_convert(local_tz)
+        return dt.strftime('%d.%m.%Y %H:%M')
+    except Exception:
+        try:
+            return dt.strftime('%d.%m.%Y %H:%M')
+        except Exception:
+            return ''
+
+def _v112_status_history():
+    """
+    Her işlem için olay/URL/başlık anahtarını EN SON işlem tarihine eşler.
+    Tek sorgu grubu + session cache: tüm paneller aynı veriyi tekrar tekrar okumaz.
+    """
+    cached=st.session_state.get('_v112_status_history_cache')
+    if cached is not None:
+        return cached
+
+    result={'imp':{},'akt':{},'notes':{},'pres':{}}
+    if not _init_history_db():
+        return result
+
+    specs=[
+        ('important_basket','added_at','imp'),
+        ('osint_report_basket','added_at','akt'),
+        ('note_history','created_at','notes'),
+        ('presentation_basket','added_at','pres'),
+    ]
+    try:
+        with _history_connect() as conn:
+            for table,time_col,key in specs:
+                rows=conn.execute(
+                    f"SELECT {time_col},title,url FROM {table} ORDER BY {time_col} DESC"
+                ).fetchall()
+                for ts,title,url in rows:
+                    for k in _v112_status_key_variants(title,url,''):
+                        # Sorgu DESC olduğu için ilk değer en yeni tarihtir.
+                        if k not in result[key]:
+                            result[key][k]=str(ts or '')
+    except Exception:
+        pass
+
+    st.session_state['_v112_status_history_cache']=result
+    return result
+
+def _v63_status_sets():
+    """Eski kodlarla uyumluluk için durum anahtarlarını set olarak döndürür."""
+    h=_v112_status_history()
+    return set(h['imp']),set(h['akt']),set(h['notes']),set(h['pres'])
+
+def _v104_event_status_sets():
+    """V104 olay bazlı durum altyapısının V112 tarihli cache ile uyumlu hali."""
+    h=_v112_status_history()
+    return {
+        'imp':set(h['imp']),
+        'akt':set(h['akt']),
+        'notes':set(h['notes']),
+        'pres':set(h['pres'])
+    }
+
+def _v73_invalidate_status_cache():
+    st.session_state.pop('_v73_status_sets_cache',None)
+    st.session_state.pop('_v104_status_cache',None)
+    st.session_state.pop('_v112_status_history_cache',None)
+
+def _v63_add_status_badges(df):
+    """
+    Durum örneği:
+    📌 ÖGN — 22.08.2026 13:42 • 📝 Bilgi Notu — 22.08.2026 14:05
+    """
+    if df is None or df.empty:
+        return df
+    out=df.copy()
+    hist=_v112_status_history()
+
+    def badge(r):
+        title=str(r.get('Başlık',r.get('title','')) or '')
+        url=str(r.get('URL',r.get('url','')) or '').strip()
+        summary=str(r.get('İçerik_Özeti',r.get('summary','')) or '')
+        keys=_v112_status_key_variants(title,url,summary)
+
+        def latest(bucket):
+            vals=[hist[bucket].get(k) for k in keys if hist[bucket].get(k)]
+            if not vals:
+                return ''
+            parsed=[(_v112_parse_status_time(v),v) for v in vals]
+            parsed=[x for x in parsed if x[0] is not None]
+            if parsed:
+                return max(parsed,key=lambda x:x[0])[1]
+            return vals[0]
+
+        b=[]
+        ts=latest('pres')
+        if ts: b.append(f"🖥️ Sunum — {_v112_format_status_time(ts)}")
+        ts=latest('imp')
+        if ts: b.append(f"📌 ÖGN — {_v112_format_status_time(ts)}")
+        ts=latest('notes')
+        if ts: b.append(f"📝 Bilgi Notu — {_v112_format_status_time(ts)}")
+        ts=latest('akt')
+        if ts: b.append(f"📁 AKT — {_v112_format_status_time(ts)}")
+        return ' • '.join(b) if b else '—'
+
+    out['Durum']=out.apply(badge,axis=1)
+    return out
+
+def _v112_fast_delete(table, ids=None):
+    """Silme için tek transaction; satır satır işlem ve gereksiz sorgu yoktur."""
+    allowed={'important_basket','osint_report_basket','presentation_basket'}
+    if table not in allowed or not _init_history_db():
+        return 0
+    try:
+        with _history_connect() as conn:
+            # Web uygulamasında silme gecikmesini azaltmak için küçük transaction.
+            conn.execute("PRAGMA synchronous=NORMAL")
+            if ids is None:
+                cur=conn.execute(f"DELETE FROM {table}")
+            else:
+                ids=[int(x) for x in ids if str(x).isdigit()]
+                if not ids:
+                    return 0
+                marks=','.join('?' for _ in ids)
+                cur=conn.execute(f"DELETE FROM {table} WHERE id IN ({marks})",ids)
+            conn.commit()
+            removed=max(int(cur.rowcount or 0),0)
+        if removed:
+            _v73_invalidate_status_cache()
+        return removed
+    except Exception:
+        return 0
+
+def _remove_basket_ids(ids):
+    return _v112_fast_delete('important_basket',ids)
+
+def _clear_important_basket():
+    return _v112_fast_delete('important_basket',None)
+
+def _remove_osint_basket_ids(ids):
+    return _v112_fast_delete('osint_report_basket',ids)
+
+def _clear_osint_basket():
+    return _v112_fast_delete('osint_report_basket',None)
+
+def _v81_remove_presentation_ids(ids):
+    return _v112_fast_delete('presentation_basket',ids)
+
+def _v80_clear_presentation():
+    return _v112_fast_delete('presentation_basket',None)
+
+def _v112_detail_cache_key(row):
+    url=str(row.get('URL',row.get('url','')) or '').strip()
+    if url:
+        return 'U:'+url
+    return 'T:'+title_key(str(row.get('Başlık',row.get('title','')) or ''))
+
+def _v112_cached_article_detail(row):
+    """
+    Aynı haber için tekrar Word üretildiğinde sayfayı yeniden indirmez.
+    Cache yalnız mevcut kullanıcı oturumunda tutulur.
+    """
+    cache=st.session_state.setdefault('_v112_article_detail_cache',{})
+    key=_v112_detail_cache_key(row)
+    if key in cache:
+        return cache[key]
+    try:
+        detail=article_detail(row) or {}
+    except Exception:
+        detail={}
+    # Cache'in sınırsız büyümesini önle.
+    if len(cache)>160:
+        try:
+            for old in list(cache.keys())[:40]:
+                cache.pop(old,None)
+        except Exception:
+            cache={}
+            st.session_state['_v112_article_detail_cache']=cache
+    cache[key]=detail
+    return detail
+
+def make_analyst_docx(df, title='BİLGİ NOTU'):
+    """
+    V112 hızlı bilgi notu:
+    - Önce V107 olay zenginleştirmesini kullanır.
+    - Yeterince zengin mevcut özet varsa yeniden web isteği yapmaz.
+    - Gerekli haber detaylarını paralel ve oturum cache'li alır.
+    - V66 resmî dil / belge yapısı korunur.
+    """
+    doc=Document()
+    sec=doc.sections[0]
+    sec.top_margin=Cm(2); sec.bottom_margin=Cm(2)
+    sec.left_margin=Cm(2.5); sec.right_margin=Cm(2.5)
+    styles=doc.styles
+    styles['Normal'].font.name='Times New Roman'
+    styles['Normal'].font.size=Pt(12)
+    styles['Normal']._element.rPr.rFonts.set(qn('w:eastAsia'),'Times New Roman')
+
+    p=doc.add_paragraph(); p.alignment=WD_ALIGN_PARAGRAPH.CENTER
+    r=p.add_run(_clean_note_text(title)); r.bold=True; r.font.size=Pt(14)
+    p=doc.add_paragraph(); p.add_run('Tarih: ').bold=True
+    p.add_run(datetime.now().astimezone().strftime('%d.%m.%Y'))
+
+    x=df.copy() if df is not None else pd.DataFrame()
+    if x.empty:
+        rows=[]
+    else:
+        if 'Tarih_dt' in x.columns:
+            x['Tarih_dt']=pd.to_datetime(x['Tarih_dt'],utc=True,errors='coerce')
+            x=x.sort_values('Tarih_dt',ascending=True,na_position='last')
+        rows=x.to_dict('records')
+
+    # Aynı olayın mevcut taramadaki daha iyi kaynaklarını önce birleştir.
+    try:
+        enriched_rows=_v107_enrich_selected_rows(rows)
+        if enriched_rows:
+            rows=enriched_rows
+    except Exception:
+        pass
+
+    enriched=[None]*len(rows)
+
+    def get_one(i,row):
+        summary=_clean_note_text(row.get('İçerik_Özeti',''))
+        # V107 zenginleştirmesi yeterli içerik sağladıysa web fetch'i atla.
+        rich_enough=(
+            len(summary)>=650
+            and len(_sentence_chunks(summary))>=3
+        )
+        if rich_enough:
+            return i,row,{}
+        return i,row,_v112_cached_article_detail(row)
+
+    if rows:
+        workers=min(6,len(rows))
+        if workers<=1:
+            for i,row in enumerate(rows):
+                _,rr,dd=get_one(i,row)
+                enriched[i]=(rr,dd)
+        else:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
+                futs=[ex.submit(get_one,i,row) for i,row in enumerate(rows)]
+                for fut in concurrent.futures.as_completed(futs):
+                    try:
+                        i,rr,dd=fut.result()
+                        enriched[i]=(rr,dd)
+                    except Exception:
+                        pass
+
+    enriched=[x for x in enriched if x is not None]
+
+    all_sent=[]
+    for row,detail in enriched:
+        title_text=_clean_note_text(detail.get('title') or row.get('Başlık',''))
+        body=_clean_note_text(detail.get('text') or row.get('İçerik_Özeti') or title_text)
+        all_sent.extend(_akt_clean_sentences(title_text,body))
+
+    uniq=[]; seen=[]
+    for sent in all_sent:
+        sent=_clean_note_text(sent)
+        key=norm(sent)
+        toks=set(key.split())
+        if not key: continue
+        dup=False
+        for old in seen[-35:]:
+            union=len(toks|old)
+            if union and len(toks&old)/union>=0.78:
+                dup=True; break
+        if not dup:
+            uniq.append(sent.strip()); seen.append(toks)
+
+    def add_body(text):
+        bp=doc.add_paragraph()
+        bp.alignment=WD_ALIGN_PARAGRAPH.JUSTIFY
+        bp.paragraph_format.first_line_indent=Cm(1.25)
+        bp.paragraph_format.line_spacing=1.15
+        bp.paragraph_format.space_after=Pt(8)
+        safe_text=_repair_mojibake_utf8(_clean_note_text(text))
+        bp.add_run(_v66_formalize_sentence_endings(safe_text))
+
+    if uniq:
+        intro=_join_sentences_naturally(uniq[:2])
+        add_body(intro)
+
+        detail_s=uniq[2:] or uniq
+        detail_s=detail_s[:18]
+        if len(detail_s)<=9:
+            add_body(_join_sentences_naturally(detail_s))
+        else:
+            add_body(_join_sentences_naturally(detail_s[:9]))
+            add_body(_join_sentences_naturally(detail_s[9:18]))
+
+        tail=_join_sentences_naturally(uniq[-3:])
+        if tail:
+            conclusion=(
+                f"Mevcut bilgiler çerçevesinde, {tail[0].lower()+tail[1:]} "
+                "Gelişmenin sanayi ve teknoloji alanındaki muhtemel etkilerinin, ilgili kurum ve kuruluşların "
+                "yeni açıklamaları ile resmî veriler doğrultusunda takip edilmesinin uygun olacağı değerlendirilmektedir."
+            )
+        else:
+            conclusion=(
+                "Mevcut bilgiler çerçevesinde gelişmenin sanayi ve teknoloji alanındaki etkilerinin, ilgili kurum "
+                "ve kuruluşların yeni açıklamaları ile resmî veriler doğrultusunda takip edilmesinin uygun olacağı değerlendirilmektedir."
+            )
+        add_body(conclusion)
+    else:
+        add_body('Seçilen habere ilişkin ayrıntılı içerik temin edilememiştir.')
+        add_body(
+            'Gelişmenin yeni açık kaynak bilgileri ile ilgili kurum ve kuruluşların resmî açıklamaları '
+            'doğrultusunda takip edilmesinin uygun olacağı değerlendirilmektedir.'
+        )
+
+    endp=doc.add_paragraph()
+    endp.paragraph_format.space_before=Pt(8)
+    endp.add_run('Arz olunur.')
+
+    if enriched:
+        kp=doc.add_paragraph()
+        kr=kp.add_run('Kaynak: '); kr.bold=True
+        for i,(row,detail) in enumerate(enriched):
+            source=_clean_note_text(detail.get('source') or row.get('Kaynak','Açık Kaynak'))
+            url=detail.get('canonical') or row.get('Yayıncı_URL') or row.get('URL','')
+            if i: kp.add_run('; ')
+            kp.add_run(source)
+            if url:
+                kp.add_run(' ('); _word_hyperlink(kp,url,'Haber linki'); kp.add_run(')')
+
+    bio=BytesIO()
+    doc.save(bio); bio.seek(0)
+    return bio.getvalue()
+
+# Aynı taramadaki pahalı karşılaştırmayı sepet silme gibi rerun'larda tekrar hesaplama.
+_v112_compare_impl=_compare_since_previous
+
+def _v112_scan_cache_key(df,current_scan_id=None):
+    try:
+        n=len(df)
+    except Exception:
+        n=0
+    sid=current_scan_id or st.session_state.get('current_scan_id') or 'none'
+    return f'{sid}:{n}'
+
+def _compare_since_previous(df,current_scan_id=None):
+    key=_v112_scan_cache_key(df,current_scan_id)
+    cache=st.session_state.setdefault('_v112_compare_cache',{})
+    if key in cache:
+        out,prev_id,prev_time=cache[key]
+        return out.copy(),prev_id,prev_time
+    result=_v112_compare_impl(df,current_scan_id)
+    out,prev_id,prev_time=result
+    cache.clear()
+    cache[key]=(out.copy(),prev_id,prev_time)
+    return out,prev_id,prev_time
+
+# ============================================================
+# /V112
+# ============================================================
+
+# V112 — Durum alanında işlem tarih/saatleri gösterilir; bilgi notu ve sepet silme akışları hızlandırılmıştır.
+
 # -----------------------------
 # UI
 # -----------------------------
@@ -9818,7 +10216,7 @@ else:
                         'Risk_Skoru':st.column_config.NumberColumn('Risk',format='%d/100'),
                         'Kaynak Sayısı':st.column_config.NumberColumn('Kaynak',format='%d'),
                         'Haber Sayısı':st.column_config.NumberColumn('Haber',format='%d'),
-                        'Durum':st.column_config.TextColumn('Durum',width='medium')
+                        'Durum':st.column_config.TextColumn('Durum',width='large')
                     },
                     disabled=[x for x in chron_cols if x!='Seç'],
                     hide_index=True,
