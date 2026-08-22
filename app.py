@@ -396,6 +396,10 @@ def _shift_start_summary(df,current_scan_id=None):
 # Yerel/kısa sürüm seçilse bile resmî/ana akım/daha ayrıntılı sürüm ve kritik veriler birleştirilir.
 # Ek ağ isteği yapılmaz; V106 kararlı çekirdeği korunur.
 
+# V108 — V107 zenginleştirme TypeError düzeltmesi:
+# _v107_unique_sentences içindeki hashlenemeyen set, frozenset olarak saklanmaktadır.
+# V107 olay/kaynak zenginleştirme mantığı korunmuştur.
+
 st.set_page_config(page_title='Sanayi & Teknoloji OSINT Radarı', page_icon='🛡️', layout='wide')
 
 # ============================================================
@@ -8096,6 +8100,7 @@ def _v107_unique_sentences(rows, max_chars=8000):
             for oldk,oldtoks in seen:
                 if k==oldk:
                     duplicate=True; break
+                oldtoks=set(oldtoks)
                 if toks and oldtoks:
                     jac=len(toks&oldtoks)/max(1,len(toks|oldtoks))
                     if jac>=0.72:
@@ -8103,7 +8108,8 @@ def _v107_unique_sentences(rows, max_chars=8000):
             if duplicate:
                 continue
             out.append(s)
-            seen.add((k,toks))
+            # V108 düzeltmesi: set nesnesi hashlenemez; frozenset olarak saklanır.
+            seen.add((k,frozenset(toks)))
             if len(' '.join(out))>=max_chars:
                 break
         if len(' '.join(out))>=max_chars:
