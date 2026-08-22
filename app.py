@@ -392,6 +392,10 @@ def _shift_start_summary(df,current_scan_id=None):
 # Yalnızca görünür 'Resmî Açıklama – Medya Karşılaştırması' paneli kaldırılmıştır.
 # Sorgu/negatif tarama yardımcı fonksiyonları ve V104 çekirdeği korunmuştur.
 
+# V107 — Sepete eklemede aynı olayın mevcut taramadaki kaynakları otomatik zenginleştirilir.
+# Yerel/kısa sürüm seçilse bile resmî/ana akım/daha ayrıntılı sürüm ve kritik veriler birleştirilir.
+# Ek ağ isteği yapılmaz; V106 kararlı çekirdeği korunur.
+
 st.set_page_config(page_title='Sanayi & Teknoloji OSINT Radarı', page_icon='🛡️', layout='wide')
 
 # ============================================================
@@ -3319,6 +3323,7 @@ def _shift_start_summary(df,current_scan_id=None):
     return stats,top,baseline_label
 
 def _add_rows_to_important_basket(rows):
+    rows=_v107_enrich_selected_rows(rows)
     if rows is None or len(rows)==0 or not _init_history_db():
         return 0
     added=0
@@ -3367,6 +3372,7 @@ def _load_important_basket():
 
 
 def _add_rows_to_osint_basket(rows):
+    rows=_v107_enrich_selected_rows(rows)
     if rows is None or len(rows)==0 or not _init_history_db():
         return 0
     added=0
@@ -8020,6 +8026,156 @@ def _v73_row_keys(df):
     return urls.where(urls.ne(''),fallback)
 
 
+
+# ============================================================
+# V107 — OLAY BAZLI KAYNAK ZENGİNLEŞTİRME
+# Kullanıcı yerel/kısa bir haberi seçse bile aynı taramadaki aynı olayın
+# ana akım/resmî/daha ayrıntılı sürümleri birleştirilerek sepete aktarılır.
+# Ek web isteği YOKTUR; yalnız mevcut tarama havuzu kullanılır.
+# ============================================================
+
+def _v107_source_quality(row):
+    """Bir olay kümesinde hangi haber sürümünün ana taşıyıcı olacağını puanlar."""
+    d=str(row.get('Domain','') or '')
+    source=str(row.get('Kaynak','') or '')
+    text=_clean_note_text(row.get('İçerik_Özeti',''))
+    score=0
+    if d in TR_OFFICIAL:
+        score+=80
+    elif d in TR_MAIN:
+        score+=55
+    elif d in TR_TECH:
+        score+=45
+    elif d in SOCIAL:
+        score+=5
+    else:
+        score+=20
+    # Ayrıntılı gövdeyi ödüllendir; aşırı uzun portal artıklarına sınırsız puan verme.
+    score+=min(len(text)//180,30)
+    score+=min(len(re.findall(r'\b\d+(?:[.,]\d+)?\b',text))*2,16)
+    if _verification_rank(row.get('Doğrulama',''))>=3:
+        score+=12
+    if source and norm(source) not in {'google','google news','google haberler','açık kaynak'}:
+        score+=4
+    return score
+
+def _v107_same_event(selected, candidate):
+    """V104 olay mantığını kullanarak seçili haberle gerçekten aynı olayı sınar."""
+    su=str(selected.get('URL','') or '').strip()
+    cu=str(candidate.get('URL','') or '').strip()
+    if su and cu and su==cu:
+        return True
+    soid=str(selected.get('Olay_ID','') or '').strip()
+    coid=str(candidate.get('Olay_ID','') or '').strip()
+    if soid and coid and soid==coid:
+        return True
+    sim=_v104_event_similarity(
+        selected.get('Başlık',''),selected.get('İçerik_Özeti',''),
+        candidate.get('Başlık',''),candidate.get('İçerik_Özeti','')
+    )
+    return sim>=0.50
+
+def _v107_unique_sentences(rows, max_chars=8000):
+    """
+    En iyi kaynaklardan gelen tamamlayıcı cümleleri birleştirir.
+    Aynı cümleyi/çok benzer bilgiyi tekrar eklemez; kritik rakamları korur.
+    """
+    out=[]; seen=set()
+    for row in rows:
+        raw=_v84_hard_repair_text(row.get('İçerik_Özeti',''))
+        sentences=_v84_clean_article_sentences(raw)
+        if not sentences and raw:
+            sentences=[raw]
+        for s in sentences:
+            s=_clean_note_text(s).strip()
+            if len(s)<25:
+                continue
+            k=title_key(s)
+            toks=set(_history_tokens(s))
+            duplicate=False
+            for oldk,oldtoks in seen:
+                if k==oldk:
+                    duplicate=True; break
+                if toks and oldtoks:
+                    jac=len(toks&oldtoks)/max(1,len(toks|oldtoks))
+                    if jac>=0.72:
+                        duplicate=True; break
+            if duplicate:
+                continue
+            out.append(s)
+            seen.add((k,toks))
+            if len(' '.join(out))>=max_chars:
+                break
+        if len(' '.join(out))>=max_chars:
+            break
+    return ' '.join(out)[:max_chars]
+
+def _v107_enrich_selected_rows(rows):
+    """
+    Seçilen her haberi, st.session_state['rows'] içindeki aynı olayın diğer
+    sürümleriyle zenginleştirir. Bir olaydan sepete yalnız bir kayıt gider.
+    """
+    if rows is None or len(rows)==0:
+        return []
+    selected=[dict(r) for r in rows]
+    pool=st.session_state.get('rows') or []
+    if not pool:
+        return selected
+
+    enriched=[]
+    used_event_sigs=set()
+
+    for sel in selected:
+        matches=[]
+        for cand in pool:
+            try:
+                if _v107_same_event(sel,cand):
+                    matches.append(dict(cand))
+            except Exception:
+                continue
+        if not matches:
+            matches=[sel]
+
+        # Yanlış geniş kümeyi engelle: en fazla en güçlü 8 kaynak.
+        matches=sorted(matches,key=_v107_source_quality,reverse=True)[:8]
+        best=matches[0].copy()
+
+        # Seçilen kaydın işlem/risk bağlamını kaybetme.
+        best['Risk_Skoru']=max([int(x.get('Risk_Skoru',0) or 0) for x in matches] or [int(sel.get('Risk_Skoru',0) or 0)])
+        if sel.get('Risk_Durumu'):
+            best['Risk_Durumu']=sel.get('Risk_Durumu')
+        if sel.get('Kategori'):
+            best['Kategori']=sel.get('Kategori')
+
+        merged=_v107_unique_sentences(matches)
+        if merged:
+            best['İçerik_Özeti']=merged
+
+        domains=[]
+        sources=[]
+        urls=[]
+        for x in matches:
+            d=str(x.get('Domain','') or '').strip()
+            s=_clean_note_text(x.get('Kaynak','')).strip()
+            u=str(x.get('URL','') or '').strip()
+            if d and d not in domains: domains.append(d)
+            if s and s not in sources: sources.append(s)
+            if u and u not in urls: urls.append(u)
+
+        best['Olay_Kaynak_Sayisi']=max(len(domains),len(sources),int(best.get('Olay_Kaynak_Sayisi',0) or 0))
+        best['Zenginleştirme_Kaynakları']=' | '.join(sources[:8])
+        best['Zenginleştirme_URLleri']=' | '.join(urls[:8])
+        best['Zenginleştirildi']='Evet' if len(matches)>1 else 'Hayır'
+
+        # Aynı olay kullanıcı tarafından iki farklı satırdan seçildiyse sepete iki kez gitmesin.
+        sig=' '.join(sorted(_v104_event_tokens(best.get('Başlık',''),best.get('İçerik_Özeti',''))))
+        if sig and sig in used_event_sigs:
+            continue
+        if sig: used_event_sigs.add(sig)
+        enriched.append(best)
+
+    return enriched
+
 def _v74_bulk_add_basket(rows,table_name):
     """
     V74: Kronoloji hızlı işlemleri için tek SQLite executemany çağrısı.
@@ -8065,10 +8221,10 @@ def _v74_bulk_add_basket(rows,table_name):
         return 0
 
 def _v74_fast_add_important(rows):
-    return _v74_bulk_add_basket(rows,'important_basket')
+    return _v74_bulk_add_basket(_v107_enrich_selected_rows(rows),'important_basket')
 
 def _v74_fast_add_osint(rows):
-    return _v74_bulk_add_basket(rows,'osint_report_basket')
+    return _v74_bulk_add_basket(_v107_enrich_selected_rows(rows),'osint_report_basket')
 
 def _v80_add_presentation(rows):
     """Her bölümden seçilen haberleri sunum sepetine toplu ekler."""
