@@ -9521,6 +9521,240 @@ def _compare_since_previous(df,current_scan_id=None):
 
 # V112 — Durum alanında işlem tarih/saatleri gösterilir; bilgi notu ve sepet silme akışları hızlandırılmıştır.
 
+
+# ============================================================
+# V113 — PANEL HIZ / TEKRAR HESAP ÖNLEME
+#
+# Amaç:
+# - V112 kararlı tarama çekirdeğine ve panel içeriğine dokunmadan,
+#   aynı taramadaki pahalı türetilmiş tabloları bir kez hesaplayıp yeniden kullanmak.
+# - Özellikle Vardiya Başlangıç Özeti sonrasında sıralı biçimde tekrar hesaplanan
+#   olay/değer/kronoloji/resmî kaynak/yaşam döngüsü tablolarının bekleme süresini azaltmak.
+#
+# Değişmeyenler:
+# - Tarama sorguları ve kaynaklar
+# - Risk/negatif sınıflandırması
+# - Bölüm sırası ve görünümü
+# - Checkbox/form işleyişi
+# - Sepetler ve Word çıktıları
+# ============================================================
+
+def _v113_scan_key(df=None, current_scan_id=None):
+    """Aynı taramaya ait bütün panel cache'lerinde ortak anahtar."""
+    sid = current_scan_id or st.session_state.get('current_scan_id') or 'none'
+    try:
+        n = len(df)
+    except Exception:
+        n = 0
+
+    # Aynı scan_id ile dataframe gerçekten değişirse cache yanlış kalmasın.
+    last_dt = ''
+    try:
+        if df is not None and not df.empty and 'Tarih_dt' in df.columns:
+            s = pd.to_datetime(df['Tarih_dt'], utc=True, errors='coerce')
+            mx = s.max()
+            last_dt = '' if pd.isna(mx) else str(mx.value)
+    except Exception:
+        last_dt = ''
+    return f'{sid}:{n}:{last_dt}'
+
+def _v113_cache():
+    cache = st.session_state.setdefault('_v113_panel_cache', {})
+    active = st.session_state.get('_v113_panel_cache_active_key')
+    cur_sid = st.session_state.get('current_scan_id') or 'none'
+
+    # Yeni taramada eski ağır DataFrame'leri RAM'de tutma.
+    if active is not None and not str(active).startswith(str(cur_sid)+':'):
+        cache.clear()
+        st.session_state['_v113_panel_cache_active_key'] = None
+    return cache
+
+def _v113_get_cached(name, key):
+    return _v113_cache().get((name, key))
+
+def _v113_set_cached(name, key, value):
+    cache = _v113_cache()
+    cache[(name, key)] = value
+    st.session_state['_v113_panel_cache_active_key'] = key
+    # Tek tarama için yeterli; cache şişmesini önle.
+    if len(cache) > 24:
+        keep = {}
+        for k, v in list(cache.items())[-18:]:
+            keep[k] = v
+        cache.clear()
+        cache.update(keep)
+    return value
+
+# ------------------------------------------------------------
+# 1) OLAY ÇERÇEVESİ — Bilgi Notu Adayları vb. aynı groupby'ı tekrar yapmasın.
+# ------------------------------------------------------------
+_v113_current_event_frame_impl = _current_event_frame
+
+def _current_event_frame(df):
+    key = _v113_scan_key(df)
+    cached = _v113_get_cached('current_event_frame', key)
+    if cached is not None:
+        return cached.copy()
+    out = _v113_current_event_frame_impl(df)
+    _v113_set_cached('current_event_frame', key, out.copy())
+    return out
+
+# ------------------------------------------------------------
+# 2) DEĞER TABLOSU — Komuta Merkezi + Top10 + İkinci Göz tek hesap kullansın.
+# ------------------------------------------------------------
+_v113_value_table_impl = _v52_event_value_table
+
+def _v52_event_value_table(df, n=10):
+    if df is None or df.empty:
+        return _v113_value_table_impl(df, n)
+
+    key = _v113_scan_key(df)
+    cached = _v113_get_cached('value_table_full', key)
+
+    if cached is None:
+        try:
+            # Fonksiyonun n parametresi yalnız son head() aşamasında kullanılıyor.
+            # Olayların tamamını bir kez puanla; sonraki çağrılar yalnız slice yapsın.
+            event_count = int(df['Olay_ID'].nunique(dropna=False)) if 'Olay_ID' in df.columns else len(df)
+            full_n = max(60, event_count)
+        except Exception:
+            full_n = max(60, int(n or 10))
+
+        cached = _v113_value_table_impl(df, full_n)
+        _v113_set_cached('value_table_full', key, cached.copy())
+
+    out = cached.head(int(n or 10)).copy().reset_index(drop=True)
+    if 'Sıra' in out.columns:
+        out['Sıra'] = range(1, len(out)+1)
+    return out
+
+# ------------------------------------------------------------
+# 3) BİLGİ NOTU ADAYLARI — 15 aday bir kez, slider yalnız dilimlesin.
+# ------------------------------------------------------------
+_v113_information_candidates_impl = _information_note_candidates
+
+def _information_note_candidates(df, current_scan_id=None, limit=10):
+    key = _v113_scan_key(df, current_scan_id)
+    cached = _v113_get_cached('information_candidates_15', key)
+    if cached is None:
+        cached = _v113_information_candidates_impl(df, current_scan_id, 15)
+        _v113_set_cached('information_candidates_15', key, cached.copy())
+    return cached.head(int(limit or 10)).copy().reset_index(drop=True)
+
+# ------------------------------------------------------------
+# 4) KRONOLOJİ OLAY TABLOSU — sayfa değişimlerinde yeniden groupby yapma.
+# ------------------------------------------------------------
+_v113_chronology_impl = _v109_chronology_events
+
+def _v109_chronology_events(df):
+    key = _v113_scan_key(df)
+    cached = _v113_get_cached('chronology_events', key)
+    if cached is not None:
+        return cached.copy()
+    out = _v113_chronology_impl(df)
+    _v113_set_cached('chronology_events', key, out.copy())
+    return out
+
+# ------------------------------------------------------------
+# 5) RESMÎ KAYNAK RADARI — aynı apply() her rerun'da tekrar çalışmasın.
+# ------------------------------------------------------------
+_v113_official_radar_impl = _official_radar_rows
+
+def _official_radar_rows(df):
+    key = _v113_scan_key(df)
+    cached = _v113_get_cached('official_radar', key)
+    if cached is not None:
+        return cached.copy()
+    out = _v113_official_radar_impl(df)
+    _v113_set_cached('official_radar', key, out.copy())
+    return out
+
+# ------------------------------------------------------------
+# 6) OLAY YAŞAM DÖNGÜSÜ — tam tablo bir kez hesaplanır, limit sonradan uygulanır.
+# ------------------------------------------------------------
+_v113_lifecycle_impl = _v58_event_lifecycle_table
+
+def _v58_event_lifecycle_table(df, limit=25):
+    key = _v113_scan_key(df)
+    cached = _v113_get_cached('event_lifecycle_60', key)
+    if cached is None:
+        cached = _v113_lifecycle_impl(df, 60)
+        _v113_set_cached('event_lifecycle_60', key, cached.copy())
+    return cached.head(int(limit or 25)).copy().reset_index(drop=True)
+
+# ------------------------------------------------------------
+# 7) TREND TABLOSU — görünüm değiştirirken tekrar üretme.
+# ------------------------------------------------------------
+try:
+    _v113_trend_impl = trend_table
+    def trend_table(df):
+        key = _v113_scan_key(df)
+        cached = _v113_get_cached('trend_table', key)
+        if cached is not None:
+            return cached.copy()
+        out = _v113_trend_impl(df)
+        _v113_set_cached('trend_table', key, out.copy())
+        return out
+except Exception:
+    pass
+
+# ------------------------------------------------------------
+# 8) VARDİYA BAŞLANGIÇ ÖZETİ — aynı taramada widget rerun'larında tekrar hesaplama.
+# Devir noktası anahtara eklenir; kullanıcı yeni devir noktası kaydederse cache yenilenir.
+# ------------------------------------------------------------
+_v113_shift_summary_impl = _shift_start_summary
+
+def _v113_shift_mark_key():
+    try:
+        mark = _latest_shift_mark()
+        return str((mark or {}).get('marked_at',''))
+    except Exception:
+        return ''
+
+def _shift_start_summary(df, current_scan_id=None):
+    key = _v113_scan_key(df, current_scan_id) + ':' + _v113_shift_mark_key()
+    cached = _v113_get_cached('shift_summary', key)
+    if cached is not None:
+        stats, top, label = cached
+        return dict(stats), top.copy(), label
+    stats, top, label = _v113_shift_summary_impl(df, current_scan_id)
+    _v113_set_cached('shift_summary', key, (dict(stats), top.copy(), label))
+    return stats, top, label
+
+# ------------------------------------------------------------
+# 9) KRİTİK SANAYİ OLAYLARI — aynı haber için incident fonksiyonu iki kez çağrılmasın.
+# ------------------------------------------------------------
+def _v113_critical_events_table(df):
+    if df is None or df.empty:
+        return pd.DataFrame()
+
+    key = _v113_scan_key(df)
+    cached = _v113_get_cached('critical_events', key)
+    if cached is not None:
+        return cached.copy()
+
+    labels = []
+    for title, summary in zip(
+        df.get('Başlık', pd.Series('', index=df.index)).fillna('').astype(str),
+        df.get('İçerik_Özeti', pd.Series('', index=df.index)).fillna('').astype(str)
+    ):
+        labels.append(critical_industrial_incident(title, summary) or '')
+
+    mask = pd.Series([bool(x) for x in labels], index=df.index)
+    out = df.loc[mask].copy()
+    if not out.empty:
+        out['Kritik_Olay'] = [labels[i] for i, flag in enumerate(mask.tolist()) if flag]
+        if 'Tarih_dt' in out.columns:
+            out = out.sort_values('Tarih_dt', ascending=False, na_position='last')
+
+    _v113_set_cached('critical_events', key, out.copy())
+    return out
+
+# ============================================================
+# /V113
+# ============================================================
+
+
 # -----------------------------
 # UI
 # -----------------------------
@@ -9753,6 +9987,11 @@ if run:
         st.session_state.scan_time,
         hours
     )
+
+    # V113 — Yeni tarama: yalnız türetilmiş panel cache'ini sıfırla.
+    # Tarama sonucu ve geçmiş verisi korunur.
+    st.session_state['_v113_panel_cache']={}
+    st.session_state['_v113_panel_cache_active_key']=None
 
 
 # V60 — ŞU AN BİLMEN GEREKENLER: manuel çalışmaz, yeni oturumda otomatik hazırlanır.
@@ -10052,17 +10291,11 @@ else:
         st.subheader('🚨 Kritik Sanayi Olayları — OSB / OSB Dışı Yangın ve Patlama')
         st.caption('OSB ve OSB dışındaki fabrika, tesis ve sanayi alanlarında tespit edilen yangın/patlama olayları burada sürekli izlenir.')
 
-        critical_mask=df.apply(
-            lambda r:bool(critical_industrial_incident(r.get('Başlık',''),r.get('İçerik_Özeti',''))),
-            axis=1
-        )
-        critical_events=df[critical_mask].copy().sort_values('Tarih_dt',ascending=False)
+        # V113: her satırda incident fonksiyonunu iki kez çalıştırmak yerine
+        # aynı tarama için bir kez hesaplanan cache'li tablo kullanılır.
+        critical_events=_v113_critical_events_table(df)
 
         if not critical_events.empty:
-            critical_events['Kritik_Olay']=critical_events.apply(
-                lambda r:critical_industrial_incident(r.get('Başlık',''),r.get('İçerik_Özeti','')) or '',
-                axis=1
-            )
             st.error(f'🚨 **KRİTİK SANAYİ OLAYI ALARMI — {len(critical_events)} içerik tespit edildi**')
             _section_select_table(
                 'critical_industrial_events',
