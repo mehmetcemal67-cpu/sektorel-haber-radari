@@ -8054,11 +8054,11 @@ def _v63_load_tomorrow():
 
 
 # -----------------------------
-# V68 — ANALİST KOMUTA MERKEZİ / SONRAKİ EN İYİ İŞLEM
+# V68 — KONTROL MERKEZİ / SONRAKİ EN İYİ İŞLEM
 # -----------------------------
-def _v68_analyst_command_center(df,limit=8):
+def _v68_control_center(df,limit=8):
     """
-    V69 Analist Komuta Merkezi:
+    V114 Kontrol Merkezi:
     - 09:00–17:30 Bilgi Notu: veri/istatistik, resmî açıklama, ürün/teknoloji tanıtımı vb.
     - 09:00–17:30 AKT: negatif, eleştirel, yapısal eleştiri, propaganda/dezenformasyon niteliği taşıyan olumsuz içerikler.
     - 17:30 sonrası: yalnız kritik/acil gelişmeler.
@@ -9523,6 +9523,16 @@ def _compare_since_previous(df,current_scan_id=None):
 
 
 # ============================================================
+# V114 — KONTROL MERKEZİ + EK HIZ OPTİMİZASYONU
+# 1) "Analist Komuta Merkezi" adı "Kontrol Merkezi" olarak değiştirildi.
+# 2) Açılıştaki otomatik geri-dönüş ağ taraması kaldırıldı; "Şu An Bilmen Gerekenler"
+#    son ana tarama verisi üzerinden hazırlanır.
+# 3) Türk ana + resmî + istatistik + negatif + opsiyonel kaynak sorguları
+#    tek paralel havuzda çalıştırılır; sıralı ağ beklemesi kaldırılır.
+# Mevcut tarama kapsamı, sınıflandırma, sepetler ve rapor üretimi korunur.
+# ============================================================
+
+# ============================================================
 # V113 — PANEL HIZ / TEKRAR HESAP ÖNLEME
 #
 # Amaç:
@@ -9600,7 +9610,7 @@ def _current_event_frame(df):
     return out
 
 # ------------------------------------------------------------
-# 2) DEĞER TABLOSU — Komuta Merkezi + Top10 + İkinci Göz tek hesap kullansın.
+# 2) DEĞER TABLOSU — Kontrol Merkezi + Top10 + İkinci Göz tek hesap kullansın.
 # ------------------------------------------------------------
 _v113_value_table_impl = _v52_event_value_table
 
@@ -9797,12 +9807,12 @@ if '_v60_catchup_hours' not in st.session_state:
     st.session_state['_v60_catchup_hours']=None
 
 if not st.session_state['_v60_catchup_done']:
+    # V114: Uygulama açılışında otomatik web/RSS taraması yapılmaz.
+    # Önceki giriş zamanı yalnız baseline olarak tutulur; "Şu An Bilmen Gerekenler"
+    # kullanıcının başlattığı ana tarama tamamlandığında o taramanın verisinden üretilir.
     st.session_state['_v60_catchup_done']=True
-    if _v60_previous_visit is not None and not pd.isna(_v60_previous_visit):
-        with st.spinner('⏱️ Son girişinizden bu yana gelişmeler otomatik kontrol ediliyor...'):
-            _catch_rows,_catch_hours=_v60_auto_catchup(_v60_previous_visit,query)
-            st.session_state['_v60_catchup_rows']=_catch_rows
-            st.session_state['_v60_catchup_hours']=_catch_hours
+    st.session_state['_v60_catchup_rows']=[]
+    st.session_state['_v60_catchup_hours']=None
 
 
 if run:
@@ -9859,35 +9869,22 @@ if run:
         stat['Kaynak dışı']+=reasons['kaynak']
         return norm_rows
 
-    # 1) Türk ana taraması önce: kullanıcı ilk sonuçları en kısa sürede görsün.
-    primary_label,primary_queries,primary_mode=batches[0]
-    status_box.write(f'{primary_label} — {len(primary_queries)} sorgu / 10 eşzamanlı')
-    primary_raw=[]
-    with concurrent.futures.ThreadPoolExecutor(max_workers=min(10,len(primary_queries))) as ex:
-        futures=[ex.submit(rss,q) for q in primary_queries]
-        for f in concurrent.futures.as_completed(futures):
-            try:
-                primary_raw.extend(f.result() or [])
-            except Exception:
-                pass
-    stat['Ham sonuç']+=len(primary_raw)
-    all_rows=dedupe(_merge_batch(primary_raw,primary_mode))
-    stat['Sonuç']=len(all_rows)
-
-    # V44: Hızlı İlk Bakış kaldırıldı.
-    # Tarama sonuçları doğrudan aşağıdaki ana Görünüm ekranında (Kronolojik/Negatif/Yüksek Risk vb.) açılır.
-
-    # 2) Negatif + Yunan + sosyal + global sorgularını TEK HAVUZDA paralel çalıştır.
-    supplemental=batches[1:]
+    # V114 — Bütün RSS sorguları tek paralel havuzda çalışır.
+    # Önceki sürümde Türk ana taraması tamamen bittikten sonra tamamlayıcı kaynaklar
+    # başlıyordu. Ana ekran sonuçları zaten tarama sonunda çizildiği için bu sıralı
+    # bekleme kaldırıldı; kapsam ve normalize kuralları değişmeden korunur.
     jobs=[]
-    for label,queries,mode in supplemental:
+    mode_order=[]
+    for label,queries,mode in batches:
+        mode_order.append(mode)
         for q in queries:
             jobs.append((label,q,mode))
 
-    supplemental_raw_by_mode={}
+    raw_by_mode={}
     if jobs:
-        status_box.write(f'⚡ Tamamlayıcı kaynaklar — {len(jobs)} sorgu / 12 eşzamanlı')
-        with concurrent.futures.ThreadPoolExecutor(max_workers=min(12,len(jobs))) as ex:
+        workers=min(12,len(jobs))
+        status_box.write(f'⚡ Paralel tarama — {len(jobs)} sorgu / {workers} eşzamanlı')
+        with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
             future_map={ex.submit(rss,q):(label,mode) for label,q,mode in jobs}
             for fut in concurrent.futures.as_completed(future_map):
                 label,mode=future_map[fut]
@@ -9896,7 +9893,7 @@ if run:
                 except Exception:
                     chunk=[]
                 stat['Ham sonuç']+=len(chunk)
-                supplemental_raw_by_mode.setdefault(mode,[]).extend(chunk)
+                raw_by_mode.setdefault(mode,[]).extend(chunk)
 
                 # ÖZEL KRİTİK SANAYİ OLAYI ALARMI:
                 # OSB/OSB dışı fabrika-tesis yangın ve patlamalarında sorgu döner dönmez bildir.
@@ -9920,7 +9917,8 @@ if run:
                                 )
 
     # Mode bazlı normalize + birleştirme.
-    for mode,raw in supplemental_raw_by_mode.items():
+    for mode in mode_order:
+        raw=raw_by_mode.get(mode,[])
         incoming=_merge_batch(raw,mode)
         old_keys={_alert_key(x) for x in all_rows}
         all_rows=dedupe(all_rows+incoming)
@@ -9980,6 +9978,30 @@ if run:
     st.session_state.stats=stat
     st.session_state.last_scan_alerts=live_alerts
 
+    # V114 — "Şu An Bilmen Gerekenler" için ikinci bir web taraması yapma.
+    # Önceki girişten sonraki kayıtları, az önce tamamlanan ve zaten zenginleştirilmiş
+    # ana tarama sonuçlarından filtrele.
+    _prev_catch=st.session_state.get('_v60_previous_visit')
+    if _prev_catch is not None and not pd.isna(_prev_catch):
+        try:
+            _prev_utc=pd.to_datetime(_prev_catch,utc=True).to_pydatetime()
+            _now_utc=datetime.now(timezone.utc)
+            st.session_state['_v60_catchup_hours']=max(0.0,(_now_utc-_prev_utc).total_seconds()/3600)
+            _local_catch=[]
+            for _r in all_rows:
+                _rdt=_to_utc_datetime(_r.get('Tarih_dt'))
+                if _rdt is None:
+                    _rdt=_to_utc_datetime(_r.get('Tarih'))
+                if _rdt is not None and _rdt>=_prev_utc:
+                    _local_catch.append(_r)
+            st.session_state['_v60_catchup_rows']=_local_catch
+        except Exception:
+            st.session_state['_v60_catchup_rows']=[]
+            st.session_state['_v60_catchup_hours']=None
+    else:
+        st.session_state['_v60_catchup_rows']=[]
+        st.session_state['_v60_catchup_hours']=None
+
     # V33 geçmiş karşılaştırma katmanı: tarama bittikten SONRA olay özetini kaydeder.
     # Tarama motoruna veya sıralamaya müdahale etmez.
     st.session_state.current_scan_id=_save_scan_history(
@@ -9994,24 +10016,27 @@ if run:
     st.session_state['_v113_panel_cache_active_key']=None
 
 
-# V60 — ŞU AN BİLMEN GEREKENLER: manuel çalışmaz, yeni oturumda otomatik hazırlanır.
+# V114 — ŞU AN BİLMEN GEREKENLER: ek ağ isteği yok; son ana tarama verisinden hazırlanır.
 st.subheader('⚡ Şu An Bilmen Gerekenler')
 _prev=st.session_state.get('_v60_previous_visit')
 _catch_rows=st.session_state.get('_v60_catchup_rows') or []
 _catch_hours=st.session_state.get('_v60_catchup_hours')
 
 if _prev is None or pd.isna(_prev):
-    st.info('İlk giriş kaydı oluşturuldu. Bir sonraki girişinizde bu alan son girişinizden sonraki gelişmeleri otomatik gösterecek.')
+    st.info('İlk giriş kaydı oluşturuldu. Sonraki oturumlarda bu alan, başlattığınız ana tarama verisi üzerinden son girişten sonraki gelişmeleri gösterecektir.')
 else:
     try:
         _prev_local=pd.to_datetime(_prev,utc=True).tz_convert(datetime.now().astimezone().tzinfo)
-        st.caption(f'Son giriş: {_prev_local.strftime("%d.%m.%Y %H:%M")} — bu tarihten sonraki gelişmeler otomatik kontrol edildi.')
+        st.caption(f'Son giriş: {_prev_local.strftime("%d.%m.%Y %H:%M")} — bu tarihten sonraki gelişmeler son ana tarama verisi üzerinden kontrol edilmektedir.')
     except Exception:
         pass
 
-    _now5=_v60_now_to_know_table(_catch_rows,5)
-    if _now5.empty:
-        st.success('Son girişinizden bu yana öncelikli yeni bir gelişme tespit edilmedi.')
+    _has_main_scan=st.session_state.get('rows') is not None
+    _now5=_v60_now_to_know_table(_catch_rows,5) if _has_main_scan else pd.DataFrame()
+    if not _has_main_scan:
+        st.info('Bu alan ek tarama yapmaz. Ana taramayı başlattığınızda son girişten sonraki gelişmeler mevcut tarama sonuçlarından otomatik süzülecektir.')
+    elif _now5.empty:
+        st.success('Son girişinizden bu yana, seçtiğiniz ana tarama aralığında öncelikli yeni bir gelişme tespit edilmedi.')
     else:
         st.warning(f'Son girişinizden bu yana dikkat gerektiren {_now5.shape[0]} gelişme öne çıkıyor.')
 
@@ -10114,10 +10139,10 @@ else:
 st.markdown('---')
 
 # ============================================================
-# V68 — ANALİST KOMUTA MERKEZİ
+# V68 — KONTROL MERKEZİ
 # ============================================================
 st.caption('⚡ V75 ultra hızlı mod: checkbox işlemleri form içinde tutulmakta; tik atmak tek başına uygulamayı yeniden çalıştırmamaktadır.')
-st.subheader('🎛️ Analist Komuta Merkezi')
+st.subheader('🎛️ Kontrol Merkezi')
 st.caption(
     'Bu alan çalışma saatine ve içeriğin niteliğine göre işlem önermektedir: Bilgi Notu için veri/istatistik, '
     'resmî açıklama ve ürün/teknoloji gelişmeleri; AKT için negatif/eleştirel/olumsuz veya propaganda niteliğindeki '
@@ -10130,7 +10155,7 @@ if _cmd_rows:
     if not _cmd_df.empty and 'Tarih_dt' in _cmd_df.columns:
         _cmd_df['Tarih_dt']=pd.to_datetime(_cmd_df['Tarih_dt'],utc=True,errors='coerce')
 
-    _cmd,_phase,_phase_hint=_v68_analyst_command_center(_cmd_df,8)
+    _cmd,_phase,_phase_hint=_v68_control_center(_cmd_df,8)
 
     cphase1,cphase2=st.columns([1,2])
     with cphase1:
@@ -10155,7 +10180,7 @@ if _cmd_rows:
             'Bilgi Notu işlemlerini aynı bölümden uygulayabilirsiniz.'
         )
 else:
-    st.info('İlk ana tarama tamamlandığında Analist Komuta Merkezi otomatik olarak işlem önerileri oluşturacaktır.')
+    st.info('İlk ana tarama tamamlandığında Kontrol Merkezi otomatik olarak işlem önerileri oluşturacaktır.')
 
 st.markdown('---')
 
