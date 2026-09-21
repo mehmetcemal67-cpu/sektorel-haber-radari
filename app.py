@@ -13959,6 +13959,451 @@ def _v122_render_manager_summary(df):
 
 
 # ============================================================
+# V123 — TEK HARİTA / MOD SEÇİMLİ STRATEJİK COĞRAFİ GÖRÜNÜM
+# V122 kararlı çekirdeği korunur. Harita yalnızca mevcut tarama verisini kullanır;
+# ek ağ isteği ve coğrafi servis çağrısı yapmaz.
+# ============================================================
+
+_V123_COUNTRY_GEO = {
+    'Türkiye': (39.0, 35.0, ('turkey', 'türkiye', 'turkiye')),
+    'ABD': (38.0, -97.0, ('united states', 'u.s.', 'u.s.a', 'usa', 'american')),
+    'Kanada': (56.1, -106.3, ('canada', 'canadian')),
+    'Meksika': (23.6, -102.6, ('mexico', 'mexican')),
+    'Brezilya': (-14.2, -51.9, ('brazil', 'brazilian')),
+    'Arjantin': (-38.4, -63.6, ('argentina', 'argentine')),
+    'Birleşik Krallık': (55.4, -3.4, ('united kingdom', 'britain', 'british', 'england', 'uk')),
+    'İrlanda': (53.1, -8.2, ('ireland', 'irish')),
+    'Fransa': (46.2, 2.2, ('france', 'french')),
+    'Almanya': (51.2, 10.5, ('germany', 'german')),
+    'İtalya': (41.9, 12.6, ('italy', 'italian')),
+    'İspanya': (40.5, -3.7, ('spain', 'spanish')),
+    'Portekiz': (39.4, -8.2, ('portugal', 'portuguese')),
+    'Hollanda': (52.1, 5.3, ('netherlands', 'dutch')),
+    'Belçika': (50.5, 4.5, ('belgium', 'belgian')),
+    'İsviçre': (46.8, 8.2, ('switzerland', 'swiss')),
+    'Avusturya': (47.5, 14.6, ('austria', 'austrian')),
+    'Polonya': (51.9, 19.1, ('poland', 'polish')),
+    'Çekya': (49.8, 15.5, ('czech republic', 'czechia', 'czech')),
+    'Slovakya': (48.7, 19.7, ('slovakia', 'slovak')),
+    'Macaristan': (47.2, 19.5, ('hungary', 'hungarian')),
+    'Romanya': (45.9, 24.9, ('romania', 'romanian')),
+    'Bulgaristan': (42.7, 25.5, ('bulgaria', 'bulgarian')),
+    'Yunanistan': (39.1, 21.8, ('greece', 'greek', 'yunanistan')),
+    'Ukrayna': (48.4, 31.2, ('ukraine', 'ukrainian')),
+    'Rusya': (61.5, 105.3, ('russia', 'russian')),
+    'İsveç': (60.1, 18.6, ('sweden', 'swedish')),
+    'Norveç': (60.5, 8.5, ('norway', 'norwegian')),
+    'Finlandiya': (61.9, 25.7, ('finland', 'finnish')),
+    'Danimarka': (56.3, 9.5, ('denmark', 'danish')),
+    'Estonya': (58.6, 25.0, ('estonia', 'estonian')),
+    'Letonya': (56.9, 24.6, ('latvia', 'latvian')),
+    'Litvanya': (55.2, 23.9, ('lithuania', 'lithuanian')),
+    'İsrail': (31.0, 34.9, ('israel', 'israeli')),
+    'Suudi Arabistan': (23.9, 45.1, ('saudi arabia', 'saudi')),
+    'BAE': (23.4, 53.8, ('united arab emirates', 'uae', 'emirates')),
+    'Katar': (25.3, 51.2, ('qatar', 'qatari')),
+    'İran': (32.4, 53.7, ('iran', 'iranian')),
+    'Irak': (33.2, 43.7, ('iraq', 'iraqi')),
+    'Suriye': (34.8, 38.9, ('syria', 'syrian')),
+    'Mısır': (26.8, 30.8, ('egypt', 'egyptian')),
+    'Güney Afrika': (-30.6, 22.9, ('south africa', 'south african')),
+    'Hindistan': (20.6, 79.0, ('india', 'indian')),
+    'Pakistan': (30.4, 69.3, ('pakistan', 'pakistani')),
+    'Bangladeş': (23.7, 90.4, ('bangladesh', 'bangladeshi')),
+    'Çin': (35.9, 104.2, ('china', 'chinese')),
+    'Japonya': (36.2, 138.3, ('japan', 'japanese')),
+    'Güney Kore': (36.5, 127.9, ('south korea', 'korea', 'korean')),
+    'Tayvan': (23.7, 121.0, ('taiwan', 'taiwanese')),
+    'Singapur': (1.35, 103.82, ('singapore', 'singaporean')),
+    'Malezya': (4.2, 101.98, ('malaysia', 'malaysian')),
+    'Endonezya': (-0.8, 113.9, ('indonesia', 'indonesian')),
+    'Vietnam': (14.1, 108.3, ('vietnam', 'vietnamese')),
+    'Tayland': (15.9, 100.99, ('thailand', 'thai')),
+    'Filipinler': (12.9, 121.8, ('philippines', 'filipino')),
+    'Avustralya': (-25.3, 133.8, ('australia', 'australian')),
+    'Yeni Zelanda': (-40.9, 174.9, ('new zealand',))
+}
+
+_V123_TR_CITY_GEO = {
+    'Adana': (37.00, 35.32, ('adana',)),
+    'Ankara': (39.93, 32.86, ('ankara',)),
+    'Antalya': (36.89, 30.70, ('antalya',)),
+    'Balıkesir': (39.65, 27.88, ('balıkesir', 'balikesir')),
+    'Bilecik': (40.14, 29.98, ('bilecik',)),
+    'Bolu': (40.74, 31.61, ('bolu',)),
+    'Bursa': (40.20, 29.06, ('bursa',)),
+    'Çanakkale': (40.15, 26.41, ('çanakkale', 'canakkale')),
+    'Çorum': (40.55, 34.95, ('çorum', 'corum')),
+    'Denizli': (37.78, 29.09, ('denizli',)),
+    'Diyarbakır': (37.91, 40.24, ('diyarbakır', 'diyarbakir')),
+    'Düzce': (40.84, 31.16, ('düzce', 'duzce')),
+    'Elazığ': (38.68, 39.23, ('elazığ', 'elazig')),
+    'Erzurum': (39.90, 41.27, ('erzurum',)),
+    'Eskişehir': (39.77, 30.52, ('eskişehir', 'eskisehir')),
+    'Gaziantep': (37.07, 37.38, ('gaziantep',)),
+    'Hatay': (36.20, 36.16, ('hatay', 'iskenderun', 'antakya')),
+    'İstanbul': (41.01, 28.98, ('istanbul', 'İstanbul')),
+    'İzmir': (38.42, 27.14, ('izmir',)),
+    'Kahramanmaraş': (37.58, 36.93, ('kahramanmaraş', 'kahramanmaras')),
+    'Karabük': (41.20, 32.63, ('karabük', 'karabuk')),
+    'Kayseri': (38.72, 35.49, ('kayseri',)),
+    'Kırıkkale': (39.85, 33.52, ('kırıkkale', 'kirikkale')),
+    'Kırklareli': (41.73, 27.23, ('kırklareli', 'kirklareli')),
+    'Kocaeli': (40.77, 29.94, ('kocaeli', 'izmit', 'gebze', 'dilovası', 'dilovasi')),
+    'Konya': (37.87, 32.49, ('konya',)),
+    'Kütahya': (39.42, 29.98, ('kütahya', 'kutahya')),
+    'Malatya': (38.35, 38.31, ('malatya',)),
+    'Manisa': (38.62, 27.43, ('manisa',)),
+    'Mersin': (36.81, 34.64, ('mersin', 'tarsus')),
+    'Sakarya': (40.78, 30.40, ('sakarya', 'adapazarı', 'adapazari')),
+    'Samsun': (41.29, 36.33, ('samsun',)),
+    'Şanlıurfa': (37.17, 38.79, ('şanlıurfa', 'sanliurfa')),
+    'Tekirdağ': (40.98, 27.51, ('tekirdağ', 'tekirdag', 'çerkezköy', 'cerkezkoy', 'çorlu', 'corlu')),
+    'Trabzon': (41.00, 39.72, ('trabzon',)),
+    'Zonguldak': (41.46, 31.80, ('zonguldak', 'ereğli', 'eregli'))
+}
+
+
+def _v123_alias_hits(text, aliases):
+    """Kelime sınırlarını mümkün olduğunca koruyarak konum adı eşleşmesi sayar."""
+    raw = str(text or '').lower()
+    total = 0
+    for alias in aliases:
+        a = str(alias or '').lower().strip()
+        if not a:
+            continue
+        if len(a) <= 3:
+            total += len(re.findall(r'(?<!\w)' + re.escape(a) + r'(?!\w)', raw, flags=re.I))
+        else:
+            total += raw.count(a)
+    return total
+
+
+def _v123_subject_location(row, mode):
+    """
+    Kaynak kuruluşun merkezini değil, haber metninde açıkça geçen konu coğrafyasını döndürür.
+    Belirsiz haberler haritaya zorla yerleştirilmez.
+    """
+    title = str(row.get('Başlık', '') or '')
+    summary = str(row.get('İçerik_Özeti', '') or '')
+    title_n = norm(title)
+    summary_n = norm(summary)
+
+    if mode == '🚨 Kritik Sanayi Olayları':
+        best = None
+        best_score = 0
+        for city, (lat, lon, aliases) in _V123_TR_CITY_GEO.items():
+            score = 5 * _v123_alias_hits(title_n, aliases) + _v123_alias_hits(summary_n, aliases)
+            if score > best_score:
+                best = (city, 'Türkiye', lat, lon)
+                best_score = score
+        return best
+
+    best = None
+    best_score = 0
+    for country, (lat, lon, aliases) in _V123_COUNTRY_GEO.items():
+        score = 5 * _v123_alias_hits(title_n, aliases) + _v123_alias_hits(summary_n, aliases)
+        # Türkiye bağlantılı global görünümde yalnız "Turkey" kelimesi geçti diye harita
+        # otomatik olarak Türkiye'ye yığılmasın; başka ülke açıkça geçiyorsa onu öne çıkar.
+        if mode == '🇹🇷 Türkiye Bağlantılı Global' and country == 'Türkiye':
+            score *= 0.65
+        if score > best_score:
+            best = (country, country, lat, lon)
+            best_score = score
+    return best
+
+
+def _v123_turkey_link_reason(row):
+    text = norm(
+        f"{row.get('Başlık', '')} {row.get('İçerik_Özeti', '')} "
+        f"{row.get('Kaynak', '')} {row.get('Kategori', '')}"
+    )
+    labels = [
+        ('ASELSAN', ('aselsan',)), ('TUSAŞ', ('tusaş', 'tusas', 'turkish aerospace')),
+        ('ROKETSAN', ('roketsan',)), ('HAVELSAN', ('havelsan',)),
+        ('Baykar/Bayraktar', ('baykar', 'bayraktar')), ('TOGG', ('togg',)),
+        ('KAAN', ('kaan',)), ('HİSAR/SİPER', ('hisar', 'siper')),
+        ('Türkiye', ('turkey', 'türkiye', 'turkiye', 'turkish', 'ankara', 'istanbul')),
+    ]
+    found = [label for label, terms in labels if any(term in text for term in terms)]
+    return ' · '.join(found[:3]) if found else 'Türkiye ile doğrudan bağlantı'
+
+
+def _v123_map_event_key(row):
+    event_id = str(row.get('Olay_ID', '') or '').strip()
+    if event_id:
+        return 'E:' + event_id
+    return 'T:' + title_key(row.get('Başlık', ''))
+
+
+def _v123_map_dataset(df, mode):
+    """Seçilen harita modu için tekil ve haritalanabilir olay veri setini hazırlar."""
+    if df is None or df.empty:
+        return pd.DataFrame(), 0
+
+    cache = st.session_state.setdefault('_v123_map_cache', {})
+    scan_id = st.session_state.get('current_scan_id')
+    cache_key = (str(scan_id), str(st.session_state.get('scan_time')), int(len(df)), str(mode))
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return pd.DataFrame(cached.get('records', [])), int(cached.get('unmapped', 0))
+
+    if mode == '🌍 Global Stratejik Gelişmeler':
+        subset = df[df.apply(_v122_is_global_row, axis=1)].copy()
+    elif mode == '🇹🇷 Türkiye Bağlantılı Global':
+        subset = df[df.apply(_v122_is_turkey_linked_global, axis=1)].copy()
+    else:
+        mask = df.apply(
+            lambda r: bool(critical_industrial_incident(r.get('Başlık', ''), r.get('İçerik_Özeti', ''))),
+            axis=1,
+        )
+        subset = df[mask].copy()
+
+    if subset.empty:
+        return pd.DataFrame(), 0
+
+    subset['_v123_event_key'] = subset.apply(_v123_map_event_key, axis=1)
+    # Aynı olay birçok kaynaktan geldiyse, haritada tek nokta gösterilir. Önce en yüksek
+    # kaynak sayısı/risk, sonra en yeni kayıt tercih edilir.
+    if 'Tarih_dt' in subset.columns:
+        subset['Tarih_dt'] = pd.to_datetime(subset['Tarih_dt'], utc=True, errors='coerce')
+    else:
+        subset['Tarih_dt'] = pd.NaT
+    subset['_v123_sources'] = subset.apply(lambda r: _v122_verification_payload(r)[0], axis=1)
+    subset['_v123_risk'] = pd.to_numeric(subset.get('Risk_Skoru', 0), errors='coerce').fillna(0)
+    subset = subset.sort_values(
+        ['_v123_sources', '_v123_risk', 'Tarih_dt'],
+        ascending=[False, False, False],
+        na_position='last',
+    ).drop_duplicates('_v123_event_key', keep='first')
+
+    rows = []
+    unmapped = 0
+    for _, row in subset.iterrows():
+        loc = _v123_subject_location(row, mode)
+        if not loc:
+            unmapped += 1
+            continue
+        location, country, lat, lon = loc
+        source_count, verification, official = _v122_verification_payload(row)
+        badge = _v122_source_verification_badge(row)
+        risk = int(float(row.get('Risk_Skoru', 0) or 0))
+        title = _clean_note_text(row.get('Başlık', ''))
+        summary = _clean_note_text(row.get('İçerik_Özeti', ''))
+        category = _clean_note_text(row.get('Kategori', '')) or 'Diğer'
+        source = _clean_note_text(row.get('Kaynak', '')) or 'Açık Kaynak'
+        time_text = _clean_note_text(row.get('Tarih', ''))
+        if not time_text and row.get('Tarih_dt') is not None:
+            time_text = fmt_dt(row.get('Tarih_dt'))
+        turkey_link = _v123_turkey_link_reason(row) if _v122_is_turkey_linked_global(row) else '—'
+        rows.append({
+            'Konum': location,
+            'Ülke': country,
+            'lat': float(lat),
+            'lon': float(lon),
+            'Başlık': title,
+            'Kısa Başlık': title[:92] + ('…' if len(title) > 92 else ''),
+            'Özet': summary[:520] + ('…' if len(summary) > 520 else ''),
+            'Kategori': category,
+            'Kaynak': source,
+            'Kaynak Teyidi': badge,
+            'Kaynak Sayısı': int(source_count),
+            'Doğrulama': verification,
+            'Risk': risk,
+            'Türkiye Bağlantısı': turkey_link,
+            'Tarih': time_text,
+            'URL': str(row.get('URL', '') or ''),
+            'Boyut': max(9, min(28, 10 + risk * 0.10 + min(source_count, 5) * 1.5)),
+        })
+
+    result = pd.DataFrame(rows)
+    if len(cache) > 8:
+        cache.clear()
+    cache[cache_key] = {'records': rows, 'unmapped': unmapped}
+    return result, unmapped
+
+
+def _v123_render_map_detail(row):
+    if row is None:
+        return
+    st.markdown('#### 🔎 Seçili Gelişme')
+    st.markdown(f"**{row.get('Başlık', '')}**")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.markdown(f"**Konum**  \n{row.get('Konum', '—')}")
+    c2.markdown(f"**Kategori**  \n{row.get('Kategori', '—')}")
+    c3.markdown(f"**Risk**  \n{row.get('Risk', 0)}/100")
+    c4.markdown(f"**Teyit**  \n{row.get('Kaynak Teyidi', '—')}")
+    st.caption(
+        f"Kaynak: {row.get('Kaynak', '—')} · Tarih/Saat: {row.get('Tarih', '—')} · "
+        f"Türkiye bağlantısı: {row.get('Türkiye Bağlantısı', '—')}"
+    )
+    if row.get('Özet'):
+        st.write(row.get('Özet'))
+    url = str(row.get('URL', '') or '').strip()
+    if url.startswith(('http://', 'https://')):
+        st.markdown(f'[🔗 Haberi aç]({url})')
+
+
+def _v123_render_strategic_map(df):
+    """Yönetici Özeti altında tek harita; mod değiştikçe veri katmanı değişir."""
+    st.markdown('## 🌍 Küresel Sanayi ve Stratejik Teknoloji Haritası')
+    st.caption(
+        'Harita mevcut tarama dönemiyle otomatik senkronizedir. Konum, yayıncının merkezine göre değil; '
+        'haber başlığı/özetinde açıkça geçen olay coğrafyasına göre belirlenir.'
+    )
+    mode = st.radio(
+        'Harita modu',
+        ['🌍 Global Stratejik Gelişmeler', '🇹🇷 Türkiye Bağlantılı Global', '🚨 Kritik Sanayi Olayları'],
+        index=1,
+        horizontal=True,
+        key='v123_strategic_map_mode',
+    )
+    data, unmapped = _v123_map_dataset(df, mode)
+
+    if data.empty:
+        st.info(
+            'Bu modda açık coğrafi konum içeren gelişme bulunamadı. '
+            'Belirsiz konumlar yanlış nokta oluşturmamak için haritaya eklenmez.'
+        )
+        return
+
+    categories = sorted(x for x in data['Kategori'].dropna().astype(str).unique() if x.strip())
+    selected_categories = st.multiselect(
+        'Kategori filtresi',
+        categories,
+        default=categories,
+        key=f"v123_map_categories_{re.sub(r'[^a-zA-Z0-9]+', '_', mode)}",
+        help='Harita tek kalır; seçilen kategorilere göre noktalar anlık filtrelenir.',
+    )
+    if selected_categories:
+        data = data[data['Kategori'].astype(str).isin(selected_categories)].copy()
+    else:
+        data = data.iloc[0:0].copy()
+    if data.empty:
+        st.info('Seçilen kategori filtresinde haritalanabilir gelişme bulunmuyor.')
+        return
+
+    location_count = int(data['Konum'].nunique())
+    event_count = int(len(data))
+    turkey_count = int((data['Türkiye Bağlantısı'].astype(str) != '—').sum())
+    high_count = int((pd.to_numeric(data['Risk'], errors='coerce').fillna(0) >= 70).sum())
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric('Haritalanan Konum', location_count)
+    m2.metric('Tekil Gelişme', event_count)
+    m3.metric('Türkiye Bağlantılı', turkey_count)
+    m4.metric('Yüksek Risk', high_count)
+
+    clicked_index = None
+    try:
+        import plotly.express as px
+
+        fig = px.scatter_geo(
+            data,
+            lat='lat',
+            lon='lon',
+            color='Kategori',
+            size='Boyut',
+            hover_name='Kısa Başlık',
+            hover_data={
+                'Konum': True,
+                'Kaynak': True,
+                'Kaynak Teyidi': True,
+                'Risk': True,
+                'Türkiye Bağlantısı': True,
+                'Tarih': True,
+                'lat': False,
+                'lon': False,
+                'Boyut': False,
+                'Kategori': False,
+            },
+            projection='natural earth',
+            height=560,
+            custom_data=['Başlık', 'Konum'],
+        )
+        if mode == '🚨 Kritik Sanayi Olayları':
+            fig.update_geos(fitbounds='locations', visible=True, showcountries=True, showcoastlines=True)
+        else:
+            fig.update_geos(showcountries=True, showcoastlines=True, showland=True)
+        fig.update_layout(
+            margin=dict(l=0, r=0, t=8, b=0),
+            legend_title_text='Kategori',
+        )
+
+        # Yeni Streamlit sürümlerinde nokta seçimi destekleniyorsa tıklanan gelişmeyi kartta aç.
+        try:
+            event = st.plotly_chart(
+                fig,
+                use_container_width=True,
+                key='v123_strategic_geo_chart',
+                on_select='rerun',
+                selection_mode='points',
+            )
+            selection = getattr(event, 'selection', None)
+            points = getattr(selection, 'points', None) if selection is not None else None
+            if points:
+                point = points[0]
+                if isinstance(point, dict):
+                    custom = point.get('customdata')
+                    if custom is not None and len(custom) >= 2:
+                        hit = data[
+                            (data['Başlık'].astype(str) == str(custom[0]))
+                            & (data['Konum'].astype(str) == str(custom[1]))
+                        ]
+                        if not hit.empty:
+                            clicked_index = data.reset_index(drop=True).index[
+                                data.reset_index(drop=True)['Başlık'].astype(str).eq(str(custom[0]))
+                                & data.reset_index(drop=True)['Konum'].astype(str).eq(str(custom[1]))
+                            ][0]
+                    if clicked_index is None:
+                        clicked_index = point.get('point_index', point.get('pointNumber'))
+                else:
+                    clicked_index = getattr(point, 'point_index', None)
+        except TypeError:
+            st.plotly_chart(fig, use_container_width=True, key='v123_strategic_geo_chart_fallback')
+    except Exception:
+        # Plotly kurulu olmayan ortamlarda Streamlit'in temel haritasına geri dön.
+        st.map(data[['lat', 'lon']].rename(columns={'lat': 'latitude', 'lon': 'longitude'}))
+        st.caption('Gelişmiş harita bileşeni kullanılamadığı için temel konum görünümü gösterilmektedir.')
+
+    labels = [
+        f"{row['Konum']} · {row['Kısa Başlık']}"
+        for _, row in data.reset_index(drop=True).iterrows()
+    ]
+    default_index = 0
+    try:
+        if clicked_index is not None and 0 <= int(clicked_index) < len(labels):
+            default_index = int(clicked_index)
+    except Exception:
+        default_index = 0
+
+    st.caption('Haritada bir noktayı seçebilir veya aşağıdaki listeden gelişmeyi açabilirsiniz.')
+    selected_label = st.selectbox(
+        'Haritadaki gelişme',
+        labels,
+        index=default_index,
+        key=f"v123_map_event_{re.sub(r'[^a-zA-Z0-9]+', '_', mode)}",
+    )
+    try:
+        selected_idx = labels.index(selected_label)
+    except ValueError:
+        selected_idx = 0
+    _v123_render_map_detail(data.reset_index(drop=True).iloc[selected_idx].to_dict())
+
+    if unmapped:
+        st.caption(
+            f'ℹ️ {unmapped} tekil gelişmede güvenilir şehir/ülke ifadesi bulunmadığı için haritaya nokta eklenmedi.'
+        )
+    st.caption(
+        'Konum çıkarımı yalnız açık metin eşleşmesine dayanır; tahminî geocoding yapılmaz. '
+        'Bu yaklaşım sunumda yanlış ülke/şehir göstermeyi öncelikli olarak engeller.'
+    )
+
+# ============================================================
+# /V123 STRATEJİK HARİTA
+# ============================================================
+
+
+# ============================================================
 # V122 — YÖNETİCİ ÖZETİ + TEYİT + TÜRKİYE BAĞLANTILI GLOBAL
 # 1) Ana başlık: STB-Açık Kaynak Tarama Merkezi
 # 2) Ana haber görünümüne ayrı "Global Sanayi / Teknoloji" bölümü eklendi.
@@ -13969,7 +14414,7 @@ def _v122_render_manager_summary(df):
 # UI
 # -----------------------------
 st.title('🛡️ STB-Açık Kaynak Tarama Merkezi')
-st.caption('Hızlı ilk bakış · olay kümeleri · risk/negatif ayrımı · Türk medya önceliği · hedefli global sanayi/teknoloji basını · Yunan/Türk savunma · kaynak güvenilirliği · trend · alarm · seçilen haberlerden DOCX')
+st.caption('Hızlı ilk bakış · mod seçimli stratejik harita · olay kümeleri · risk/negatif ayrımı · Türk medya önceliği · hedefli global sanayi/teknoloji basını · Yunan/Türk savunma · kaynak güvenilirliği · trend · alarm · seçilen haberlerden DOCX')
 with st.sidebar:
     st.header('⚙️ Tarama Ayarları')
     default=('sanayi OR teknoloji OR üretim OR imalat OR fabrika OR OSB OR makine OR otomasyon OR robotik OR Ar-Ge OR patent OR yapay zeka OR yazılım OR siber güvenlik OR çip OR yarı iletken OR elektronik OR telekom OR kuantum OR biyoteknoloji OR nanoteknoloji OR savunma sanayii OR ASELSAN OR TUSAŞ OR ROKETSAN OR HAVELSAN OR Baykar OR İHA OR SİHA OR KAAN OR havacılık OR uzay OR uydu OR otomotiv OR TOGG OR batarya OR enerji OR hidrojen OR kimya OR petrokimya OR demir çelik OR madencilik OR tekstil OR gıda teknolojisi OR tarım teknolojisi OR lojistik OR tedarik zinciri OR TÜBİTAK OR KOSGEB OR teknopark OR yatırım teşvik OR yerlileştirme')
@@ -14452,6 +14897,8 @@ else:
         a,b,c,d,e,f=st.columns(6); a.metric('Toplam',total); b.metric('Olay',events); c.metric('Negatif',negc); d.metric('Yüksek Risk',riskc); e.metric('🇹🇷 Türk',trc); f.metric('🇬🇷 Yunan',grc)
 
         _v122_render_manager_summary(df)
+
+        _v123_render_strategic_map(df)
 
         # ---------------------------------------------------------
         # V34 — VARDİYA BAŞLANGIÇ ÖZETİ
