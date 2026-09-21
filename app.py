@@ -14549,6 +14549,552 @@ if st.session_state.get("_report_engine_version") != _V120_ENGINE_VERSION:
 # ============================================================
 
 
+# ============================================================
+# V121 — ADAPTIVE QUALITY / NON-BLOCKING REPORT ENGINE
+# ============================================================
+# V120 correctly blocked contaminated reports, but its fixed evidence thresholds
+# were too strict for legitimate short articles. V121 keeps event isolation while
+# using an adaptive quality ladder:
+#   1) selected source/summary/page,
+#   2) same-event rows,
+#   3) site-restricted Turkish snippets,
+#   4) strongly-matched Turkish corroboration,
+#   5) structured (non-freeform) Turkish rendering of a few common English
+#      finance/cyber facts when no Turkish detail exists.
+# No report is padded with "information is limited" boilerplate.
+# ============================================================
+
+_V121_ENGINE_VERSION = "V121-ADAPTIVE-QA-2026-09-22-A"
+
+
+def _v121_dedupe_facts(facts, limit=12):
+    output = []
+    token_sets = []
+    for fact in facts or []:
+        clean = _v120_clean_evidence_text(fact)
+        if not clean:
+            continue
+        tokens = set(_v117_tokens(clean))
+        if len(tokens) < 3:
+            continue
+        duplicate = False
+        for previous in token_sets:
+            union = len(tokens | previous)
+            if union and len(tokens & previous) / union >= 0.70:
+                duplicate = True
+                break
+        if duplicate:
+            continue
+        output.append(_v119_fix_surface(clean))
+        token_sets.append(tokens)
+        if len(output) >= limit:
+            break
+    return output
+
+
+def _v121_relaxed_facts(title, text, trusted=False, limit=10):
+    """Extract coherent facts without requiring every sentence to repeat the title."""
+    title = _clean_note_text(title)
+    body = _v120_clean_evidence_text(text)
+    if not title or not body:
+        return []
+
+    fragments = _v117_fragment_body(body)
+    candidates = []
+    for index, raw in enumerate(fragments):
+        sentence = _v120_clean_evidence_text(raw).strip(" ;")
+        if not sentence or len(sentence) < 30:
+            continue
+        if _v117_heading_like(sentence) or _v117_question_or_interview(sentence):
+            continue
+        if sentence.startswith(("http://", "https://", "www.")):
+            continue
+        if _V120_SEO_NOISE_RE.search(sentence):
+            continue
+        if not _v120_is_turkish_prose(sentence):
+            continue
+
+        sentence = _v119_strip_title_echo(title, sentence)
+        sentence = _v120_clean_evidence_text(_v117_formal_sentence(sentence))
+        if not sentence or len(sentence) < 30:
+            continue
+
+        direct, number_hits, relevance = _v120_event_overlap(title, sentence)
+        tokens = set(_v117_tokens(sentence))
+        info = _akt_sentence_score(sentence) + _sent_score(sentence)
+        if re.search(r"\b\d+(?:[.,]\d+)?\b", sentence):
+            info += 2
+        candidates.append(
+            {
+                "i": index,
+                "text": sentence,
+                "tokens": tokens,
+                "direct": direct,
+                "number_hits": number_hits,
+                "relevance": relevance,
+                "info": info,
+            }
+        )
+
+    if not candidates:
+        return []
+
+    anchor_index = None
+    for item in candidates[:14]:
+        if item["direct"] >= 1 or item["relevance"] >= 2.0:
+            anchor_index = item["i"]
+            break
+
+    # Exact selected summaries are already tied to the event. When a headline is
+    # generic, allow the first informative fragment to become the anchor.
+    if anchor_index is None and trusted:
+        whole_rel = _v118_title_relevance(title, body)
+        if whole_rel >= 1.15 or title_key(body[:220]) == title_key(title[:220]):
+            anchor_index = candidates[0]["i"]
+
+    if anchor_index is None:
+        return []
+
+    signature, _ = _v120_signature(title)
+    context = set(signature)
+    accepted = []
+    misses = 0
+    last_index = anchor_index
+
+    for item in candidates:
+        if item["i"] < anchor_index:
+            continue
+        tokens = item["tokens"]
+        overlap = len(tokens & context)
+        near = item["i"] - last_index <= 3
+        keep = (
+            item["direct"] >= 1
+            or item["relevance"] >= 1.9
+            or (trusted and near and item["info"] >= 4)
+            or (accepted and near and overlap >= 1 and item["info"] >= 3)
+            or (
+                accepted
+                and near
+                and item["number_hits"] >= 1
+                and item["info"] >= 4
+            )
+        )
+        if not keep:
+            if accepted:
+                misses += 1
+                if misses >= 2:
+                    break
+            continue
+        misses = 0
+        accepted.append(item["text"])
+        context.update(tokens)
+        last_index = item["i"]
+        if len(accepted) >= limit:
+            break
+
+    return _v121_dedupe_facts(accepted, limit=limit)
+
+
+def _v121_company_from_title(title):
+    clean = _clean_note_text(title)
+    match = re.search(r"\b([A-ZÇĞİÖŞÜ][A-Za-zÇĞİÖŞÜçğıöşü0-9.&'-]{2,})\b", clean)
+    if match:
+        return match.group(1)
+    return "Şirket"
+
+
+def _v121_english_structured_facts(title, text):
+    """Convert only high-confidence structured English facts; never free-translate prose."""
+    raw = re.sub(r"\s+", " ", str(text or "")).strip()
+    if not raw or _v120_is_turkish_prose(raw):
+        return []
+
+    direct, number_hits, relevance = _v120_event_overlap(title, raw)
+    if direct < 1 and relevance < 1.8:
+        return []
+
+    company = _v121_company_from_title(title)
+    facts = []
+
+    # Share-price movement.
+    share = re.search(
+        r"shares?\s+(?:fell|plunged|dropped|slid)\s+(?:by\s+)?([0-9]+(?:\.[0-9]+)?)%"
+        r"(?:\s+to\s+([0-9,.]+p))?",
+        raw,
+        flags=re.IGNORECASE,
+    )
+    if share:
+        pct = share.group(1).replace(".", ",")
+        target = share.group(2)
+        sentence = f"{company} hisselerinin %{pct} oranında gerilediği belirtilmiştir"
+        if target:
+            sentence += f" ve hisse fiyatının {target} seviyesine indiği aktarılmıştır"
+        facts.append(sentence + ".")
+
+    # Revenue expectation / guidance.
+    revenue = re.search(
+        r"(?:revenue\s+(?:expectations?|guidance)|reset(?:ting)?[^.]{0,80}revenue|"
+        r"cut(?:ting)?[^.]{0,80}revenue)[^.]{0,120}?\$\s*([0-9]+(?:\.[0-9]+)?)\s*"
+        r"(million|billion|m|bn)\b",
+        raw,
+        flags=re.IGNORECASE,
+    )
+    if revenue:
+        amount = revenue.group(1).replace(".", ",")
+        unit = revenue.group(2).lower()
+        unit_tr = "milyar" if unit in {"billion", "bn"} else "milyon"
+        facts.append(
+            f"Şirketin gelir beklentisini {amount} {unit_tr} dolar seviyesine revize ettiği aktarılmıştır."
+        )
+
+    # Fiscal period.
+    fiscal = re.search(
+        r"fiscal\s+year\s+ending\s+([A-Za-z]+)\s+(20\d{2})",
+        raw,
+        flags=re.IGNORECASE,
+    )
+    if fiscal:
+        month_map = {
+            "january": "Ocak", "february": "Şubat", "march": "Mart",
+            "april": "Nisan", "may": "Mayıs", "june": "Haziran",
+            "july": "Temmuz", "august": "Ağustos", "september": "Eylül",
+            "october": "Ekim", "november": "Kasım", "december": "Aralık",
+        }
+        month = month_map.get(fiscal.group(1).lower(), fiscal.group(1))
+        facts.append(
+            f"Söz konusu beklentinin {month} {fiscal.group(2)} döneminde sona erecek mali yıla ilişkin olduğu kaydedilmiştir."
+        )
+
+    # Cyber incident and date.
+    cyber = re.search(
+        r"cyber(?:\s*security)?\s+incident(?:\s+in\s+([A-Za-z]+)\s+(20\d{2}))?",
+        raw,
+        flags=re.IGNORECASE,
+    )
+    if cyber:
+        if cyber.group(1) and cyber.group(2):
+            month_map = {
+                "january": "Ocak", "february": "Şubat", "march": "Mart",
+                "april": "Nisan", "may": "Mayıs", "june": "Haziran",
+                "july": "Temmuz", "august": "Ağustos", "september": "Eylül",
+                "october": "Ekim", "november": "Kasım", "december": "Aralık",
+            }
+            month = month_map.get(cyber.group(1).lower(), cyber.group(1))
+            facts.append(
+                f"Gelişmenin {month} {cyber.group(2)} döneminde yaşanan siber güvenlik olayıyla ilişkilendirildiği belirtilmiştir."
+            )
+        else:
+            facts.append(
+                "Gelişmenin bir siber güvenlik olayının şirket üzerindeki etkileriyle ilişkilendirildiği belirtilmiştir."
+            )
+
+    if re.search(r"340B\s+market\s+slowdown", raw, flags=re.IGNORECASE):
+        facts.append(
+            "Gelir beklentisindeki revizyonda 340B pazarındaki yavaşlamanın da etkili olduğu aktarılmıştır."
+        )
+
+    return _v121_dedupe_facts(facts, limit=6)
+
+
+def _v121_safe_search_facts(title, preferred_url="", limit=8):
+    """Search more broadly, but accept only evidence strongly anchored to this event."""
+    facts = []
+
+    # Site-restricted snippets first.
+    try:
+        snippets = _v117_search_snippets(title, preferred_url)[:4]
+    except Exception:
+        snippets = []
+    for snippet in snippets:
+        facts.extend(_v121_relaxed_facts(title, snippet, trusted=True, limit=4))
+
+    # Existing bounded search stack may return RSS/DDG/Bing/direct-page evidence.
+    try:
+        evidence = _v119_search_evidence(title, preferred_url)[:10]
+    except Exception:
+        evidence = []
+    for item in evidence:
+        text = str(item.get("text") or "")
+        direct, _, relevance = _v120_event_overlap(title, text)
+        if direct < 1 and relevance < 2.0:
+            continue
+        if _v120_is_turkish_prose(text):
+            facts.extend(_v121_relaxed_facts(title, text, trusted=False, limit=5))
+        else:
+            facts.extend(_v121_english_structured_facts(title, text))
+        if len(_v121_dedupe_facts(facts, limit=limit)) >= limit:
+            break
+
+    return _v121_dedupe_facts(facts, limit=limit)
+
+
+def _v121_event_evidence(row, purpose="note"):
+    """Adaptive evidence bundle: strict on event identity, flexible on fact count."""
+    tr = _v120_row_to_tr(row)
+    selected_title = _v116_clean_headline(
+        tr.get("Başlık", ""), tr.get("Kaynak", "")
+    )
+    if not selected_title:
+        raise ReportQualityError("Seçilen kaydın haber başlığı bulunamadı.")
+
+    selected_url = _v120_resolve_direct_url(tr)
+    selected_source = _v117_source_short(tr.get("Kaynak", ""), selected_url)
+    cache_seed = (
+        selected_title + "|" + str(selected_url) + "|" + purpose + "|v121"
+    )
+    cache_key = hashlib.sha1(cache_seed.encode("utf-8", "ignore")).hexdigest()
+    cache = st.session_state.setdefault("_v121_event_evidence_cache", {})
+    if cache_key in cache:
+        return dict(cache[cache_key])
+
+    facts = []
+    selected_images = []
+    selected_page_text = ""
+
+    rows = _v120_same_event_rows(tr, max_rows=10)
+    for index, candidate_row in enumerate(rows):
+        candidate = _v120_row_to_tr(candidate_row)
+        exact_selected = index == 0
+        summary = _v120_clean_evidence_text(candidate.get("İçerik_Özeti", ""))
+        if summary:
+            facts.extend(
+                _v121_relaxed_facts(
+                    selected_title,
+                    summary,
+                    trusted=True,
+                    limit=6,
+                )
+            )
+
+        direct_url = _v120_resolve_direct_url(candidate)
+        if _v116_valid_direct_url(direct_url):
+            try:
+                page = _v117_fetch_clean_page(direct_url, selected_title) or {}
+            except Exception:
+                page = {}
+            page_title = _clean_note_text(page.get("title", ""))
+            page_rel = _v118_title_relevance(selected_title, page_title) if page_title else 3.0
+            if page_rel >= 1.8:
+                page_text = _v120_clean_evidence_text(page.get("text", ""))
+                if page_text:
+                    facts.extend(
+                        _v121_relaxed_facts(
+                            selected_title,
+                            page_text,
+                            trusted=exact_selected,
+                            limit=8,
+                        )
+                    )
+                    if exact_selected:
+                        selected_page_text = page_text
+                if exact_selected:
+                    selected_images = list(page.get("images") or [])
+
+        facts = _v121_dedupe_facts(facts, limit=12)
+        if len(facts) >= 6:
+            break
+
+    # Search only when local/same-event material is still thin.
+    target = {"note": 3, "ogn": 2, "akt": 3}.get(purpose, 3)
+    if len(facts) < target:
+        facts.extend(_v121_safe_search_facts(selected_title, selected_url, limit=8))
+        facts = _v121_dedupe_facts(facts, limit=12)
+
+    # Adaptive thresholds: the title itself supplies the event introduction;
+    # external evidence is required for substance, not for artificial count.
+    required = {"note": 2, "ogn": 1, "akt": 2}.get(purpose, 2)
+    if len(facts) < required:
+        # For AKT/ÖGN, one genuine detailed fact plus a substantive headline is
+        # preferable to blocking the entire institutional report.
+        if purpose in {"akt", "ogn"} and len(facts) == 1:
+            context = _v120_title_as_context(selected_title)
+            if context and title_key(context) != title_key(facts[0]):
+                facts.insert(0, context)
+        facts = _v121_dedupe_facts(facts, limit=12)
+
+    if len(facts) < required:
+        raise ReportQualityError(
+            f'"{selected_title}" için başlığın ötesinde yeterli ve aynı olaya bağlı içerik elde edilemedi.'
+        )
+
+    bundle = {
+        "title": selected_title,
+        "facts": facts,
+        "best": {
+            "text": selected_page_text or " ".join(facts),
+            "images": selected_images,
+            "source": selected_source,
+            "url": selected_url,
+            "selected": True,
+        },
+        # Preserve selected-item provenance even when corroborating evidence was
+        # used internally. This prevents AKT source switching.
+        "source": selected_source,
+        "url": selected_url,
+        "images": selected_images,
+        "fact_count": len(facts),
+    }
+    cache[cache_key] = dict(bundle)
+    return bundle
+
+
+# Compatibility name used by all existing report builders.
+def _v120_event_evidence(row, purpose="note"):
+    return _v121_event_evidence(row, purpose=purpose)
+
+
+def article_detail(row):
+    bundle = _v121_event_evidence(row, purpose="note")
+    return {
+        "title": bundle["title"],
+        "source": bundle["source"],
+        "canonical": bundle["url"],
+        "text": " ".join(bundle["facts"]),
+        "images": bundle["images"],
+        "quality_facts": bundle["fact_count"],
+        "quality_ready": bundle["fact_count"] >= 2,
+    }
+
+
+def _v120_note_paragraphs(title, facts):
+    """V121: stable introduction-development-conclusion from title + >=2 facts."""
+    clean_facts = _v121_dedupe_facts(facts, limit=10)
+    if len(clean_facts) < 2:
+        raise ReportQualityError(
+            f'"{title}" için bilgi notu oluşturacak en az iki gerçek ayrıntı bulunamadı.'
+        )
+
+    intro = _v120_title_as_context(title)
+    # Do not duplicate a first fact that is effectively the same as the title.
+    details = []
+    for fact in clean_facts:
+        if intro and title_key(fact.rstrip(".")) == title_key(intro.rstrip(".")):
+            continue
+        details.append(fact)
+    if len(details) < 2:
+        details = clean_facts[:]
+
+    paragraphs = []
+    if intro:
+        paragraphs.append(_v119_fix_surface(intro))
+
+    if len(details) >= 6:
+        groups = [details[:2], details[2:4], details[4:]]
+    elif len(details) >= 4:
+        groups = [details[:2], details[2:]]
+    elif len(details) >= 2:
+        groups = [[details[0]], [details[1]]]
+    else:
+        groups = [details]
+
+    for group in groups:
+        text = " ".join(group).strip()
+        if text:
+            paragraphs.append(_v119_fix_surface(text))
+
+    # A well-supported title is the introduction; two source-grounded details
+    # provide development and conclusion without boilerplate or invention.
+    if len(paragraphs) < 3:
+        raise ReportQualityError(
+            f'"{title}" için giriş-gelişme-sonuç bütünlüğü kurulamadı.'
+        )
+    return paragraphs[:5]
+
+
+def _v120_ogn_item(row):
+    bundle = _v121_event_evidence(row, purpose="ogn")
+    facts = _v121_dedupe_facts(bundle["facts"], limit=5)
+    if not facts:
+        raise ReportQualityError(
+            f'ÖGN için "{bundle["title"]}" haberinde ayrıntı bulunamadı.'
+        )
+
+    chosen = []
+    total_chars = 0
+    for fact in facts:
+        if chosen and (len(chosen) >= 3 or total_chars + len(fact) > 760):
+            break
+        chosen.append(fact)
+        total_chars += len(fact) + 1
+
+    # If only one detail exists, prepend a formalized headline so the item is
+    # never a bare headline and never a generic "information is limited" filler.
+    if len(chosen) == 1:
+        context = _v120_title_as_context(bundle["title"])
+        if context and title_key(context.rstrip(".")) != title_key(chosen[0].rstrip(".")):
+            chosen.insert(0, context)
+
+    return _v119_fix_surface(" ".join(chosen[:3]))
+
+
+def _v120_akt_clause_text(facts):
+    clauses = []
+    for fact in _v121_dedupe_facts(facts, limit=6):
+        clean = _v120_clean_evidence_text(fact).strip().rstrip(" .;:")
+        if clean:
+            clauses.append(clean)
+    if len(clauses) < 2:
+        return ""
+    return "; ".join(clauses[:6])
+
+
+def _v120_prepare_akt_row(row):
+    bundle = _v121_event_evidence(row, purpose="akt")
+    facts = list(bundle["facts"])
+    summary = _v120_akt_clause_text(facts)
+    if not summary:
+        context = _v120_title_as_context(bundle["title"])
+        fallback = [context] + facts if context else facts
+        summary = _v120_akt_clause_text(fallback)
+    if not summary:
+        raise ReportQualityError(
+            f'AKT için "{bundle["title"]}" haberinde yeterli içerik elde edilemedi.'
+        )
+
+    image = None
+    for candidate in list(bundle.get("images") or [])[:8]:
+        try:
+            image = _v117_valid_report_image(candidate)
+        except Exception:
+            image = None
+        if image:
+            break
+
+    return {
+        "title": bundle["title"],
+        "source": _v117_source_short(bundle["source"], bundle["url"]),
+        "url": bundle["url"],
+        "summary": summary,
+        "image": image,
+    }
+
+
+# V121 cache/version reset.
+if st.session_state.get("_report_engine_version") != _V121_ENGINE_VERSION:
+    for key in (
+        "docx_bytes",
+        "note_bytes",
+        "basket_docx_bytes",
+        "v78_ogn_note_bytes",
+        "v79_akt_note_bytes",
+        "v90_ogn_docx_bytes",
+        "v81_pres_note_bytes",
+    ):
+        st.session_state.pop(key, None)
+    for key in (
+        "_v121_event_evidence_cache",
+        "_v120_event_evidence_cache",
+        "_v117_page_cache",
+        "_v119_evidence_cache",
+    ):
+        st.session_state.pop(key, None)
+    st.session_state["_report_engine_version"] = _V121_ENGINE_VERSION
+
+# ============================================================
+# /V121
+# ============================================================
+
+
 # -----------------------------
 # UI
 # -----------------------------
