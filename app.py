@@ -13685,10 +13685,17 @@ if st.session_state.get("_report_engine_version") != _V119_ENGINE_VERSION:
 # ============================================================
 
 
+# ============================================================
+# V121 — GLOBAL KRONOLOJİ GÖRÜNÜMÜ
+# 1) Ana başlık: STB-Açık Kaynak Tarama Merkezi
+# 2) Ana haber görünümüne ayrı "Global Sanayi / Teknoloji" bölümü eklendi.
+# 3) V120 global kaynak/tarama mantığı aynen korunur.
+# ============================================================
+
 # -----------------------------
 # UI
 # -----------------------------
-st.title('🛡️ T.C. Sanayi ve Teknoloji Bakanlığı Açık Kaynak Tarama Merkezi')
+st.title('🛡️ STB-Açık Kaynak Tarama Merkezi')
 st.caption('Hızlı ilk bakış · olay kümeleri · risk/negatif ayrımı · Türk medya önceliği · hedefli global sanayi/teknoloji basını · Yunan/Türk savunma · kaynak güvenilirliği · trend · alarm · seçilen haberlerden DOCX')
 with st.sidebar:
     st.header('⚙️ Tarama Ayarları')
@@ -14386,7 +14393,7 @@ else:
 
         view=st.radio(
             'Görünüm',
-            ['📰 Kronolojik','⚠️ Negatif','🚨 Yüksek Risk','🇹🇷 Türk','🇬🇷 Yunan','🧩 Olaylar','📈 Trend / Analiz','⭐ Takip Listesi'],
+            ['📰 Kronolojik','⚠️ Negatif','🚨 Yüksek Risk','🇹🇷 Türk','🇬🇷 Yunan','🌍 Global Sanayi / Teknoloji','🧩 Olaylar','📈 Trend / Analiz','⭐ Takip Listesi'],
             horizontal=True,
             key='main_view'
         )
@@ -14561,6 +14568,35 @@ else:
                 ['Tarih','Kaynak','Kategori','Başlık','Risk_Skoru','Duygu','URL'],
                 height=600
             )
+
+        elif view=='🌍 Global Sanayi / Teknoloji':
+            global_df=df[
+                df.Kaynak_Grubu.astype(str).eq('🌍 Global Sanayi / Teknoloji')
+            ].copy()
+            if global_df.empty:
+                st.info(
+                    'Seçilen zaman aralığında hedefli global sanayi / teknoloji '
+                    'kaynaklarından sonuç bulunamadı.'
+                )
+            else:
+                global_df=global_df.sort_values(
+                    'Tarih_dt',ascending=False,na_position='last'
+                )
+                st.caption(
+                    f'{len(global_df)} global sanayi / teknoloji haberi · '
+                    'MIT Technology Review, IEEE Spectrum, Ars Technica, IndustryWeek, '
+                    'Automation World, Manufacturing Tomorrow, Financial Times, Bloomberg, '
+                    'Nikkei Asia, Defense News ve Aviation Week önceliklidir.'
+                )
+                _section_select_table(
+                    'global_industry_tech_view',
+                    global_df,
+                    [
+                        'Tarih','Kaynak','Kategori','Başlık','İçerik_Özeti',
+                        'Risk_Skoru','Duygu','Kaynak_Güvenilirliği','Doğrulama','URL'
+                    ],
+                    height=650
+                )
 
         elif view=='🧩 Olaylar':
             ev=build_event_summary(df)
