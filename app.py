@@ -9765,6 +9765,663 @@ def _v113_critical_events_table(df):
 # ============================================================
 
 
+# ============================================================
+# V115 — SUNUM ÖNCESİ KARARLILIK + HIZ + KURUMSAL ÇIKTI REVİZYONU
+# 1) Vardiya Başlangıç Özeti içindeki ağır önceki-tarama eşleştirmesi ters indeksle hızlandırıldı.
+# 2) Vardiya üst listesi hafif, olay-bazlı puanlama ile hazırlanır; sayfanın bu noktada beklemesi azaltılır.
+# 3) Google News bağlantıları için ek paket gerektirmeyen doğrudan yayıncı arama fallback'i eklendi.
+# 4) ÖGN, AKT ve Bilgi Notu Word motorları gönderilen kurumsal örneklere göre yeniden düzenlendi.
+# 5) Mevcut tarama/risk/sepet iş kuralları korunur; yalnız türetilmiş görünüm ve çıktı katmanı override edilir.
+# ============================================================
+
+
+# V115 doğruluk düzeltmesi: önceki domain() yalnız tam URL'lerde çalışıyordu.
+# normalize_rows() ise source_group/source_reliability/source_rank fonksiyonlarına
+# çoğunlukla "aa.com.tr" gibi çıplak alan adı gönderiyor. Bu nedenle güvenilir
+# Türk/resmî kaynaklar yanlışlıkla "Diğer / Açık Kaynak" sınıfına düşebiliyordu.
+_v115_domain_base=domain
+def domain(value):
+    s=str(value or '').strip()
+    if not s:
+        return ''
+    try:
+        # Tam URL.
+        if '://' in s:
+            return urlparse(s).netloc.lower().split('@')[-1].split(':')[0].replace('www.','')
+        # Çıplak domain veya domainsiz path.
+        head=s.split('/')[0].strip().lower().split('@')[-1].split(':')[0].replace('www.','')
+        if re.fullmatch(r'[a-z0-9çğıöşü.-]+\.[a-zçğıöşü]{2,}',head,re.I):
+            return head
+        # Son fallback mevcut davranış.
+        return _v115_domain_base(s)
+    except Exception:
+        return ''
+
+
+def _v115_is_direct_article_url(url):
+    try:
+        u=str(url or '').strip()
+        if not u.startswith(('http://','https://')):
+            return False
+        p=urlparse(u)
+        host=(p.netloc or '').lower().replace('www.','')
+        if not host or 'google.com' in host or host=='news.google.com':
+            return False
+        # Ana sayfa değil, haber yolu olma ihtimali bulunan URL'leri tercih et.
+        path=(p.path or '').strip('/')
+        return bool(path and len(path)>=4)
+    except Exception:
+        return False
+
+
+def _v115_search_direct_article(title, preferred_domain=''):
+    """Ek paket kullanmadan, yalnız belge üretiminde gerçek yayıncı URL'si bulmaya çalışır."""
+    title=_clean_note_text(title)
+    if not title:
+        return ''
+    try:
+        from urllib.parse import parse_qs, unquote
+    except Exception:
+        parse_qs=None; unquote=lambda x:x
+
+    preferred=(preferred_domain or '').lower().replace('www.','').strip()
+    if preferred.startswith('http'):
+        try: preferred=urlparse(preferred).netloc.lower().replace('www.','')
+        except Exception: preferred=''
+    if 'google.com' in preferred:
+        preferred=''
+
+    q=f'"{title[:220]}"'
+    if preferred:
+        q+=f' site:{preferred}'
+
+    def clean_href(href):
+        href=str(href or '').strip()
+        if not href:
+            return ''
+        try:
+            if 'uddg=' in href and parse_qs is not None:
+                qs=parse_qs(urlparse(href).query)
+                if qs.get('uddg'):
+                    href=unquote(qs['uddg'][0])
+        except Exception:
+            pass
+        return href
+
+    candidates=[]
+    # DuckDuckGo HTML: harici Python paketi gerektirmez.
+    try:
+        rr=requests.get(
+            'https://html.duckduckgo.com/html/',
+            params={'q':q},
+            headers={**HEADERS,'Accept-Language':'tr-TR,tr;q=0.9,en;q=0.6'},
+            timeout=6
+        )
+        if rr.ok and rr.text:
+            soup=BeautifulSoup(rr.text,'html.parser')
+            for a in soup.select('a.result__a, a.result-link')[:10]:
+                href=clean_href(a.get('href'))
+                if _v115_is_direct_article_url(href):
+                    candidates.append((href,_clean_note_text(a.get_text(' ',strip=True))))
+    except Exception:
+        pass
+
+    # DDG erişilemezse Bing HTML tek yedek aramadır.
+    if not candidates:
+        try:
+            rr=requests.get(
+                'https://www.bing.com/search',
+                params={'q':q,'setlang':'tr'},
+                headers=HEADERS,
+                timeout=6
+            )
+            if rr.ok and rr.text:
+                soup=BeautifulSoup(rr.text,'html.parser')
+                for a in soup.select('li.b_algo h2 a')[:10]:
+                    href=str(a.get('href') or '').strip()
+                    if _v115_is_direct_article_url(href):
+                        candidates.append((href,_clean_note_text(a.get_text(' ',strip=True))))
+        except Exception:
+            pass
+
+    if not candidates:
+        return ''
+
+    # Önce beklenen yayıncı alan adını, sonra başlık benzerliğini tercih et.
+    title_toks=set(_title_tokens(title))
+    best=''; best_score=-1.0
+    for href,label in candidates:
+        host=urlparse(href).netloc.lower().replace('www.','')
+        lt=set(_title_tokens(label))
+        sim=(len(title_toks&lt)/max(1,len(title_toks|lt))) if title_toks and lt else 0.0
+        score=sim*10
+        if preferred and (host==preferred or host.endswith('.'+preferred) or preferred.endswith('.'+host)):
+            score+=20
+        if score>best_score:
+            best_score=score; best=href
+    return best
+
+
+_v115_article_detail_base=article_detail
+
+def article_detail(row):
+    """
+    V115: mevcut ayrıntı çıkarma motorunu korur; Google News çözümlenemediğinde
+    başlık + yayıncı alan adı ile gerçek haber sayfasını ek paket gerektirmeden bulur.
+    """
+    if isinstance(row,str):
+        row={'URL':row}
+    elif hasattr(row,'to_dict'):
+        row=row.to_dict()
+    elif row is None:
+        row={}
+    else:
+        row=dict(row)
+    detail=_v115_article_detail_base(row) or {}
+
+    title=_clean_note_text(detail.get('title') or row.get('Başlık',''))
+    original=str(row.get('URL','') or '').strip()
+    publisher_url=str(row.get('Yayıncı_URL','') or '').strip()
+    preferred=''
+    try:
+        preferred=urlparse(publisher_url).netloc.lower().replace('www.','')
+    except Exception:
+        preferred=''
+
+    canonical=str(detail.get('canonical') or '').strip()
+    body=_clean_note_text(detail.get('text') or '')
+    images=detail.get('images') or []
+    unresolved=(not _v115_is_direct_article_url(canonical))
+    too_thin=(len(body)<380 or len(_akt_clean_sentences(title,body))<2)
+
+    # RSS kaydı gerçek yayıncı sayfasına çözülemediyse veya gövde çok zayıfsa bir kez arama yap.
+    if title and (unresolved or too_thin or not images):
+        direct=''
+        if _v115_is_direct_article_url(publisher_url):
+            direct=publisher_url
+        else:
+            direct=_v115_search_direct_article(title,preferred)
+        if direct and direct!=original:
+            try:
+                rr=dict(row)
+                rr['URL']=direct
+                rr['Yayıncı_URL']=direct
+                better=_v115_article_detail_base(rr) or {}
+                better_text=_clean_note_text(better.get('text') or '')
+                # Daha zengin gövde, gerçek URL veya görsel sağlıyorsa yedek sonucu kabul et.
+                if (_v115_is_direct_article_url(better.get('canonical')) and
+                    (len(better_text)>len(body)+80 or len(better_text)>=450 or better.get('images'))):
+                    detail=better
+                    body=better_text
+            except Exception:
+                pass
+
+    # Son güvenlik: gerçek yayıncı URL'si bulunamadıysa var olmayan bir ana sayfayı haber linki diye yazma.
+    if not _v115_is_direct_article_url(detail.get('canonical')):
+        if _v115_is_direct_article_url(publisher_url):
+            detail['canonical']=publisher_url
+        else:
+            detail['canonical']=original
+    return detail
+
+
+def _v115_unique_fact_sentences(title,body,max_sentences=14,max_chars=4200):
+    """Haber gövdesinden başlığı tekrarlamayan, sayısal/kurumsal ayrıntıları koruyan cümleleri seçer."""
+    title=_clean_note_text(title)
+    sents=_akt_clean_sentences(title,body)
+    if not sents:
+        fb=_clean_note_text(body or title)
+        return [fb] if fb else []
+
+    scores=[]
+    for i,s in enumerate(sents):
+        n=norm(s)
+        score=_akt_sentence_score(s)+_sent_score(s)
+        if i<3: score+=5
+        if i>=max(0,len(sents)-3): score+=2
+        if re.search(r'\b\d+(?:[.,]\d+)?\b',s): score+=3
+        if any(k in n for k in ['bakanlık','kurum','şirket','türkiye','tüik','tübitak','kosgeb','kvkk','epdk']): score+=2
+        scores.append((score,i,s))
+
+    keep=set(range(min(2,len(sents))))
+    for _,i,_ in sorted(scores,key=lambda z:(z[0],-z[1]),reverse=True):
+        if len(keep)>=max_sentences:
+            break
+        keep.add(i)
+    # Haberin son durumunu tamamen kaybetme.
+    if len(sents)>2:
+        keep.add(len(sents)-1)
+
+    out=[]; total=0; old_sets=[]
+    for i in sorted(keep):
+        s=_clean_note_text(sents[i]).strip()
+        if not s: continue
+        toks=set(_history_tokens(s))
+        dup=False
+        for old in old_sets:
+            union=len(toks|old)
+            if union and len(toks&old)/union>=0.80:
+                dup=True; break
+        if dup: continue
+        if out and total+len(s)>max_chars:
+            break
+        out.append(s); old_sets.append(toks); total+=len(s)+1
+    return out
+
+
+def _v115_formal_sentence(s):
+    s=_clean_note_text(s).strip()
+    if not s: return ''
+    s=_v66_formalize_sentence_endings(s)
+    s=re.sub(r'\s+',' ',s).strip()
+    if s and s[-1] not in '.!?': s+='.'
+    return s
+
+
+def _v115_dedupe_rows(rows):
+    """Aynı olayın farklı başlıklı kopyalarını Word çıktısına iki kez taşımamaya çalışır."""
+    out=[]
+    for r in rows or []:
+        rd=dict(r)
+        title=str(rd.get('title',rd.get('Başlık','')) or '')
+        summary=str(rd.get('summary',rd.get('İçerik_Özeti','')) or '')
+        url=str(rd.get('url',rd.get('URL','')) or '')
+        duplicate=False
+        for old in out:
+            ot=str(old.get('title',old.get('Başlık','')) or '')
+            os=str(old.get('summary',old.get('İçerik_Özeti','')) or '')
+            ou=str(old.get('url',old.get('URL','')) or '')
+            if url and ou and url==ou:
+                duplicate=True; break
+            if _v104_event_similarity(title,summary,ot,os)>=0.62:
+                duplicate=True; break
+        if not duplicate:
+            out.append(rd)
+    return out
+
+
+# ------------------------------------------------------------------
+# HIZ: önceki tarama eşleştirmesinde bütün previous x current çapraz döngüsünü
+# ortak token taşıyan adaylarla sınırla. Çıktı şeması V111 ile aynıdır.
+# ------------------------------------------------------------------
+def _compare_since_previous(df,current_scan_id=None):
+    empty_cols=['Ne Değişti?','Tür','Değişim','Başlık','Kaynak','Kategori',
+                'Risk','Önceki Risk','Kaynak Sayısı','URL']
+    key=_v112_scan_cache_key(df,current_scan_id)+':v115'
+    cache=st.session_state.setdefault('_v115_compare_cache',{})
+    if key in cache:
+        out,pid,ptime=cache[key]
+        return out.copy(),pid,ptime
+
+    current=_v104_event_representatives(df)
+    prev_id=_previous_scan_id(current_scan_id)
+    previous=_load_scan_events(prev_id)
+    if current is None or current.empty:
+        return pd.DataFrame(columns=empty_cols),None,None
+    if previous.empty:
+        return pd.DataFrame(columns=empty_cols),prev_id,None
+
+    prev_records=[]; token_index={}; url_index={}
+    for pi,(_,p) in enumerate(previous.iterrows()):
+        pr=p.to_dict()
+        toks=_v104_event_tokens(pr.get('title',''),pr.get('summary',''))
+        pr['_v115_tokens']=toks
+        prev_records.append(pr)
+        for t in toks:
+            token_index.setdefault(t,set()).add(pi)
+        u=str(pr.get('url','') or '').strip()
+        if u: url_index.setdefault(u,set()).add(pi)
+
+    changes=[]
+    for _,r in current.iterrows():
+        c={
+            'title':str(r.get('Başlık','') or ''),'source':str(r.get('Kaynak','') or ''),
+            'url':str(r.get('URL','') or ''),'category':str(r.get('Kategori','') or ''),
+            'summary':str(r.get('İçerik_Özeti','') or ''),'risk_score':int(r.get('Risk_Skoru',0) or 0),
+            'risk_status':str(r.get('Risk_Durumu','') or ''),'verification':str(r.get('Doğrulama','') or ''),
+            'source_count':int(r.get('Olay_Kaynak_Sayisi',1) or 1)
+        }
+        toks=_v104_event_tokens(c['title'],c['summary'])
+        cand=set()
+        if c['url']: cand.update(url_index.get(c['url'],set()))
+        for t in toks: cand.update(token_index.get(t,set()))
+
+        best=None; best_sim=0.0
+        for pi in cand:
+            pr=prev_records[pi]
+            sim=_v104_event_similarity(c['title'],c['summary'],pr.get('title',''),pr.get('summary',''))
+            if c['url'] and c['url']==str(pr.get('url','') or ''):
+                sim=max(sim,0.98)
+            if sim>best_sim:
+                best_sim=sim; best=pr
+
+        if best is None or best_sim<0.50:
+            kind='🆕 YENİ OLAY'; priority=100+c['risk_score']; prev_risk='—'
+            diff=(f"Bu olaya ilişkin kayıt önceki taramada bulunmamaktadır; gelişme mevcut taramada ilk kez "
+                  f"{c['source']} kaynağında tespit edilmiştir." if c['source'] else
+                  "Bu olaya ilişkin kayıt önceki taramada bulunmamaktadır; gelişme mevcut taramada ilk kez tespit edilmiştir.")
+        else:
+            risk_up,verify_up,material,_,_=_v104_material_change(best,c)
+            if risk_up:
+                kind='⚠️ RİSK ARTTI'; priority=95+c['risk_score']
+            elif verify_up:
+                kind='✅ TEYİT GÜÇLENDİ'; priority=90+c['risk_score']
+            elif material:
+                kind='🔄 YENİ BİLGİ'; priority=80+c['risk_score']
+            else:
+                continue
+            prev_risk=int(best.get('risk_score') or 0)
+            diff=_v109_direct_difference(best,c,kind)
+
+        changes.append({'Ne Değişti?':diff,'Tür':kind,'Değişim':kind,'Başlık':c['title'],
+                        'Kaynak':c['source'],'Kategori':c['category'],'Risk':c['risk_score'],
+                        'Önceki Risk':prev_risk,'Kaynak Sayısı':c['source_count'],'URL':c['url'],
+                        '_priority':priority})
+
+    out=pd.DataFrame(changes)
+    prev_time=str(previous.iloc[0].get('scanned_at','')) if not previous.empty else None
+    if out.empty:
+        out=pd.DataFrame(columns=empty_cols)
+    else:
+        out=_v110_merge_change_rows(out)
+        if 'Tür' not in out.columns and 'Değişim' in out.columns: out['Tür']=out['Değişim']
+        if 'Değişim' not in out.columns and 'Tür' in out.columns: out['Değişim']=out['Tür']
+        out=out.sort_values(['_priority','Risk'],ascending=[False,False],na_position='last')
+        out=out.drop(columns=['_priority'],errors='ignore')
+        ordered=[c for c in empty_cols if c in out.columns]
+        out=out[ordered+[c for c in out.columns if c not in ordered]]
+
+    cache.clear(); cache[key]=(out.copy(),prev_id,prev_time)
+    return out,prev_id,prev_time
+
+
+def _v115_fast_shift_top(since,n=8):
+    if since is None or since.empty:
+        return pd.DataFrame()
+    x=since.copy()
+    x['Tarih_dt']=pd.to_datetime(x.get('Tarih_dt'),utc=True,errors='coerce')
+    txt=(x.get('Başlık',pd.Series('',index=x.index)).fillna('').astype(str)+' '+
+         x.get('İçerik_Özeti',pd.Series('',index=x.index)).fillna('').astype(str)+' '+
+         x.get('Kategori',pd.Series('',index=x.index)).fillna('').astype(str)).str.lower()
+    risk=pd.to_numeric(x.get('Risk_Skoru',0),errors='coerce').fillna(0)
+    sources=pd.to_numeric(x.get('Olay_Kaynak_Sayisi',0),errors='coerce').fillna(0)
+    ver=x.get('Doğrulama',pd.Series('',index=x.index)).fillna('').astype(str).str.lower()
+    strategic=txt.str.contains(r'yatırım|üretim|tesis|fabrika|çip|yarı iletken|yapay zeka|yapay zekâ|siber|ar-ge|patent|otomotiv|enerji|savunma|uzay|uydu',regex=True)
+    official=ver.str.contains(r'resm|birincil',regex=True)
+    neg=x.get('Duygu',pd.Series('',index=x.index)).fillna('').astype(str).eq('Negatif')
+    x['_v115_shift_score']=risk + sources.clip(upper=4)*6 + strategic.astype(int)*24 + official.astype(int)*30 + neg.astype(int)*8
+    x=x.sort_values(['_v115_shift_score','Tarih_dt'],ascending=[False,False],na_position='last')
+    if 'Olay_ID' in x.columns:
+        x=x.drop_duplicates('Olay_ID',keep='first')
+    else:
+        x=x.drop_duplicates('Başlık',keep='first')
+    return x.head(int(n)).drop(columns=['_v115_shift_score'],errors='ignore')
+
+
+def _shift_start_summary(df,current_scan_id=None):
+    """V115: vardiya özeti ağ isteği yapmaz ve ağır tüm-çift eşleştirme kullanmaz."""
+    if df is None or df.empty:
+        return {},pd.DataFrame(),''
+    key=_v113_scan_key(df,current_scan_id)+':'+_v113_shift_mark_key()+':v115'
+    cached=_v113_get_cached('shift_summary_v115',key)
+    if cached is not None:
+        stats,top,label=cached
+        return dict(stats),top.copy(),label
+
+    baseline,baseline_label,_=_shift_baseline(current_scan_id)
+    x=df.copy(); x['Tarih_dt']=pd.to_datetime(x.get('Tarih_dt'),utc=True,errors='coerce')
+    since=x[(x['Tarih_dt'].isna()) | (x['Tarih_dt']>=baseline)].copy() if baseline is not None else x.copy()
+    changes,_,_=_compare_since_previous(df,current_scan_id)
+    type_col='Tür' if 'Tür' in changes.columns else ('Değişim' if 'Değişim' in changes.columns else None)
+    if type_col:
+        ct=changes[type_col].astype(str)
+        new_events=int(ct.str.contains('YENİ OLAY').sum())
+        risk_up=int(ct.str.contains('RİSK ARTTI').sum())
+        verify_up=int(ct.str.contains('TEYİT').sum())
+    else:
+        new_events=risk_up=verify_up=0
+    high=int((since.get('Risk_Durumu',pd.Series('',index=since.index))=='Yüksek Risk').sum())
+    osb=sum(is_osb_fire(t,s) for t,s in zip(
+        since.get('Başlık',pd.Series('',index=since.index)).fillna('').astype(str),
+        since.get('İçerik_Özeti',pd.Series('',index=since.index)).fillna('').astype(str)))
+    top=_v115_fast_shift_top(since,8)
+    stats={'new_news':len(since),'new_important_events':new_events,'high_risk':high,
+           'risk_up':risk_up,'verify_up':verify_up,'osb':int(osb),'baseline_label':baseline_label}
+    _v113_set_cached('shift_summary_v115',key,(dict(stats),top.copy(),baseline_label))
+    return stats,top,baseline_label
+
+
+# ------------------------------------------------------------------
+# WORD ORTAK AYARLARI
+# ------------------------------------------------------------------
+def _v115_doc_defaults(doc,top=2.5,bottom=2.5,left=2.5,right=2.5):
+    sec=doc.sections[0]
+    sec.top_margin=Cm(top); sec.bottom_margin=Cm(bottom)
+    sec.left_margin=Cm(left); sec.right_margin=Cm(right)
+    normal=doc.styles['Normal']
+    normal.font.name='Times New Roman'; normal.font.size=Pt(12)
+    normal._element.rPr.rFonts.set(qn('w:eastAsia'),'Times New Roman')
+    return doc
+
+
+def _v115_set_run_font(run,size=12,bold=None):
+    run.font.name='Times New Roman'; run.font.size=Pt(size)
+    run._element.rPr.rFonts.set(qn('w:eastAsia'),'Times New Roman')
+    if bold is not None: run.bold=bool(bold)
+    return run
+
+
+def _v115_add_akt_info_table(doc,findings):
+    table=doc.add_table(rows=3,cols=2)
+    table.style='Table Grid'
+    try:
+        table.columns[0].width=Cm(5.7); table.columns[1].width=Cm(10.3)
+        # Örnekte çerçeveler beyazdır; tablo hizasını korurken görünmez yap.
+        tblPr=table._tbl.tblPr
+        borders=OxmlElement('w:tblBorders')
+        for edge in ('top','left','bottom','right','insideH','insideV'):
+            e=OxmlElement('w:'+edge); e.set(qn('w:val'),'single'); e.set(qn('w:sz'),'4'); e.set(qn('w:color'),'FFFFFF')
+            borders.append(e)
+        tblPr.append(borders)
+    except Exception:
+        pass
+    vals=[('Tarama Yapılan Görev Alanı:','Sanayi ve Teknoloji'),
+          ('Tarih:',datetime.now().astimezone().strftime('%d.%m.%Y')),
+          ('Bulgular:','Sanayi ve Teknoloji alanlarında yapılan açık kaynak taraması neticesinde,')]
+    for row,(lab,val) in zip(table.rows,vals):
+        for ci,textv in enumerate((lab,val)):
+            p=row.cells[ci].paragraphs[0]; p.alignment=WD_ALIGN_PARAGRAPH.LEFT
+            r=p.add_run(textv); _v115_set_run_font(r,12,bold=(ci==0))
+    return table
+
+
+def _v115_prepare_akt_row(row):
+    detail=article_detail(row)
+    real_url=str(detail.get('canonical') or row.get('Yayıncı_URL') or row.get('URL','') or '')
+    title=_clean_note_text(detail.get('title') or row.get('Başlık',''))
+    source=_clean_note_text(_real_source(row,detail,real_url))
+    body=_clean_note_text(detail.get('text') or row.get('İçerik_Özeti') or title)
+    summary=_akt_formal_summary(title,body,max_sentences=9,max_chars=2600)
+    summary=_v67_akt_reported_content(summary)
+    image=None
+    for candidate in (detail.get('images') or [])[:8]:
+        image=_download_report_image(candidate)
+        if image: break
+    return {'title':title,'source':source,'url':real_url,'summary':summary,'image':image}
+
+
+def make_docx(rows):
+    """V115 AKT: gönderilen kurumsal örneğin tablo + ayrıntılı içerik + görsel düzeni."""
+    rows=_v115_dedupe_rows(rows or [])
+    doc=_v115_doc_defaults(Document(),top=2.5,bottom=1.3,left=2.5,right=2.5)
+    p=doc.add_paragraph(); p.alignment=WD_ALIGN_PARAGRAPH.CENTER
+    p.paragraph_format.space_after=Pt(8)
+    _v115_set_run_font(p.add_run('AÇIK KAYNAK TARAMA ÇALIŞMASI'),14,True)
+    _v115_add_akt_info_table(doc,_akt_findings_intro(rows))
+
+    intro=doc.add_paragraph(); intro.alignment=WD_ALIGN_PARAGRAPH.JUSTIFY
+    intro.paragraph_format.first_line_indent=Cm(0.4); intro.paragraph_format.space_after=Pt(0)
+    _v115_set_run_font(intro.add_run(_akt_findings_intro(rows)),12)
+
+    prepared=[None]*len(rows)
+    if rows:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(6,len(rows))) as ex:
+            futs={ex.submit(_v115_prepare_akt_row,r):i for i,r in enumerate(rows)}
+            for fut in concurrent.futures.as_completed(futs):
+                try: prepared[futs[fut]]=fut.result()
+                except Exception: prepared[futs[fut]]=None
+
+    for i,item in enumerate(prepared,1):
+        if not item: continue
+        p=doc.add_paragraph(); p.alignment=WD_ALIGN_PARAGRAPH.JUSTIFY
+        p.paragraph_format.first_line_indent=Cm(0.4); p.paragraph_format.space_before=Pt(4); p.paragraph_format.space_after=Pt(6)
+        _v115_set_run_font(p.add_run(f'{i}. “{item["source"]}”'),12,True)
+        _v115_set_run_font(p.add_run(' isimli internet sitesinde, '),12)
+        _v115_set_run_font(p.add_run(f'“{item["title"]}”'),12,True)
+        _v115_set_run_font(p.add_run(' başlığıyla bir haber yayımlanmıştır. ('),12)
+        _word_hyperlink(p,item['url'],item['url'] or 'Haber Linki')
+        _v115_set_run_font(p.add_run(') Söz konusu haber içeriğinde, '),12)
+        summary=(item['summary'] or '').strip().rstrip(' .;')
+        _v115_set_run_font(p.add_run(summary),12)
+        _v115_set_run_font(p.add_run(' hususları ifade edilmiştir.'),12)
+
+        if item.get('image'):
+            cap=doc.add_paragraph(); cap.alignment=WD_ALIGN_PARAGRAPH.CENTER
+            cap.paragraph_format.space_before=Pt(4); cap.paragraph_format.space_after=Pt(4)
+            _v115_set_run_font(cap.add_run(f'Görsel {i}: “{item["source"]}” Sitesinde Yer Alan Görsel'),11,True)
+            ip=doc.add_paragraph(); ip.alignment=WD_ALIGN_PARAGRAPH.CENTER; ip.paragraph_format.space_after=Pt(8)
+            try: ip.add_run().add_picture(item['image'],width=Cm(14.5))
+            except Exception: pass
+
+    p=doc.add_paragraph(); p.paragraph_format.space_before=Pt(8)
+    _v115_set_run_font(p.add_run('Arz olunur.'),12)
+    bio=BytesIO(); doc.save(bio); bio.seek(0); return bio.getvalue()
+
+
+def _v115_prepare_note_item(row):
+    detail=article_detail(row)
+    title=_clean_note_text(detail.get('title') or row.get('Başlık',''))
+    body=_clean_note_text(detail.get('text') or row.get('İçerik_Özeti') or title)
+    facts=_v115_unique_fact_sentences(title,body,max_sentences=18,max_chars=6500)
+    return row,detail,title,facts
+
+
+def make_analyst_docx(df,title='BİLGİ NOTU'):
+    """
+    V115 Bilgi Notu: gönderilen örnekteki gibi başlığı tekrarlamayan,
+    Times New Roman 12 punto, yalnız olgusal ve bütünlüklü paragraf akışı.
+    Otomatik/genel değerlendirme cümlesi eklenmez.
+    """
+    doc=_v115_doc_defaults(Document(),2.5,2.5,2.5,2.5)
+    x=df.copy() if df is not None else pd.DataFrame()
+    if x.empty:
+        rows=[]
+    else:
+        if 'Tarih_dt' in x.columns:
+            x['Tarih_dt']=pd.to_datetime(x['Tarih_dt'],utc=True,errors='coerce')
+            x=x.sort_values('Tarih_dt',ascending=True,na_position='last')
+        rows=x.to_dict('records')
+    try:
+        er=_v107_enrich_selected_rows(rows)
+        if er: rows=er
+    except Exception:
+        pass
+    rows=_v115_dedupe_rows(rows)
+
+    items=[None]*len(rows)
+    if rows:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(6,len(rows))) as ex:
+            futs={ex.submit(_v115_prepare_note_item,r):i for i,r in enumerate(rows)}
+            for fut in concurrent.futures.as_completed(futs):
+                try: items[futs[fut]]=fut.result()
+                except Exception: pass
+
+    all_facts=[]; seen=[]
+    for item in items:
+        if not item: continue
+        for s in item[3]:
+            toks=set(_history_tokens(s)); dup=False
+            for old in seen[-45:]:
+                union=len(toks|old)
+                if union and len(toks&old)/union>=0.80: dup=True; break
+            if not dup:
+                all_facts.append(s); seen.append(toks)
+
+    if not all_facts:
+        all_facts=['Seçilen habere ilişkin ayrıntılı içerik temin edilememiştir.']
+
+    # Örnekteki yoğunluğa yakın: 4–5 doğal paragraf; her paragrafta 2–4 tam cümle.
+    max_paras=5
+    if len(all_facts)<=3:
+        chunks=[all_facts]
+    else:
+        target=min(max_paras,max(2,(len(all_facts)+2)//3))
+        size=max(2,(len(all_facts)+target-1)//target)
+        chunks=[all_facts[i:i+size] for i in range(0,len(all_facts),size)][:max_paras]
+        # Son kesim nedeniyle kalan cümle varsa son paragrafa ekle.
+        used=sum(len(c) for c in chunks)
+        if used<len(all_facts): chunks[-1].extend(all_facts[used:])
+
+    for chunk in chunks:
+        text=' '.join(_v115_formal_sentence(s) for s in chunk if _clean_note_text(s)).strip()
+        if not text: continue
+        p=doc.add_paragraph(); p.alignment=WD_ALIGN_PARAGRAPH.JUSTIFY
+        p.paragraph_format.space_after=Pt(0); p.paragraph_format.line_spacing=1.0
+        _v115_set_run_font(p.add_run(text),12)
+
+    bio=BytesIO(); doc.save(bio); bio.seek(0); return bio.getvalue()
+
+
+def _v115_ogn_paragraph(title,source,body,summary):
+    facts=_v115_unique_fact_sentences(title,body or summary,max_sentences=5,max_chars=900)
+    if not facts:
+        facts=[_clean_note_text(summary or title)]
+    # İlk 2-4 bilgi taşıyan cümle. Başlığı tek başına paragraf olarak tekrar etme.
+    text=' '.join(_v115_formal_sentence(s) for s in facts[:4] if s).strip()
+    text=_v98_strip_site_name(text,source)
+    return re.sub(r'\s+',' ',text).strip()
+
+
+def make_important_basket_docx_v101(basket_df):
+    """V115 ÖGN: kısa ancak gerçek haber içeriğine dayalı, başlık tekrarı olmayan kurumsal özet."""
+    doc=_v115_doc_defaults(Document(),2.0,2.0,2.5,2.5)
+    now=datetime.now().astimezone()
+    p=doc.add_paragraph(); p.alignment=WD_ALIGN_PARAGRAPH.RIGHT
+    _v115_set_run_font(p.add_run(now.strftime('%d/%m/%Y')),12)
+    p=doc.add_paragraph(); _v115_set_run_font(p.add_run('Konu: '),12,True)
+    _v115_set_run_font(p.add_run('STB Temsilciliği Önemli Gelişmeler Notu'),12)
+
+    raw=[] if basket_df is None else basket_df.to_dict('records')
+    rows=_v115_dedupe_rows(raw)
+    outputs=[None]*len(rows)
+    def work(r):
+        title=_clean_note_text(r.get('title','')); source=_clean_note_text(r.get('source',''))
+        summary=_clean_note_text(r.get('summary','')); url=str(r.get('url','') or '')
+        row={'Başlık':title,'Kaynak':source,'URL':url,'Yayıncı_URL':url,'İçerik_Özeti':summary,'Tarih':r.get('news_time','')}
+        detail=article_detail(row)
+        body=_clean_note_text(detail.get('text') or summary)
+        return _v115_ogn_paragraph(title,source,body,summary)
+    if rows:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(6,len(rows))) as ex:
+            futs={ex.submit(work,r):i for i,r in enumerate(rows)}
+            for fut in concurrent.futures.as_completed(futs):
+                try: outputs[futs[fut]]=fut.result()
+                except Exception: pass
+    for text in outputs:
+        text=_clean_note_text(text)
+        if not text: continue
+        p=doc.add_paragraph(); p.alignment=WD_ALIGN_PARAGRAPH.JUSTIFY
+        p.paragraph_format.line_spacing=1.0; p.paragraph_format.space_after=Pt(7)
+        if text.endswith('.'): text=text[:-1]
+        _v115_set_run_font(p.add_run(text+' (STB).'),12)
+    p=doc.add_paragraph(); _v115_set_run_font(p.add_run('Arz olunur.'),12)
+    bio=BytesIO(); doc.save(bio); bio.seek(0); return bio.getvalue()
+
+# ============================================================
+# /V115
+# ============================================================
+
+
 # -----------------------------
 # UI
 # -----------------------------
