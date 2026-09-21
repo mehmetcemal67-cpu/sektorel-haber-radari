@@ -11071,6 +11071,783 @@ def make_important_basket_docx_v101(basket_df):
 # /V116
 # ============================================================
 
+# ============================================================
+# V117 — RAPOR İÇERİK MOTORU / REFERANS BELGEYE YAKINLAŞTIRMA
+# 1) AKT: sayfa içi ara başlık, ilişkili haber, menü ve ALL-CAPS parçaları temizlenir.
+# 2) AKT: yalnız seçilen haberle ilişkili, bilgi taşıyan cümleler rapora alınır.
+# 3) ÖGN: basket satırı mevcut taramadaki aynı olayın diğer kaynaklarıyla yeniden zenginleştirilir;
+#    başlık tek başına çıktı yapılmaz, mümkünse gerçek haber/özet içeriğinden 1-3 cümle kurulur.
+# 4) Bilgi Notu: giriş-gelişme-sonuç mantığında 3-5 doğal paragraf; soru-cevap ve ham haber dili yoktur.
+# 5) Görsel: yalnız haber sayfasının güçlü aday görseli kullanılır; ikon/logo/küçük görsel alınmaz.
+# ============================================================
+
+V117_REPORT_ENGINE_VERSION='V117_CONTENT_ENGINE_20260921'
+if st.session_state.get('_v117_report_engine_version') != V117_REPORT_ENGINE_VERSION:
+    st.session_state['_v117_report_engine_version']=V117_REPORT_ENGINE_VERSION
+    for _k in (
+        'docx_bytes','note_bytes','v90_ogn_docx_bytes','basket_docx_bytes',
+        'v78_ogn_note_bytes','v79_akt_note_bytes','v81_pres_note_bytes'
+    ):
+        st.session_state.pop(_k,None)
+    st.session_state.pop('_v117_article_cache',None)
+    st.session_state.pop('_v117_page_cache',None)
+
+
+def _v117_source_short(source,url=''):
+    """Site adını referans rapordaki gibi kısa ve kurumsal gösterir."""
+    s=_clean_note_text(source).strip(' -–—|')
+    generic={'google haberler','google news','google','rss','açık kaynak'}
+    if norm(s) in generic or not s:
+        try:
+            host=urlparse(str(url or '')).netloc.lower().replace('www.','')
+            if host and 'google.com' not in host:
+                s=host
+        except Exception:
+            pass
+    # Site adından sonra gelen slogan / SEO uzantıları.
+    for sep in (' | ',' – ',' — ',' - '):
+        if sep in s:
+            left=s.split(sep,1)[0].strip()
+            right=s.split(sep,1)[1].strip()
+            if 3<=len(left)<=55 and any(k in norm(right) for k in (
+                'haber','son dakika','gündem','hava durumu','ekonomi','teknoloji','haberleri'
+            )):
+                s=left
+                break
+    # Çok uzun site adı hâlâ kaldıysa ilk anlamlı parçayı kullan.
+    if len(s)>70:
+        m=re.split(r'\s+(?:haberleri|son dakika|gündem|haber|gazetesi haberleri)\b',s,1,flags=re.I)
+        if m and 3<=len(m[0].strip())<=60:
+            s=m[0].strip()
+    return re.sub(r'\s+',' ',s).strip() or 'Açık Kaynak'
+
+
+def _v117_is_upper_token(token):
+    letters=''.join(ch for ch in str(token or '') if ch.isalpha())
+    return bool(letters) and all(ch.upper()==ch and ch.lower()!=ch for ch in letters)
+
+
+def _v117_strip_uppercase_runs(text):
+    """Haber sayfasından gelen '50 BİN TELEFON...' türü ara başlıkları gövdeden söker."""
+    words=_clean_note_text(text).split()
+    out=[]; i=0
+    while i<len(words):
+        j=i; run=[]; alpha=0; uppercase_words=0
+        while j<len(words):
+            w=words[j]
+            upper=_v117_is_upper_token(w)
+            numeric=bool(re.fullmatch(r'[\d%.,:+\-–—/]+',w))
+            if not (upper or numeric):
+                break
+            run.append(w)
+            if upper:
+                uppercase_words+=1
+                alpha+=sum(ch.isalpha() for ch in w)
+            j+=1
+        if uppercase_words>=4 and alpha>=18:
+            i=j
+            continue
+        out.append(words[i]); i+=1
+    return ' '.join(out)
+
+
+_V117_NOISE_TERMS=(
+    'çerez','cookie','abonelik','abone ol','reklam','tüm hakları saklıdır','gizlilik politikası',
+    'kullanım koşulları','bildirimleri aç','uygulamamızı indirin','facebook','instagram','whatsapp',
+    'twitter','x.com','son dakika haberleri için','haberlerimizi takip','ilgili haberler','öne çıkan haberler',
+    'diğer haberler','çok okunanlar','en çok okunan','etiketler','yorumlar','foto galeri','video galeri',
+    'anasayfa','ana sayfa','reklamı geç','devamını oku','tıklayınız','kaynakça','paylaş','yazarın diğer yazıları'
+)
+
+
+def _v117_tokens(text):
+    stop={'ve','ile','için','bir','bu','şu','ise','olarak','olan','olduğu','daha','çok','son','yeni','ilk',
+          'haber','haberde','tarafından','göre','ancak','ayrıca','öte','yandan','ilgili','söz','konusu'}
+    return {x for x in re.findall(r'[a-z0-9çğıöşü]+',norm(text)) if len(x)>=3 and x not in stop}
+
+
+def _v117_heading_like(s):
+    s=_clean_note_text(s)
+    if not s: return True
+    letters=''.join(ch for ch in s if ch.isalpha())
+    if letters and len(s)<180:
+        ratio=sum(ch.isupper() for ch in letters)/max(1,len(letters))
+        if ratio>=0.68: return True
+    # Sayfa içi bağlantı başlıkları çoğunlukla kısa ve ':' ile biter.
+    if s.rstrip().endswith(':') and len(s.split())<=18:
+        return True
+    # Cümle değil, peş peşe haber başlıkları görünümü.
+    if len(s.split())<=10 and s[-1:] not in '.!?' and not re.search(
+        r'\b(?:oldu|olmuştur|edildi|edilmiştir|açıkladı|açıklamıştır|bildirdi|bildirilmiştir|duyurdu|duyurmuştur|'
+        r'ulaştı|ulaşmıştır|arttı|artmıştır|azaldı|azalmıştır|gerçekleşti|gerçekleşmiştir|bulunmaktadır|yer almaktadır)\b',norm(s)
+    ):
+        return True
+    return False
+
+
+def _v117_question_or_interview(s):
+    n=norm(s)
+    if '?' in s: return True
+    if s.lstrip().startswith(('■','●','▪','►','- ')): return True
+    # Birinci şahıs röportaj cümleleri bilgi notunda doğrudan kullanılmasın.
+    if re.search(r'\b(?:bekliyoruz|düşünüyoruz|istiyoruz|inanıyoruz|hedefliyoruz|öngörüyoruz|bizim|bize|bizler)\b',n):
+        return True
+    return False
+
+
+def _v117_fragment_body(text):
+    t=_clean_note_text(text)
+    if not t: return []
+    t=_v117_strip_uppercase_runs(t)
+    # Soru işaretli röportaj ara başlıklarını ayıkla.
+    t=re.sub(r'\s*[■●▪►]\s*[^.!?]{0,220}\?\s*',' ',t)
+    # Noktalama ve ';' AKT gövdesinde doğal olgu sınırlarıdır.
+    raw=re.split(r"(?<=[.!?])\s+|;\s*|(?<=:)\s+(?=[“\"'A-ZÇĞİÖŞÜ])",t)
+    return [_clean_note_text(x).strip(' ;') for x in raw if _clean_note_text(x).strip(' ;')]
+
+
+def _v117_fact_candidates(title,body):
+    title=_clean_note_text(title)
+    tt=_v117_tokens(title)
+    body=_clean_note_text(body)
+    if title and norm(body).startswith(norm(title)):
+        body=body[len(title):].lstrip(' -–—:;,.')
+    raw=_v117_fragment_body(body)
+    if not raw: return []
+    # İlk üç gerçek cümle olayın varlık/kavram bağlamını verir.
+    context=set(tt)
+    for s in raw[:3]: context.update(_v117_tokens(s))
+    result=[]; seen=[]
+    for idx,s in enumerate(raw):
+        n=norm(s)
+        if len(s)<28 or n==norm(title): continue
+        if n.startswith('fiyatı ') and 'fiyat' not in norm(title): continue
+        if any(x in n for x in _V117_NOISE_TERMS): continue
+        if _v117_heading_like(s) or _v117_question_or_interview(s): continue
+        if s.startswith(('http://','https://','www.')): continue
+        st=_v117_tokens(s)
+        if not st: continue
+        # Tekrar.
+        duplicate=False
+        for old in seen:
+            union=len(st|old)
+            if union and len(st&old)/union>=0.80:
+                duplicate=True; break
+        if duplicate: continue
+        overlap=len(st&tt)
+        context_overlap=len(st&context)
+        relevance=overlap*2.0 + min(context_overlap,5)*0.55
+        if tt and st:
+            relevance += (len(st&tt)/max(1,len(st|tt)))*8
+        info=_akt_sentence_score(s)+_sent_score(s)
+        if re.search(r'\b\d+(?:[.,]\d+)?\b',s): info+=2
+        # Çok ileride gelen ve konu bağını tamamen kaybetmiş sayfa kalıntısını bastır.
+        if idx>=5 and overlap==0 and context_overlap<=1 and info<=2:
+            continue
+        result.append({'i':idx,'text':s,'rel':relevance,'info':info,'score':relevance+info})
+        seen.append(st)
+    return result
+
+
+def _v117_pick_facts(title,body,limit=8,max_chars=2200,mode='akt'):
+    cand=_v117_fact_candidates(title,body)
+    if not cand:
+        fb=_clean_note_text(body)
+        if fb and norm(fb)!=norm(title) and not _v117_heading_like(fb):
+            return [_v66_formalize_sentence_endings(fb)]
+        return []
+
+    # İlk iki gerçek olgu bağlamı kurar.
+    chosen={c['i'] for c in cand[:min(2,len(cand))]}
+    ranked=sorted(cand,key=lambda x:(x['score'], -x['i']),reverse=True)
+    for c in ranked:
+        if len(chosen)>=limit: break
+        chosen.add(c['i'])
+
+    # Bilgi notunda sonuca/ölçeğe işaret eden geç bir cümleyi de koru.
+    if mode=='note' and len(cand)>=5:
+        late=sorted(cand[max(2,len(cand)//2):],key=lambda x:(x['info']+x['rel'],x['i']),reverse=True)
+        if late: chosen.add(late[0]['i'])
+        chosen.add(cand[-1]['i'])
+
+    lookup={c['i']:c for c in cand}
+    out=[]; total=0
+    for i in sorted(chosen):
+        if i not in lookup: continue
+        s=_v117_formal_sentence(lookup[i]['text'])
+        if not s: continue
+        if out and total+len(s)>max_chars: continue
+        out.append(s); total+=len(s)+1
+        if len(out)>=limit: break
+    return out
+
+
+def _v117_formal_sentence(s):
+    s=_clean_note_text(s).strip(' ;')
+    if not s: return ''
+    s=_v66_formalize_sentence_endings(s)
+    punct=s[-1] if s[-1:] in '.!?' else '.'
+    core=s[:-1].rstrip() if s[-1:] in '.!?' else s.rstrip()
+
+    # Yalnız cümle sonundaki gelecek/şimdiki zaman yüklemini resmî dile çevir.
+    # Böylece "fırsatı sunacak IAC 2026" gibi sıfat-fiil yapıları bozulmaz.
+    suffix_pairs=[
+        ('düzenlenecek','düzenlenecektir'),('gerçekleştirilecek','gerçekleştirilecektir'),
+        ('yapılacak','yapılacaktır'),('sağlanacak','sağlanacaktır'),('kurulacak','kurulacaktır'),
+        ('açılacak','açılacaktır'),('sunulacak','sunulacaktır'),('olacak','olacaktır'),
+        ('yapacak','yapacaktır'),('sunacak','sunacaktır'),('açacak','açacaktır'),
+        ('gelecek','gelecektir'),('hedefliyor','hedeflemektedir'),('hazırlanıyor','hazırlanmaktadır'),
+        ('buluşacak','bir araya gelecektir'),('çıkıyor','çıkmaktadır'),('bulunuyor','bulunmaktadır'),
+        ('ulaşıyor','ulaşmaktadır'),('getiriyor','getirmektedir')
+    ]
+    low=core.lower()
+    for old,newv in sorted(suffix_pairs,key=lambda x:len(x[0]),reverse=True):
+        if low.endswith(old):
+            core=core[:-len(old)]+newv
+            break
+
+    # Haber sayfasından yan-cümle biçiminde kopmuş '-dığı/-diği' sonlarını tamamla.
+    if re.search(r'(?:olduğu|bulunduğu|gerçekleştiği|tamamlandığı|arttığı|azaldığı|duyurduğu|açıkladığı|belirttiği|bildirdiği|kaydettiği|vurguladığı|öğrenildiği)$',core,re.I):
+        core += ' aktarılmıştır'
+    elif re.search(r'öğrenildi$',core,re.I):
+        core=re.sub(r'öğrenildi$','öğrenilmiştir',core,flags=re.I)
+    s=re.sub(r'\s+',' ',core).strip()+punct
+    return s
+
+def _v117_record_to_tr(row):
+    r=dict(row or {})
+    return {
+        'Başlık':r.get('Başlık',r.get('title','')),
+        'Kaynak':r.get('Kaynak',r.get('source','')),
+        'URL':r.get('URL',r.get('url','')),
+        'Yayıncı_URL':r.get('Yayıncı_URL',r.get('url','')),
+        'İçerik_Özeti':r.get('İçerik_Özeti',r.get('summary','')),
+        'Tarih':r.get('Tarih',r.get('news_time','')),
+        'Kategori':r.get('Kategori',r.get('category','')),
+        'Risk_Skoru':r.get('Risk_Skoru',r.get('risk_score',0)),
+        'Risk_Durumu':r.get('Risk_Durumu',r.get('risk_status','')),
+    }
+
+
+def _v117_local_context(row):
+    """Sepet satırını mevcut taramadaki aynı olayın diğer kaynaklarıyla tekrar zenginleştirir."""
+    tr=_v117_record_to_tr(row)
+    candidates=[]
+    original=_clean_note_text(tr.get('İçerik_Özeti',''))
+    if original and norm(original)!=norm(tr.get('Başlık','')):
+        candidates.append(original)
+    try:
+        enriched=_v107_enrich_selected_rows([tr]) or []
+        if enriched:
+            e=enriched[0]
+            txt=_clean_note_text(e.get('İçerik_Özeti',''))
+            if txt and norm(txt)!=norm(tr.get('Başlık','')):
+                candidates.append(txt)
+            # Daha iyi URL/kaynak varsa satıra geri aktar.
+            if e.get('URL'): tr['URL']=e.get('URL')
+            if e.get('Kaynak'): tr['Kaynak']=e.get('Kaynak')
+    except Exception:
+        pass
+
+    # Oturum yeniden çizilmiş olsa bile son tarama geçmişinden aynı olaya ait zengin özeti bul.
+    if (not candidates or max(map(len,candidates),default=0)<180) and _init_history_db():
+        try:
+            with _history_connect() as conn:
+                hist=conn.execute(
+                    "SELECT title,summary,source,url FROM event_snapshots ORDER BY scan_id DESC LIMIT 250"
+                ).fetchall()
+            best_txt=''; best_sim=0.0
+            for ht,hs,hsrc,hu in hist:
+                sim=_v104_event_similarity(tr.get('Başlık',''),original,str(ht or ''),str(hs or ''))
+                if sim>best_sim and sim>=0.46:
+                    best_sim=sim; best_txt=_clean_note_text(hs)
+                    if hsrc and not tr.get('Kaynak'): tr['Kaynak']=hsrc
+                    if hu and not tr.get('URL'): tr['URL']=hu
+            if best_txt and norm(best_txt)!=norm(tr.get('Başlık','')):
+                candidates.append(best_txt)
+        except Exception:
+            pass
+    candidates=[x for x in candidates if x]
+    candidates=sorted(candidates,key=len,reverse=True)
+    return tr,(candidates[0] if candidates else '')
+
+
+def _v117_search_snippets(title,preferred_domain=''):
+    """Haber sayfası okunamazsa başlığı tek başına bırakmamak için arama sonucu özetlerini kullanır."""
+    title=_clean_note_text(title)
+    if not title: return []
+    preferred=domain(preferred_domain)
+    q=f'"{title[:220]}"' + (f' site:{preferred}' if preferred and 'google.com' not in preferred else '')
+    out=[]
+    try:
+        rr=requests.get('https://html.duckduckgo.com/html/',params={'q':q},headers=HEADERS,timeout=6)
+        if rr.ok:
+            soup=BeautifulSoup(rr.text,'html.parser')
+            for res in soup.select('.result')[:8]:
+                a=res.select_one('a.result__a, a.result-link')
+                sn=res.select_one('.result__snippet')
+                label=_clean_note_text(a.get_text(' ',strip=True) if a else '')
+                snippet=_clean_note_text(sn.get_text(' ',strip=True) if sn else '')
+                if snippet and len(snippet)>=55:
+                    sim=len(_v117_tokens(title)&_v117_tokens(label+' '+snippet))
+                    if sim>=2: out.append((sim,snippet))
+    except Exception:
+        pass
+    if not out:
+        try:
+            rr=requests.get('https://www.bing.com/search',params={'q':q,'setlang':'tr'},headers=HEADERS,timeout=6)
+            if rr.ok:
+                soup=BeautifulSoup(rr.text,'html.parser')
+                for res in soup.select('li.b_algo')[:8]:
+                    a=res.select_one('h2 a'); sn=res.select_one('.b_caption p, p')
+                    label=_clean_note_text(a.get_text(' ',strip=True) if a else '')
+                    snippet=_clean_note_text(sn.get_text(' ',strip=True) if sn else '')
+                    if snippet and len(snippet)>=55:
+                        sim=len(_v117_tokens(title)&_v117_tokens(label+' '+snippet))
+                        if sim>=2: out.append((sim,snippet))
+        except Exception:
+            pass
+    uniq=[]; seen=set()
+    for _,s in sorted(out,reverse=True):
+        k=title_key(s)
+        if k not in seen:
+            seen.add(k); uniq.append(s)
+    return uniq[:3]
+
+
+def _v117_fetch_clean_page(url,title=''):
+    """Doğrudan haber sayfasından yalnız makale paragrafı + ana görsel adayını çıkarır."""
+    if not _v116_valid_direct_url(url): return {'text':'','images':[],'source':'','title':''}
+    cache=st.session_state.setdefault('_v117_page_cache',{})
+    ck=str(url)
+    if ck in cache: return dict(cache[ck])
+    out={'text':'','images':[],'source':'','title':''}
+    try:
+        rr=requests.get(url,headers={**HEADERS,'Accept-Language':'tr-TR,tr;q=0.9,en;q=0.6'},timeout=10,allow_redirects=True)
+        if not rr.ok or not rr.text:
+            cache[ck]=out; return dict(out)
+        soup=BeautifulSoup(rr.text,'html.parser')
+        for tag in soup(['script','style','noscript','nav','footer','header','aside','form']):
+            try: tag.decompose()
+            except Exception: pass
+        bad_rx=re.compile(r'(related|recommend|suggest|popular|sidebar|footer|header|navigation|menu|share|social|advert|banner|cookie|breadcrumb|tag-list|author-box)',re.I)
+        for node in list(soup.find_all(True)):
+            try:
+                ident=' '.join([str(node.get('id') or ''),' '.join(node.get('class') or [])])
+                if ident and bad_rx.search(ident): node.decompose()
+            except Exception: pass
+
+        # Başlık / site adı / açıklama.
+        for attrs in ({'property':'og:title'},{'name':'twitter:title'}):
+            t=soup.find('meta',attrs=attrs)
+            if t and t.get('content'): out['title']=_clean_note_text(t['content']); break
+        for attrs in ({'property':'og:site_name'},{'name':'application-name'}):
+            t=soup.find('meta',attrs=attrs)
+            if t and t.get('content'): out['source']=_clean_note_text(t['content']); break
+        descriptions=[]
+        for attrs in ({'property':'og:description'},{'name':'description'},{'name':'twitter:description'}):
+            t=soup.find('meta',attrs=attrs)
+            if t and t.get('content'):
+                v=_clean_note_text(t['content'])
+                if len(v)>=70: descriptions.append(v)
+
+        json_bodies=[]; json_images=[]
+        def walk(obj):
+            if isinstance(obj,dict):
+                typ=norm(obj.get('@type',''))
+                if 'article' in typ or 'news' in typ:
+                    if obj.get('articleBody'): json_bodies.append(_clean_note_text(obj.get('articleBody')))
+                    if obj.get('description'): descriptions.append(_clean_note_text(obj.get('description')))
+                    im=obj.get('image') or obj.get('thumbnailUrl')
+                    if isinstance(im,str): json_images.append(im)
+                    elif isinstance(im,list):
+                        for z in im:
+                            if isinstance(z,str): json_images.append(z)
+                            elif isinstance(z,dict) and z.get('url'): json_images.append(str(z['url']))
+                    elif isinstance(im,dict) and im.get('url'): json_images.append(str(im['url']))
+                for v in obj.values(): walk(v)
+            elif isinstance(obj,list):
+                for v in obj: walk(v)
+        for tag in soup.find_all('script',attrs={'type':re.compile(r'application/ld\+json',re.I)}):
+            try:
+                raw=tag.string or tag.get_text()
+                if raw: walk(json.loads(raw))
+            except Exception: pass
+
+        selectors=['[itemprop="articleBody"]','article','[class*="article-body"]','[class*="article-content"]',
+                   '[class*="news-content"]','[class*="news-detail"]','[class*="story-body"]',
+                   '[class*="post-content"]','[class*="entry-content"]','[class*="content-body"]','main']
+        bodies=list(json_bodies)
+        lead_images=[]
+        for selector in selectors:
+            for node in soup.select(selector)[:3]:
+                ps=[]
+                for p in node.find_all('p'):
+                    txt=_clean_note_text(p.get_text(' ',strip=True))
+                    if len(txt)>=38 and not any(b in norm(txt) for b in _V117_NOISE_TERMS): ps.append(txt)
+                if ps:
+                    body=' '.join(ps)
+                    if len(body)>=180: bodies.append(body)
+                for img in node.find_all('img')[:8]:
+                    for attr in ('src','data-src','data-lazy-src','data-original'):
+                        if img.get(attr): lead_images.append(requests.compat.urljoin(rr.url,img.get(attr))); break
+        for attrs in ({'property':'og:image'},{'property':'og:image:url'},{'name':'twitter:image'}):
+            t=soup.find('meta',attrs=attrs)
+            if t and t.get('content'): lead_images.insert(0,requests.compat.urljoin(rr.url,t['content']))
+        lead_images=json_images+lead_images
+
+        candidates=[]
+        for b in descriptions+bodies:
+            b=_clean_note_text(b)
+            if not b: continue
+            facts=_v117_fact_candidates(title or out['title'],b)
+            score=len(facts)*300 + min(len(b),6000)
+            if facts: candidates.append((score,b))
+        if candidates:
+            out['text']=max(candidates,key=lambda z:z[0])[1]
+        seen=set()
+        for im in lead_images:
+            im=str(im or '').strip()
+            low=im.lower()
+            if not im or im in seen or any(x in low for x in ('logo','favicon','sprite','avatar','icon','pixel')): continue
+            seen.add(im); out['images'].append(im)
+            if len(out['images'])>=8: break
+    except Exception:
+        pass
+    cache[ck]=dict(out)
+    return dict(out)
+
+
+_v117_article_detail_base=article_detail
+
+def article_detail(row):
+    """V117: V116 çözümlemesini korur; gövdeyi temiz makale metni / yerel olay bağlamı ile güçlendirir."""
+    if isinstance(row,str): row={'URL':row}
+    elif hasattr(row,'to_dict'): row=row.to_dict()
+    elif row is None: row={}
+    else: row=dict(row)
+    tr,local_text=_v117_local_context(row)
+    title0=_clean_note_text(tr.get('Başlık',''))
+    source0=_clean_note_text(tr.get('Kaynak',''))
+    key=hashlib.sha1((title0+'|'+str(tr.get('URL',''))+'|'+local_text[:800]).encode('utf-8','ignore')).hexdigest()
+    cache=st.session_state.setdefault('_v117_article_cache',{})
+    if key in cache: return dict(cache[key])
+    try:
+        base=_v117_article_detail_base(tr) or {}
+    except Exception:
+        base={}
+    canonical=str(base.get('canonical') or tr.get('URL') or '').strip()
+    title=_v116_clean_headline(base.get('title') or title0,base.get('source') or source0)
+    source=_v117_source_short(base.get('source') or source0,canonical)
+    page={'text':'','images':[],'source':'','title':''}
+    # V116 gövdesi çok kısa/başlıkla aynı/noise içeriyorsa temiz p-tag çıkarımıyla ikinci okuma.
+    base_text=_clean_note_text(base.get('text') or '')
+    upper_noise=(_v117_strip_uppercase_runs(base_text)!=base_text)
+    base_facts=_v117_fact_candidates(title,base_text)
+    if _v116_valid_direct_url(canonical) and (len(base_facts)<3 or upper_noise):
+        page=_v117_fetch_clean_page(canonical,title)
+    candidates=[]
+    for txt,bonus in ((page.get('text',''),500),(base_text,250),(local_text,350),(_clean_note_text(tr.get('İçerik_Özeti','')),100)):
+        txt=_clean_note_text(txt)
+        if not txt or norm(txt)==norm(title): continue
+        facts=_v117_fact_candidates(title,txt)
+        score=len(facts)*450 + min(len(txt),6500) + bonus
+        if facts: candidates.append((score,txt))
+    # Sayfa okunamadıysa arama snippet'i başlık-only çıktıyı engeller.
+    if not candidates or max((len(_v117_fact_candidates(title,x[1])) for x in candidates),default=0)<2:
+        preferred=canonical or tr.get('URL','')
+        snippets=_v117_search_snippets(title,preferred)
+        if snippets:
+            stxt=' '.join(snippets)
+            candidates.append((len(_v117_fact_candidates(title,stxt))*450+len(stxt)+200,stxt))
+    best_text=max(candidates,key=lambda z:z[0])[1] if candidates else (local_text or base_text or _clean_note_text(tr.get('İçerik_Özeti','')))
+    result=dict(base)
+    result['title']=title or title0
+    result['source']=_v117_source_short(page.get('source') or source,canonical)
+    result['canonical']=canonical
+    result['text']=best_text
+    # İmajda ikinci çıkarım daha güvenilir; yoksa V116 adayları.
+    result['images']=list(page.get('images') or base.get('images') or [])
+    cache[key]=dict(result)
+    return result
+
+
+def _v117_valid_report_image(url):
+    bio=_download_report_image(url)
+    if not bio: return None
+    try:
+        im=Image.open(bio)
+        w,h=im.size
+        # Site ikonu / küçük thumbnail yerine gerçek haber görseli.
+        if w<480 or h<260 or w*h<180000:
+            return None
+        bio.seek(0); return bio
+    except Exception:
+        return None
+
+
+def _v117_akt_summary(title,body):
+    facts=_v117_pick_facts(title,body,limit=6,max_chars=1750,mode='akt')
+    if not facts: return ''
+    clauses=[]
+    for s in facts:
+        s=s.strip().rstrip(' .;:')
+        if not s: continue
+        # Referans AKT tek akış kullanıyor; her cümleyi ayrı başlık gibi bırakma.
+        if s and not s[:5].isupper():
+            s=s[0].lower()+s[1:]
+        clauses.append(s)
+    return '; '.join(clauses)
+
+
+def _v117_prepare_akt_row(row):
+    tr,local_text=_v117_local_context(row)
+    detail=article_detail(tr)
+    real_url=str(detail.get('canonical') or tr.get('URL') or '').strip()
+    source=_v117_source_short(_real_source(tr,detail,real_url),real_url)
+    title=_v116_clean_headline(detail.get('title') or tr.get('Başlık',''),source)
+    body=_clean_note_text(detail.get('text') or local_text or tr.get('İçerik_Özeti') or '')
+    summary=_v117_akt_summary(title,body)
+    if not summary:
+        # Başlığı özet diye ikinci kez yazma; yerel özet yoksa kısa resmî ifade.
+        fallback=_clean_note_text(local_text or tr.get('İçerik_Özeti',''))
+        if fallback and norm(fallback)!=norm(title):
+            summary=_v117_akt_summary(title,fallback) or _v117_formal_sentence(fallback).rstrip('.')
+        else:
+            summary=_v117_formal_sentence(title).rstrip('.')
+    if not _v116_valid_direct_url(real_url):
+        real_url=str(tr.get('URL') or '')
+    image=None
+    for candidate in list(detail.get('images') or [])[:8]:
+        image=_v117_valid_report_image(candidate)
+        if image: break
+    return {'title':title,'source':source,'url':real_url,'summary':summary,'image':image}
+
+
+def make_docx(rows):
+    """V117 AKT — referans düzen + temiz, konuya bağlı ayrıntılı haber özeti."""
+    rows0=[]
+    for r in (rows or []):
+        tr,_=_v117_local_context(r)
+        rows0.append(tr)
+    rows=_v115_dedupe_rows(rows0)
+    doc=_v116_doc_defaults(Document(),top=2.5,bottom=1.25,left=2.5,right=2.5)
+    sec=doc.sections[0]; sec.header_distance=Cm(1.25); sec.footer_distance=Cm(1.25)
+    p=doc.add_paragraph(); p.alignment=WD_ALIGN_PARAGRAPH.CENTER; p.paragraph_format.space_after=Pt(0)
+    _v116_run(p.add_run('AÇIK KAYNAK TARAMA ÇALIŞMASI'),16,True)
+    _v116_add_akt_info_table(doc)
+    intro=doc.add_paragraph(); intro.alignment=WD_ALIGN_PARAGRAPH.JUSTIFY
+    intro.paragraph_format.first_line_indent=Cm(0.63); intro.paragraph_format.line_spacing=1.5
+    intro.paragraph_format.space_before=Pt(0); intro.paragraph_format.space_after=Pt(0)
+    intro_text=_v116_akt_intro_text(rows); topics=_v116_topic_labels(rows)
+    cursor=0; spans=[]; pos=0
+    for topic in topics:
+        q=f'“{topic}”'; ix=intro_text.find(q,pos)
+        if ix>=0: spans.append((ix,ix+len(q))); pos=ix+len(q)
+    for a,b in spans:
+        if a>cursor: _v116_run(intro.add_run(intro_text[cursor:a]),12)
+        _v116_run(intro.add_run(intro_text[a:b]),12,italic=True); cursor=b
+    if cursor<len(intro_text): _v116_run(intro.add_run(intro_text[cursor:]),12)
+
+    prepared=[None]*len(rows)
+    if rows:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(3,len(rows))) as ex:
+            futs={ex.submit(_v117_prepare_akt_row,r):i for i,r in enumerate(rows)}
+            for fut in concurrent.futures.as_completed(futs):
+                try: prepared[futs[fut]]=fut.result()
+                except Exception: prepared[futs[fut]]=None
+    out_no=0
+    for item in prepared:
+        if not item: continue
+        out_no+=1
+        p=doc.add_paragraph(); p.alignment=WD_ALIGN_PARAGRAPH.JUSTIFY
+        p.paragraph_format.first_line_indent=Cm(0.63); p.paragraph_format.line_spacing=1.5
+        p.paragraph_format.space_before=Pt(4); p.paragraph_format.space_after=Pt(6)
+        _v116_run(p.add_run(f'{out_no}. “{item["source"]}”'),12,True)
+        _v116_run(p.add_run(' isimli internet sitesinde, '),12)
+        _v116_run(p.add_run(f'“{item["title"]}”'),12,True,True)
+        _v116_run(p.add_run(' başlığıyla bir haber yayımlanmıştır. ('),12)
+        _word_hyperlink(p,item['url'],item['url'] or 'Haber bağlantısı')
+        _v116_run(p.add_run(') Söz konusu haber içeriğinde, '),12)
+        _v116_run(p.add_run((item.get('summary') or '').strip().rstrip(' .;')),12)
+        _v116_run(p.add_run(' hususları ifade edilmiştir.'),12)
+        if item.get('image'):
+            cap=doc.add_paragraph(); cap.alignment=WD_ALIGN_PARAGRAPH.CENTER
+            cap.paragraph_format.first_line_indent=Cm(0.63); cap.paragraph_format.line_spacing=1.5
+            cap.paragraph_format.space_before=Pt(4); cap.paragraph_format.space_after=Pt(4)
+            _v116_run(cap.add_run(f'Görsel {out_no}: “{item["source"]}” Sitesinde Yer Alan Görsel'),12,True)
+            ip=doc.add_paragraph(); ip.alignment=WD_ALIGN_PARAGRAPH.CENTER; ip.paragraph_format.space_after=Pt(8)
+            try:
+                run=ip.add_run(); shape=run.add_picture(item['image'])
+                max_w=Cm(15.3); max_h=Cm(12.7)
+                scale=min(1.0,max_w/shape.width,max_h/shape.height)
+                if scale<1.0:
+                    shape.width=int(shape.width*scale); shape.height=int(shape.height*scale)
+            except Exception: pass
+    p=doc.add_paragraph(); p.alignment=WD_ALIGN_PARAGRAPH.JUSTIFY; p.paragraph_format.line_spacing=1.5
+    _v116_run(p.add_run('Arz olunur.'),12)
+    bio=BytesIO(); doc.save(bio); bio.seek(0); return bio.getvalue()
+
+
+def _v117_note_paragraphs(title,body):
+    """Bilgi notunu ham alıntı değil, giriş-gelişme-sonuç akışında yoğunlaştırır."""
+    cand=_v117_fact_candidates(title,body)
+    if not cand:
+        fallback=_v117_formal_sentence(title)
+        return [fallback] if fallback else []
+
+    selected=[]
+    def add_candidate(c):
+        st=_v117_tokens(c['text'])
+        for old in selected:
+            ot=_v117_tokens(old['text']); union=len(st|ot)
+            if union and len(st&ot)/union>=0.55:
+                # Aynı olguyu tekrar eden cümle, belirgin yeni sayısal veri taşımıyorsa alınmaz.
+                nums=set(re.findall(r'\b\d+(?:[.,]\d+)?\b',c['text']))
+                oldnums=set(re.findall(r'\b\d+(?:[.,]\d+)?\b',old['text']))
+                if not (nums-oldnums):
+                    return False
+        selected.append(c); return True
+
+    # Giriş için ilk iki gerçek olgu.
+    for c in cand[:2]: add_candidate(c)
+    # Sonuç için son bölümdeki en bağlamsal/etki cümlesini rezerve et.
+    concl_terms=('sonuç','böylece','bu kapsamda','etki','katkı','imkân','sağlam','hedef','beklen',
+                 'öngör','kapasite','ulaş','toplam','öne çık','planlan','merkez haline','altyapı')
+    conclusion=None
+    for c in reversed(cand):
+        if any(k in norm(c['text']) for k in concl_terms):
+            conclusion=c; break
+    if conclusion is None: conclusion=cand[-1]
+
+    pool=[c for c in cand[2:] if c['i']!=conclusion['i']]
+    # Gelişmede sayı, kurum, kapasite, tarih gibi somut bilgi rel skorundan daha önemlidir.
+    pool=sorted(pool,key=lambda c:(c['info']*2 + c['rel']*0.35,-c['i']),reverse=True)
+    for c in pool:
+        if len(selected)>=8: break
+        add_candidate(c)
+    add_candidate(conclusion)
+    selected=sorted(selected,key=lambda c:c['i'])[:9]
+    facts=[_v117_formal_sentence(c['text']) for c in selected]
+    facts=[x for x in facts if x]
+    if len(facts)<=2: return [' '.join(facts)]
+
+    intro=facts[:2]
+    # Son seçili cümle sonuç paragrafına ayrılır; kalanlar gelişmedir.
+    conclusion_text=[facts[-1]]
+    dev=facts[2:-1]
+    paras=[' '.join(intro)]
+    if dev:
+        if len(dev)<=3:
+            paras.append(' '.join(dev))
+        else:
+            cut=math.ceil(len(dev)/2)
+            paras.append(' '.join(dev[:cut])); paras.append(' '.join(dev[cut:]))
+    paras.append(' '.join(conclusion_text))
+    out=[]; seen=set()
+    for para in paras:
+        para=_clean_note_text(para)
+        k=title_key(para)
+        if para and k not in seen:
+            seen.add(k); out.append(para)
+    return out[:5]
+
+def make_analyst_docx(df,title='BİLGİ NOTU'):
+    """V117 Bilgi Notu — başlıksız, giriş-gelişme-sonuç akışında resmî ve özetlenmiş metin."""
+    doc=_v116_doc_defaults(Document(),2.5,2.5,2.5,2.5)
+    sec=doc.sections[0]; sec.header_distance=Cm(1.25); sec.footer_distance=Cm(1.25)
+    x=df.copy() if df is not None else pd.DataFrame()
+    if x.empty: rows=[]
+    else:
+        if 'Tarih_dt' in x.columns:
+            x['Tarih_dt']=pd.to_datetime(x['Tarih_dt'],utc=True,errors='coerce')
+            x=x.sort_values('Tarih_dt',ascending=True,na_position='last')
+        rows=x.to_dict('records')
+    # Bilgi notu genellikle tek seçili gelişme; birden çok kaynak varsa olay bazında zenginleştir.
+    rows=_v115_dedupe_rows(rows)
+    all_paras=[]
+    for r in rows:
+        tr,local_text=_v117_local_context(r)
+        detail=article_detail(tr)
+        source=_v117_source_short(_real_source(tr,detail,detail.get('canonical','')),detail.get('canonical',''))
+        ttl=_v116_clean_headline(detail.get('title') or tr.get('Başlık',''),source)
+        body=_clean_note_text(detail.get('text') or local_text or tr.get('İçerik_Özeti') or '')
+        pars=_v117_note_paragraphs(ttl,body)
+        all_paras.extend(pars)
+    if not all_paras:
+        all_paras=['Seçilen gelişmeye ilişkin yeterli içerik elde edilemediğinden ayrıntılı bilgi notu oluşturulamamıştır.']
+    for text in all_paras[:5]:
+        p=doc.add_paragraph(); p.alignment=WD_ALIGN_PARAGRAPH.JUSTIFY
+        p.paragraph_format.space_before=Pt(0); p.paragraph_format.space_after=Pt(0); p.paragraph_format.line_spacing=1.0
+        _v116_run(p.add_run(text),12)
+    bio=BytesIO(); doc.save(bio); bio.seek(0); return bio.getvalue()
+
+
+def _v117_ogn_item(row):
+    tr,local_text=_v117_local_context(row)
+    detail=article_detail(tr)
+    source=_v117_source_short(_real_source(tr,detail,detail.get('canonical','')),detail.get('canonical',''))
+    title=_v116_clean_headline(detail.get('title') or tr.get('Başlık',''),source)
+    body=_clean_note_text(detail.get('text') or local_text or tr.get('İçerik_Özeti') or '')
+    facts=_v117_pick_facts(title,body,limit=4,max_chars=850,mode='ogn')
+    # Başlık tek başına kaldıysa onu haber başlığı gibi değil, resmî olgu cümlesi haline getir.
+    if not facts:
+        facts=[_v117_formal_sentence(title)] if title else []
+    # En fazla 3 cümle / yaklaşık 600-700 karakter: referans ÖGN yoğunluğu.
+    chosen=[]; total=0
+    for s in facts:
+        s=_v117_formal_sentence(s)
+        if not s: continue
+        if chosen and (len(chosen)>=3 or total+len(s)>680): break
+        chosen.append(s); total+=len(s)+1
+    text=' '.join(chosen).strip()
+    # Sırf başlığın aynısı ise daha kurumsal bildirime çevir.
+    if text and title and title_key(text.rstrip('.'))==title_key(title.rstrip('.')):
+        text=_v117_formal_sentence(title)
+    return _v98_strip_site_name(text,source).strip()
+
+
+def make_important_basket_docx_v101(basket_df):
+    """V117 ÖGN — referans düzen; her madde başlık değil, gelişmenin kısa kurumsal özetidir."""
+    doc=_v116_doc_defaults(Document(),top=2.25,bottom=1.50,left=1.905,right=1.905)
+    sec=doc.sections[0]; sec.header_distance=Cm(0.1); sec.footer_distance=Cm(0.45)
+    try:
+        ns=doc.styles['No Spacing']; ns.font.name='Times New Roman'; ns.font.size=Pt(12)
+        ns._element.get_or_add_rPr().rFonts.set(qn('w:eastAsia'),'Times New Roman')
+    except Exception: pass
+    _v116_ogn_footer(sec)
+    today=datetime.now().astimezone().date(); yesterday=today-timedelta(days=1)
+    p=doc.add_paragraph(style='No Spacing'); p.alignment=WD_ALIGN_PARAGRAPH.RIGHT
+    p.paragraph_format.line_spacing=1.15; p.paragraph_format.space_before=Pt(6); p.paragraph_format.space_after=Pt(6)
+    _v116_run(p.add_run(f'{yesterday.strftime("%d/%m/%Y")} – {today.strftime("%d/%m/%Y")}'),12)
+    p=doc.add_paragraph(style='No Spacing'); p.alignment=WD_ALIGN_PARAGRAPH.JUSTIFY
+    p.paragraph_format.line_spacing=1.15; p.paragraph_format.space_before=Pt(6); p.paragraph_format.space_after=Pt(6)
+    _v116_run(p.add_run('Konu: '),12,True); _v116_run(p.add_run('STB Temsilciliği Önemli Gelişmeler Notu'),12)
+    raw=[] if basket_df is None else basket_df.to_dict('records')
+    rows=_v115_dedupe_rows(raw)
+    outputs=[None]*len(rows)
+    if rows:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(3,len(rows))) as ex:
+            futs={ex.submit(_v117_ogn_item,r):i for i,r in enumerate(rows)}
+            for fut in concurrent.futures.as_completed(futs):
+                try: outputs[futs[fut]]=fut.result()
+                except Exception: outputs[futs[fut]]=''
+    for text in outputs:
+        text=_clean_note_text(text)
+        if not text: continue
+        p=doc.add_paragraph(style='No Spacing'); p.alignment=WD_ALIGN_PARAGRAPH.JUSTIFY
+        p.paragraph_format.line_spacing=1.15; p.paragraph_format.space_before=Pt(6); p.paragraph_format.space_after=Pt(6)
+        if text.endswith('.'): text=text[:-1]
+        _v116_run(p.add_run(text+' (STB).'),12)
+    p=doc.add_paragraph(style='No Spacing'); p.alignment=WD_ALIGN_PARAGRAPH.JUSTIFY
+    p.paragraph_format.line_spacing=1.15; p.paragraph_format.space_before=Pt(6); p.paragraph_format.space_after=Pt(6)
+    _v116_run(p.add_run('Arz olunur.'),12)
+    bio=BytesIO(); doc.save(bio); bio.seek(0); return bio.getvalue()
+
+# ============================================================
+# /V117
+# ============================================================
+
 # -----------------------------
 # UI
 # -----------------------------
