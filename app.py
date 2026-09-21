@@ -20,7 +20,7 @@ from docx.oxml.ns import qn
 
 
 # ============================================================
-# V119 FINAL — V104+ çekirdeği / performans ve rapor kalite katmanı
+# V120 QA-STABLE — V104+ çekirdeği / performans ve rapor kalite katmanı
 # 1) Aynı olayın daha güçlü tekilleştirilmesi
 # 2) Durum bilgisinin URL'ye değil olay kimliğine de dayanması
 # 3) "Dünden Beri Ne Değişti?" yalnız gerçek/maddi değişiklikler
@@ -13569,6 +13569,986 @@ if st.session_state.get("_report_engine_version") != _V119_ENGINE_VERSION:
 # ============================================================
 
 
+# ============================================================
+# V120 — QA-STABLE EVIDENCE / REPORT ENGINE
+# ============================================================
+# This final layer deliberately prefers correctness over aggressive enrichment.
+# It prevents cross-event contamination, English search-result leakage, SEO/byline
+# remnants and weak headline-only documents. The existing scan/risk/basket logic
+# remains unchanged.
+# ============================================================
+
+_V120_ENGINE_VERSION = "V120-QA-STABLE-2026-09-22-A"
+
+_V120_GENERIC_TOKENS = {
+    "haber", "haberi", "son", "yeni", "ilk", "guncel", "güncel", "aciklandi",
+    "açıklandı", "duyuruldu", "belirtildi", "ifade", "etti", "edildi", "olan",
+    "olarak", "ile", "icin", "için", "ve", "veya", "bir", "bu", "da", "de",
+    "turkiye", "türkiye", "sanayi", "teknoloji", "sirket", "şirket", "sistem",
+    "sistemi", "siber", "saldiri", "saldırı", "yapay", "zeka", "zekâ", "konu",
+    "baslik", "başlık", "sonrasi", "sonrası", "ilgili", "tarafindan", "tarafından",
+    "gerceklesti", "gerçekleşti", "gerceklestirdi", "gerçekleştirdi",
+}
+
+_V120_ENGLISH_MARKERS = {
+    "the", "and", "after", "following", "company", "shares", "revenue", "stock",
+    "market", "with", "from", "for", "has", "have", "was", "were", "its", "due",
+    "incident", "price", "earnings", "analysts", "expectations", "plunged", "million",
+    "hours", "ago", "downgrade", "guidance", "fiscal", "year", "reported",
+}
+
+_V120_TURKISH_MARKERS = {
+    "ve", "ile", "için", "olarak", "tarafından", "olduğu", "olduğunu", "açıklamıştır",
+    "açıkladı", "belirtti", "duyurdu", "bildirdi", "gerçekleşti", "gerçekleştirildi",
+    "ulaştı", "yüzde", "bin", "milyon", "şirket", "kurum", "türkiye", "türk",
+    "sistem", "veri", "göre", "sonrası", "kapsamında", "bulunmaktadır", "edilmiştir",
+}
+
+_V120_SEO_NOISE_RE = re.compile(
+    r"(?:\b\d+\s+(?:hours?|minutes?|days?)\s+ago\b\s*[·•:\-–—]*|"
+    r"\b(?:forecasts?|revenue|earnings|analysts expectations|ratios)\b[^.]{0,220}\|[^.]{0,120}|"
+    r"\b(?:son dakika|güncel haberler|teknoloji haberleri|haberleri)\s*[-–—|]\s*[A-Z0-9ÇĞİÖŞÜ ._-]{2,30}\s*$)",
+    flags=re.IGNORECASE,
+)
+
+
+def _v120_clean_evidence_text(text):
+    """Clean snippets/article text without inventing or translating content."""
+    value = _clean_note_text(text)
+    if not value:
+        return ""
+
+    value = re.sub(
+        r"\b\d+\s+(?:hours?|minutes?|days?)\s+ago\b\s*[·•:\-–—]*",
+        " ",
+        value,
+        flags=re.IGNORECASE,
+    )
+    value = value.replace("•", " ")
+    value = re.sub(
+        r"\b[A-ZÇĞİÖŞÜ]{2,}(?:\s+[A-ZÇĞİÖŞÜ]{2,}){1,4}\s*[-–—]\s*"
+        r"(?=[A-ZÇĞİÖŞÜ][a-zçğıöşü])",
+        " ",
+        value,
+    )
+    value = re.sub(
+        r"\b(?:Fore?casts?|Revenue|Earnings|Analysts Expectations|Ratios)\b[^.]{0,260}\|[^.]{0,180}",
+        " ",
+        value,
+        flags=re.IGNORECASE,
+    )
+    value = re.sub(r"\s{2,}", " ", value).strip()
+    return _v119_fix_surface(value)
+
+
+def _v120_is_turkish_prose(text):
+    """Reject English-dominant fallback text from Turkish institutional reports."""
+    words = re.findall(r"[A-Za-zÇĞİÖŞÜçğıöşü]+", str(text or "").lower())
+    if not words:
+        return False
+    english = sum(word in _V120_ENGLISH_MARKERS for word in words)
+    turkish = sum(word in _V120_TURKISH_MARKERS for word in words)
+    turkish_chars = len(re.findall(r"[çğıöşü]", str(text or "").lower()))
+    if english >= 5 and english > max(2, turkish * 1.35) and turkish_chars < 3:
+        return False
+    return True
+
+
+def _v120_signature(title):
+    tokens = set(_v117_tokens(_clean_note_text(title)))
+    meaningful = {
+        token for token in tokens
+        if len(token) >= 3 and token not in _V120_GENERIC_TOKENS
+    }
+    numbers = set(re.findall(r"\b\d+(?:[.,]\d+)?\b", str(title or "")))
+    return meaningful, numbers
+
+
+def _v120_event_overlap(title, text):
+    sig, numbers = _v120_signature(title)
+    tokens = set(_v117_tokens(_clean_note_text(text)))
+    direct = len(sig & tokens)
+    number_hits = len(numbers & set(re.findall(r"\b\d+(?:[.,]\d+)?\b", str(text or ""))))
+    return direct, number_hits, _v118_title_relevance(title, text)
+
+
+def _v120_sentence_is_noise(sentence):
+    clean = _v120_clean_evidence_text(sentence)
+    if len(clean) < 28:
+        return True
+    low = norm(clean)
+    if any(term in low for term in _V117_NOISE_TERMS):
+        return True
+    if _v117_heading_like(clean) or _v117_question_or_interview(clean):
+        return True
+    if clean.startswith(("http://", "https://", "www.")):
+        return True
+    if _V120_SEO_NOISE_RE.search(clean):
+        return True
+    if not _v120_is_turkish_prose(clean):
+        return True
+    return False
+
+
+def _v120_extract_facts(title, body, limit=12):
+    """Extract one coherent event chain; never walk backward into another story."""
+    title = _clean_note_text(title)
+    body = _v120_clean_evidence_text(body)
+    if not title or not body:
+        return []
+
+    fragments = _v117_fragment_body(body)
+    candidates = []
+    for index, raw in enumerate(fragments):
+        sentence = _v120_clean_evidence_text(raw).strip(" ;")
+        if _v120_sentence_is_noise(sentence):
+            continue
+        sentence = _v119_strip_title_echo(title, sentence)
+        sentence = _v120_clean_evidence_text(_v117_formal_sentence(sentence))
+        if _v120_sentence_is_noise(sentence):
+            continue
+        direct, number_hits, relevance = _v120_event_overlap(title, sentence)
+        tokens = set(_v117_tokens(sentence))
+        info = _akt_sentence_score(sentence) + _sent_score(sentence)
+        if re.search(r"\b\d+(?:[.,]\d+)?\b", sentence):
+            info += 2
+        candidates.append(
+            {
+                "i": index,
+                "text": sentence,
+                "tokens": tokens,
+                "direct": direct,
+                "number_hits": number_hits,
+                "relevance": relevance,
+                "info": info,
+            }
+        )
+
+    if not candidates:
+        return []
+
+    signature, _ = _v120_signature(title)
+    anchor_pool = [
+        item for item in candidates
+        if item["direct"] >= 1 or item["relevance"] >= 3.2
+    ]
+    if not anchor_pool:
+        return []
+
+    anchor = max(
+        anchor_pool[:12],
+        key=lambda item: (
+            item["direct"] * 8 + item["relevance"] + item["info"] * 0.25,
+            -item["i"],
+        ),
+    )
+    context = set(signature) | set(anchor["tokens"])
+    accepted = []
+    seen = []
+    last_index = anchor["i"]
+    misses = 0
+
+    for item in candidates:
+        if item["i"] < anchor["i"]:
+            # Critical V120 rule: content before the event anchor cannot leak in.
+            continue
+        tokens = item["tokens"]
+        context_overlap = len(tokens & context)
+        near = item["i"] - last_index <= 3
+        keep = (
+            item["direct"] >= 1
+            or item["relevance"] >= 3.2
+            or (accepted and near and context_overlap >= 2)
+            or (
+                accepted
+                and near
+                and context_overlap >= 1
+                and item["info"] >= 6
+                and item["number_hits"] >= 1
+            )
+        )
+        if not keep:
+            if accepted:
+                misses += 1
+                if misses >= 2:
+                    break
+            continue
+        misses = 0
+
+        duplicate = False
+        for old_tokens in seen:
+            union = len(tokens | old_tokens)
+            if union and len(tokens & old_tokens) / union >= 0.74:
+                duplicate = True
+                break
+        if duplicate:
+            continue
+
+        text = item["text"]
+        if accepted and norm(text).startswith(("buna göre", "bu kapsamda", "öte yandan")):
+            # Connective clauses are fine after context exists.
+            pass
+        accepted.append(text)
+        seen.append(tokens)
+        context.update(tokens)
+        last_index = item["i"]
+        if len(accepted) >= limit:
+            break
+
+    return accepted
+
+
+def _v120_row_to_tr(row):
+    return _v117_record_to_tr(row)
+
+
+def _v120_same_event_rows(row, max_rows=8):
+    """Return only high-confidence rows belonging to the selected event."""
+    selected = _v120_row_to_tr(row)
+    title = _clean_note_text(selected.get("Başlık", ""))
+    summary = _clean_note_text(selected.get("İçerik_Özeti", ""))
+    selected_url = str(selected.get("URL") or "").strip()
+    selected_sig, _ = _v120_signature(title)
+    candidates = [(1000.0, selected)]
+
+    def maybe_add(candidate, base_bonus=0.0):
+        tr = _v120_row_to_tr(candidate)
+        c_title = _clean_note_text(tr.get("Başlık", ""))
+        if not c_title:
+            return
+        c_url = str(tr.get("URL") or "").strip()
+        exact_url = bool(selected_url and c_url and selected_url == c_url)
+        exact_title = title_key(c_title) == title_key(title)
+        c_sig, _ = _v120_signature(c_title)
+        sig_overlap = len(selected_sig & c_sig)
+        similarity = _v104_event_similarity(
+            title,
+            summary,
+            c_title,
+            _clean_note_text(tr.get("İçerik_Özeti", "")),
+        )
+        if not (exact_url or exact_title or (similarity >= 0.60 and sig_overlap >= 1)):
+            return
+        score = base_bonus + similarity * 100 + sig_overlap * 12
+        if exact_url:
+            score += 250
+        if exact_title:
+            score += 180
+        candidates.append((score, tr))
+
+    try:
+        for candidate in st.session_state.get("rows") or []:
+            maybe_add(candidate, 100.0)
+    except Exception:
+        pass
+
+    try:
+        if _init_history_db():
+            with _history_connect() as conn:
+                history = conn.execute(
+                    """
+                    SELECT title, summary, source, url, category, risk_score, risk_status
+                    FROM event_snapshots
+                    ORDER BY scan_id DESC
+                    LIMIT 350
+                    """
+                ).fetchall()
+            for ht, hs, hsrc, hu, hcat, hrisk, hstatus in history:
+                maybe_add(
+                    {
+                        "title": ht,
+                        "summary": hs,
+                        "source": hsrc,
+                        "url": hu,
+                        "category": hcat,
+                        "risk_score": hrisk,
+                        "risk_status": hstatus,
+                    },
+                    40.0,
+                )
+    except Exception:
+        pass
+
+    candidates.sort(key=lambda pair: pair[0], reverse=True)
+    unique = []
+    seen = set()
+    for _, item in candidates:
+        key = (
+            title_key(item.get("Başlık", "")),
+            str(item.get("URL") or "").split("#")[0],
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(item)
+        if len(unique) >= max_rows:
+            break
+    return unique
+
+
+def _v120_resolve_direct_url(tr):
+    for value in (tr.get("Yayıncı_URL"), tr.get("URL")):
+        url = str(value or "").strip()
+        if not url:
+            continue
+        if _v116_valid_direct_url(url):
+            return url
+        if "news.google.com" in url:
+            try:
+                decoded = _v116_decode_google_news_url(url)
+            except Exception:
+                decoded = ""
+            if decoded and _v116_valid_direct_url(decoded):
+                return decoded
+    return str(tr.get("URL") or "").strip()
+
+
+def _v120_candidate_from_row(selected_title, tr, selected=False):
+    """Build one evidence candidate while keeping its provenance attached."""
+    direct_url = _v120_resolve_direct_url(tr)
+    source = _v117_source_short(tr.get("Kaynak", ""), direct_url)
+    row_title = _v116_clean_headline(tr.get("Başlık", ""), source)
+    candidate_title = row_title or selected_title
+    texts = []
+    summary = _v120_clean_evidence_text(tr.get("İçerik_Özeti", ""))
+    if summary:
+        texts.append((summary, 150))
+
+    page = {"text": "", "images": [], "source": "", "title": ""}
+    if _v116_valid_direct_url(direct_url):
+        try:
+            page = _v117_fetch_clean_page(direct_url, selected_title) or page
+        except Exception:
+            page = {"text": "", "images": [], "source": "", "title": ""}
+        page_title = _clean_note_text(page.get("title", ""))
+        if page_title:
+            _, _, page_rel = _v120_event_overlap(selected_title, page_title)
+        else:
+            page_rel = 9.0
+        if page_rel >= 2.4:
+            body = _v120_clean_evidence_text(page.get("text", ""))
+            if body:
+                texts.append((body, 700))
+
+    best = None
+    for text, bonus in texts:
+        if not _v120_is_turkish_prose(text):
+            continue
+        facts = _v120_extract_facts(selected_title, text, limit=12)
+        if not facts:
+            continue
+        score = len(facts) * 1500 + min(len(text), 7000) + bonus
+        if selected:
+            score += 3000
+        try:
+            score += min(source_rank(direct_url or source), 500)
+        except Exception:
+            pass
+        item = {
+            "score": score,
+            "facts": facts,
+            "text": text,
+            "title": candidate_title,
+            "source": _v117_source_short(page.get("source") or source, direct_url),
+            "url": direct_url,
+            "images": list(page.get("images") or []),
+            "selected": bool(selected),
+        }
+        if best is None or item["score"] > best["score"]:
+            best = item
+    return best
+
+
+def _v120_site_snippet_candidate(title, preferred_url):
+    """Safe last resort: site-restricted Turkish snippets only; never generic full pages."""
+    try:
+        snippets = _v117_search_snippets(title, preferred_url)[:4]
+    except Exception:
+        snippets = []
+    text = " ".join(_v120_clean_evidence_text(item) for item in snippets if item)
+    if not text or not _v120_is_turkish_prose(text):
+        return None
+    facts = _v120_extract_facts(title, text, limit=8)
+    if len(facts) < 2:
+        return None
+    return {
+        "score": len(facts) * 1000 + 120,
+        "facts": facts,
+        "text": text,
+        "title": title,
+        "source": "",
+        "url": preferred_url,
+        "images": [],
+        "selected": False,
+    }
+
+
+def _v120_event_evidence(row, purpose="note"):
+    """Create a provenance-safe evidence bundle for one selected event."""
+    tr = _v120_row_to_tr(row)
+    selected_title = _v116_clean_headline(
+        tr.get("Başlık", ""), tr.get("Kaynak", "")
+    )
+    if not selected_title:
+        raise ReportQualityError("Seçilen kaydın haber başlığı bulunamadı.")
+
+    cache_seed = (
+        selected_title
+        + "|"
+        + str(tr.get("URL", ""))
+        + "|"
+        + purpose
+        + "|v120"
+    )
+    cache_key = hashlib.sha1(cache_seed.encode("utf-8", "ignore")).hexdigest()
+    cache = st.session_state.setdefault("_v120_event_evidence_cache", {})
+    if cache_key in cache:
+        return dict(cache[cache_key])
+
+    rows = _v120_same_event_rows(tr)
+    candidates = []
+    for index, candidate_row in enumerate(rows):
+        candidate = _v120_candidate_from_row(
+            selected_title,
+            candidate_row,
+            selected=(index == 0),
+        )
+        if candidate:
+            candidates.append(candidate)
+
+    selected_url = _v120_resolve_direct_url(tr)
+    best_fact_count = max((len(item["facts"]) for item in candidates), default=0)
+    if best_fact_count < 4:
+        snippet_candidate = _v120_site_snippet_candidate(selected_title, selected_url)
+        if snippet_candidate:
+            candidates.append(snippet_candidate)
+
+    if not candidates:
+        raise ReportQualityError(
+            f'"{selected_title}" için Türkçe ve olayla uyumlu ayrıntılı içerik elde edilemedi.'
+        )
+
+    candidates.sort(key=lambda item: item["score"], reverse=True)
+    best = candidates[0]
+
+    # Keep the selected source when it already clears the quality threshold.
+    selected_candidates = [item for item in candidates if item.get("selected")]
+    if selected_candidates:
+        selected_best = max(selected_candidates, key=lambda item: item["score"])
+        minimum = 3 if purpose in {"akt", "ogn"} else 5
+        if len(selected_best["facts"]) >= minimum:
+            best = selected_best
+
+    merged_facts = []
+    seen_tokens = []
+    source_pool = candidates[:4] if purpose in {"note", "ogn"} else [best]
+    for candidate in source_pool:
+        for fact in candidate["facts"]:
+            direct, _, relevance = _v120_event_overlap(selected_title, fact)
+            if direct < 1 and relevance < 3.0:
+                # Secondary-source evidence must independently anchor to the event.
+                continue
+            tokens = set(_v117_tokens(fact))
+            duplicate = False
+            for old in seen_tokens:
+                union = len(tokens | old)
+                if union and len(tokens & old) / union >= 0.72:
+                    duplicate = True
+                    break
+            if duplicate:
+                continue
+            merged_facts.append(_v120_clean_evidence_text(fact))
+            seen_tokens.append(tokens)
+            if len(merged_facts) >= 12:
+                break
+        if len(merged_facts) >= 12:
+            break
+
+    required = {"akt": 3, "ogn": 2, "note": 5}.get(purpose, 3)
+    if len(merged_facts) < required:
+        raise ReportQualityError(
+            f'"{selected_title}" için {required} bağımsız ve aynı olaya bağlı olgu elde edilemedi.'
+        )
+
+    bundle = {
+        "title": selected_title,
+        "facts": merged_facts,
+        "best": best,
+        "source": best.get("source") or _v117_source_short(tr.get("Kaynak", ""), selected_url),
+        "url": best.get("url") or selected_url,
+        "images": list(best.get("images") or []),
+        "fact_count": len(merged_facts),
+    }
+    cache[cache_key] = dict(bundle)
+    return bundle
+
+
+def article_detail(row):
+    """V120 compatibility wrapper: return only provenance-safe evidence."""
+    bundle = _v120_event_evidence(row, purpose="note")
+    return {
+        "title": bundle["title"],
+        "source": bundle["source"],
+        "canonical": bundle["url"],
+        "text": " ".join(bundle["facts"]),
+        "images": bundle["images"],
+        "quality_facts": bundle["fact_count"],
+        "quality_ready": bundle["fact_count"] >= 5,
+    }
+
+
+def _v120_title_as_context(title):
+    sentence = _v120_clean_evidence_text(title).strip(" .;:-")
+    if not sentence:
+        return ""
+    replacements = (
+        (r"\bdüştü$", "düşmüştür"),
+        (r"\barttı$", "artmıştır"),
+        (r"\bazaldı$", "azalmıştır"),
+        (r"\baçıklandı$", "açıklanmıştır"),
+        (r"\bduyuruldu$", "duyurulmuştur"),
+        (r"\bgerçekleşti$", "gerçekleşmiştir"),
+        (r"\btest edildi$", "test edilmiştir"),
+        (r"\bdüzenlenecek$", "düzenlenecektir"),
+    )
+    for pattern, replacement in replacements:
+        sentence = re.sub(pattern, replacement, sentence, flags=re.IGNORECASE)
+    if sentence[-1:] not in ".!?":
+        sentence += "."
+    return _v119_fix_surface(sentence)
+
+
+def _v120_note_paragraphs(title, facts):
+    """Build a stable, source-grounded 4–5 paragraph information note."""
+    facts = [_v120_clean_evidence_text(item) for item in facts if item]
+    facts = [item for item in facts if item and _v120_is_turkish_prose(item)]
+    if len(facts) < 5:
+        raise ReportQualityError(
+            f'"{title}" için standart bilgi notu oluşturacak ayrıntı düzeyine ulaşılamadı.'
+        )
+
+    first = facts[0]
+    if norm(first).startswith(("buna göre", "bu kapsamda", "öte yandan", "ayrıca")):
+        context = _v120_title_as_context(title)
+        if context and title_key(context) != title_key(first):
+            facts.insert(0, context)
+
+    count = len(facts)
+    if count >= 10:
+        groups = [facts[:2], facts[2:5], facts[5:7], facts[7:9], facts[9:]]
+    elif count >= 8:
+        groups = [facts[:2], facts[2:4], facts[4:6], facts[6:]]
+    elif count >= 6:
+        groups = [facts[:2], facts[2:4], facts[4:]]
+    else:
+        groups = [facts[:1], facts[1:3], facts[3:]]
+
+    paragraphs = []
+    for group in groups:
+        text = " ".join(group).strip()
+        if text:
+            paragraphs.append(_v119_fix_surface(text))
+    if len(paragraphs) < 3:
+        raise ReportQualityError(
+            f'"{title}" için giriş-gelişme-sonuç bütünlüğü kurulamadı.'
+        )
+    return paragraphs[:5]
+
+
+def make_analyst_docx(df, title="BİLGİ NOTU"):
+    """V120 stable information note: same quality standard for every entry point."""
+    frame = df.copy() if df is not None else pd.DataFrame()
+    rows = [] if frame.empty else _v115_dedupe_rows(frame.to_dict("records"))
+    if not rows:
+        raise ReportQualityError("Bilgi notu oluşturmak için haber bulunamadı.")
+
+    paragraphs = []
+    for row in rows:
+        bundle = _v120_event_evidence(row, purpose="note")
+        paragraphs.extend(_v120_note_paragraphs(bundle["title"], bundle["facts"]))
+
+    if len(paragraphs) < 3:
+        raise ReportQualityError("Bilgi notu kalite eşiğinin altında kaldı.")
+
+    document = _v116_doc_defaults(Document(), 2.5, 2.5, 2.5, 2.5)
+    section = document.sections[0]
+    section.header_distance = Cm(1.25)
+    section.footer_distance = Cm(1.25)
+    for text in paragraphs[:5]:
+        paragraph = document.add_paragraph()
+        paragraph.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+        paragraph.paragraph_format.space_before = Pt(0)
+        paragraph.paragraph_format.space_after = Pt(6)
+        # Reference information note uses normal single spacing.
+        paragraph.paragraph_format.line_spacing = 1.0
+        _v116_run(paragraph.add_run(_v119_fix_surface(text)), 12)
+
+    buffer = BytesIO()
+    document.save(buffer)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
+def _v120_ogn_item(row):
+    bundle = _v120_event_evidence(row, purpose="ogn")
+    facts = list(bundle["facts"])
+    chosen = []
+    total_chars = 0
+    for fact in facts:
+        clean = _v120_clean_evidence_text(fact)
+        if not clean:
+            continue
+        if chosen and (len(chosen) >= 3 or total_chars + len(clean) > 760):
+            break
+        chosen.append(clean)
+        total_chars += len(clean) + 1
+    if len(chosen) < 2:
+        raise ReportQualityError(
+            f'ÖGN için "{bundle["title"]}" maddesi yeterli ayrıntıya ulaşamadı.'
+        )
+    if norm(chosen[0]).startswith(("buna göre", "bu kapsamda", "öte yandan", "ayrıca")):
+        context = _v120_title_as_context(bundle["title"])
+        if context and title_key(context) != title_key(chosen[0]):
+            chosen.insert(0, context)
+            chosen = chosen[:3]
+    return _v119_fix_surface(" ".join(chosen))
+
+
+def make_important_basket_docx_v101(basket_df):
+    """V120 ÖGN: institutional format + strict event isolation."""
+    rows = _v115_dedupe_rows(
+        [] if basket_df is None else basket_df.to_dict("records")
+    )
+    if not rows:
+        raise ReportQualityError("Önemli Gelişmeler Sepeti boş.")
+
+    # Deliberately sequential: report generation may touch Streamlit session caches,
+    # which are not guaranteed to be thread-safe. Deterministic quality is more
+    # important here than shaving a few seconds from a user-triggered Word export.
+    outputs = [None] * len(rows)
+    errors = []
+    for index, row in enumerate(rows):
+        try:
+            outputs[index] = _v120_ogn_item(row)
+        except Exception as exc:
+            title = _clean_note_text(row.get("title", row.get("Başlık", "")))
+            errors.append(f"{title}: {exc}")
+
+    if errors:
+        raise ReportQualityError(
+            "ÖGN oluşturulmadı; aşağıdaki maddeler kalite eşiğini geçemedi: "
+            + " | ".join(errors[:4])
+        )
+
+    document = _v116_doc_defaults(Document(), 2.25, 1.5, 1.905, 1.905)
+    section = document.sections[0]
+    section.header_distance = Cm(1.25)
+    section.footer_distance = Cm(1.0)
+    _v116_add_ogn_footer(section)
+
+    today = date.today()
+    paragraph = document.add_paragraph(style="No Spacing")
+    paragraph.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+    paragraph.paragraph_format.line_spacing = 1.15
+    _v116_run(
+        paragraph.add_run(
+            f'{(today - timedelta(days=1)).strftime("%d/%m/%Y")} – {today.strftime("%d/%m/%Y")}'
+        ),
+        12,
+    )
+
+    paragraph = document.add_paragraph(style="No Spacing")
+    paragraph.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+    paragraph.paragraph_format.line_spacing = 1.15
+    paragraph.paragraph_format.space_before = Pt(6)
+    paragraph.paragraph_format.space_after = Pt(6)
+    _v116_run(paragraph.add_run("Konu: "), 12, True)
+    _v116_run(paragraph.add_run("STB Temsilciliği Önemli Gelişmeler Notu"), 12)
+
+    for text in outputs:
+        paragraph = document.add_paragraph(style="No Spacing")
+        paragraph.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+        paragraph.paragraph_format.line_spacing = 1.15
+        paragraph.paragraph_format.space_before = Pt(6)
+        paragraph.paragraph_format.space_after = Pt(6)
+        clean = _v119_fix_surface(text).rstrip(".")
+        _v116_run(paragraph.add_run(clean + " (STB)."), 12)
+
+    paragraph = document.add_paragraph(style="No Spacing")
+    paragraph.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+    paragraph.paragraph_format.line_spacing = 1.15
+    paragraph.paragraph_format.space_before = Pt(6)
+    paragraph.paragraph_format.space_after = Pt(6)
+    _v116_run(paragraph.add_run("Arz olunur."), 12)
+
+    buffer = BytesIO()
+    document.save(buffer)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
+def _v120_akt_clause_text(facts):
+    clauses = []
+    for fact in facts[:6]:
+        clean = _v120_clean_evidence_text(fact).strip().rstrip(" .;:")
+        if clean:
+            clauses.append(clean)
+    if len(clauses) < 3:
+        return ""
+    return "; ".join(clauses)
+
+
+def _v120_prepare_akt_row(row):
+    bundle = _v120_event_evidence(row, purpose="akt")
+    best = bundle["best"]
+    facts = _v120_extract_facts(bundle["title"], best.get("text", ""), limit=8)
+    if len(facts) < 3:
+        # Use only facts already tied to the same chosen source; do not mix generic web pages.
+        facts = list(bundle["facts"][:6])
+    summary = _v120_akt_clause_text(facts)
+    if not summary:
+        raise ReportQualityError(
+            f'AKT için "{bundle["title"]}" haberinde yeterli ayrıntı elde edilemedi.'
+        )
+
+    image = None
+    for candidate in list(best.get("images") or [])[:8]:
+        try:
+            image = _v117_valid_report_image(candidate)
+        except Exception:
+            image = None
+        if image:
+            break
+
+    return {
+        "title": bundle["title"],
+        "source": _v117_source_short(bundle["source"], bundle["url"]),
+        "url": bundle["url"],
+        "summary": summary,
+        "image": image,
+    }
+
+
+def make_docx(rows):
+    """V120 AKT: coherent Turkish content, same-event source, matching image provenance."""
+    source_rows = []
+    for row in rows or []:
+        source_rows.append(_v120_row_to_tr(row))
+    source_rows = _v115_dedupe_rows(source_rows)
+    if not source_rows:
+        raise ReportQualityError("AKT raporu için haber bulunamadı.")
+
+    prepared = [None] * len(source_rows)
+    errors = []
+    for index, row in enumerate(source_rows):
+        try:
+            prepared[index] = _v120_prepare_akt_row(row)
+        except Exception as exc:
+            title = _clean_note_text(row.get("Başlık", ""))
+            errors.append(f"{title}: {exc}")
+
+    if errors:
+        raise ReportQualityError(
+            "AKT raporu oluşturulmadı; kalite eşiğini geçemeyen maddeler: "
+            + " | ".join(errors[:4])
+        )
+
+    document = _v116_doc_defaults(
+        Document(), top=2.5, bottom=1.25, left=2.5, right=2.5
+    )
+    section = document.sections[0]
+    section.header_distance = Cm(1.25)
+    section.footer_distance = Cm(1.25)
+
+    paragraph = document.add_paragraph()
+    paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    paragraph.paragraph_format.space_after = Pt(0)
+    _v116_run(paragraph.add_run("AÇIK KAYNAK TARAMA ÇALIŞMASI"), 16, True)
+    _v116_add_akt_info_table(document)
+
+    intro = document.add_paragraph()
+    intro.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+    intro.paragraph_format.first_line_indent = Cm(0.63)
+    intro.paragraph_format.line_spacing = 1.5
+    intro.paragraph_format.space_before = Pt(0)
+    intro.paragraph_format.space_after = Pt(0)
+    intro_text = _v116_akt_intro_text(source_rows)
+    topics = _v116_topic_labels(source_rows)
+    cursor = 0
+    position = 0
+    spans = []
+    for topic in topics:
+        quoted = f"“{topic}”"
+        index = intro_text.find(quoted, position)
+        if index >= 0:
+            spans.append((index, index + len(quoted)))
+            position = index + len(quoted)
+    for start, end in spans:
+        if start > cursor:
+            _v116_run(intro.add_run(intro_text[cursor:start]), 12)
+        _v116_run(intro.add_run(intro_text[start:end]), 12, italic=True)
+        cursor = end
+    if cursor < len(intro_text):
+        _v116_run(intro.add_run(intro_text[cursor:]), 12)
+
+    for number, item in enumerate(prepared, start=1):
+        paragraph = document.add_paragraph()
+        paragraph.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+        paragraph.paragraph_format.first_line_indent = Cm(0.63)
+        paragraph.paragraph_format.line_spacing = 1.5
+        paragraph.paragraph_format.space_before = Pt(4)
+        paragraph.paragraph_format.space_after = Pt(6)
+        _v116_run(paragraph.add_run(f'{number}. “{item["source"]}”'), 12, True)
+        _v116_run(paragraph.add_run(" isimli internet sitesinde, "), 12)
+        _v116_run(paragraph.add_run(f'“{item["title"]}”'), 12, True, True)
+        _v116_run(paragraph.add_run(" başlığıyla bir haber yayımlanmıştır. ("), 12)
+        _word_hyperlink(paragraph, item["url"], item["url"] or "Haber bağlantısı")
+        _v116_run(paragraph.add_run(") Söz konusu haber içeriğinde, "), 12)
+        _v116_run(paragraph.add_run(item["summary"].rstrip(" .;")), 12)
+        _v116_run(paragraph.add_run(" hususları ifade edilmiştir."), 12)
+
+        if item.get("image"):
+            caption = document.add_paragraph()
+            caption.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            caption.paragraph_format.first_line_indent = Cm(0.63)
+            caption.paragraph_format.line_spacing = 1.5
+            caption.paragraph_format.space_before = Pt(4)
+            caption.paragraph_format.space_after = Pt(4)
+            _v116_run(
+                caption.add_run(
+                    f'Görsel {number}: “{item["source"]}” Sitesinde Yer Alan Görsel'
+                ),
+                12,
+                True,
+            )
+            image_paragraph = document.add_paragraph()
+            image_paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            image_paragraph.paragraph_format.space_after = Pt(8)
+            try:
+                run = image_paragraph.add_run()
+                shape = run.add_picture(item["image"])
+                max_width = Cm(15.3)
+                max_height = Cm(12.7)
+                scale = min(1.0, max_width / shape.width, max_height / shape.height)
+                if scale < 1.0:
+                    shape.width = int(shape.width * scale)
+                    shape.height = int(shape.height * scale)
+            except Exception:
+                pass
+
+    paragraph = document.add_paragraph()
+    paragraph.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+    paragraph.paragraph_format.line_spacing = 1.5
+    _v116_run(paragraph.add_run("Arz olunur."), 12)
+
+    buffer = BytesIO()
+    document.save(buffer)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
+def _v120_fast_shift_counts(df, current_scan_id=None):
+    """Cheap exact-key shift counters; no semantic all-pairs comparison on first render."""
+    previous_id = _previous_scan_id(current_scan_id)
+    previous = _v119_previous_events(previous_id)
+    if previous.empty or df is None or df.empty:
+        return 0, 0, 0
+
+    previous_by_url = {}
+    previous_by_title = {}
+    for _, row in previous.iterrows():
+        url = str(row.get("url") or "").strip()
+        key = title_key(row.get("title", ""))
+        if url:
+            previous_by_url[url] = row
+        if key:
+            previous_by_title[key] = row
+
+    current = _v119_current_events(df)
+    new_events = risk_up = verify_up = 0
+    for _, row in current.iterrows():
+        url = str(row.get("url") or "").strip()
+        key = title_key(row.get("title", ""))
+        previous_row = previous_by_url.get(url) if url else None
+        if previous_row is None and key:
+            previous_row = previous_by_title.get(key)
+        if previous_row is None:
+            new_events += 1
+            continue
+        if int(row.get("risk_score") or 0) >= int(previous_row.get("risk_score") or 0) + 15:
+            risk_up += 1
+        if _verification_rank(row.get("verification", "")) > _verification_rank(previous_row.get("verification", "")):
+            verify_up += 1
+    return new_events, risk_up, verify_up
+
+
+def _shift_start_summary(df, current_scan_id=None):
+    """V120 immediate shift summary; removes the visible mid-page semantic-compare stall."""
+    if df is None or df.empty:
+        return {}, pd.DataFrame(), ""
+
+    key = _v113_scan_key(df, current_scan_id) + ":" + _v113_shift_mark_key() + ":v120"
+    cached = _v113_get_cached("shift_summary_v120", key)
+    if cached is not None:
+        stats, top, label = cached
+        return dict(stats), top.copy(), label
+
+    baseline, baseline_label, _ = _shift_baseline(current_scan_id)
+    frame = df.copy()
+    frame["Tarih_dt"] = pd.to_datetime(frame.get("Tarih_dt"), utc=True, errors="coerce")
+    if baseline is not None:
+        since = frame[frame["Tarih_dt"].isna() | (frame["Tarih_dt"] >= baseline)].copy()
+    else:
+        since = frame.copy()
+
+    new_events, risk_up, verify_up = _v120_fast_shift_counts(df, current_scan_id)
+    high_risk = int((since.get("Risk_Durumu", pd.Series("", index=since.index)) == "Yüksek Risk").sum())
+    titles = since.get("Başlık", pd.Series("", index=since.index)).fillna("")
+    summaries = since.get("İçerik_Özeti", pd.Series("", index=since.index)).fillna("")
+    osb_count = sum(
+        bool(is_osb_fire(title, summary))
+        for title, summary in zip(titles.astype(str), summaries.astype(str))
+    )
+    top = _v115_fast_shift_top(since, 8)
+    stats = {
+        "new_news": len(since),
+        "new_important_events": int(new_events),
+        "high_risk": high_risk,
+        "risk_up": int(risk_up),
+        "verify_up": int(verify_up),
+        "osb": int(osb_count),
+        "baseline_label": baseline_label,
+    }
+    _v113_set_cached("shift_summary_v120", key, (dict(stats), top.copy(), baseline_label))
+    return stats, top, baseline_label
+
+
+# V120 cache/version reset.
+if st.session_state.get("_report_engine_version") != _V120_ENGINE_VERSION:
+    for key in (
+        "docx_bytes",
+        "note_bytes",
+        "basket_docx_bytes",
+        "v78_ogn_note_bytes",
+        "v79_akt_note_bytes",
+        "v90_ogn_docx_bytes",
+        "v81_pres_note_bytes",
+    ):
+        st.session_state.pop(key, None)
+    for key in (
+        "_v120_event_evidence_cache",
+        "_v117_page_cache",
+        "_v119_compare_cache",
+        "_v119_previous_event_cache",
+    ):
+        st.session_state.pop(key, None)
+    st.session_state["_report_engine_version"] = _V120_ENGINE_VERSION
+
+# ============================================================
+# /V120
+# ============================================================
+
+
 # -----------------------------
 # UI
 # -----------------------------
@@ -13833,9 +14813,9 @@ if run:
             _v119_scan_df['Tarih_dt']=pd.to_datetime(
                 _v119_scan_df.get('Tarih_dt'),utc=True,errors='coerce'
             )
-            _compare_since_previous(
-                _v119_scan_df,st.session_state.get('current_scan_id')
-            )
+            # V120: Vardiya özeti ilk görünümde yalnız hızlı exact-key sayımlarıyla
+            # hazırlanır. Ayrıntılı semantik karşılaştırma sayfa ortasında/ön hesaplamada
+            # çalıştırılmaz; böylece Vardiya Başlangıç Özeti görünürken donma oluşmaz.
             _shift_start_summary(
                 _v119_scan_df,st.session_state.get('current_scan_id')
             )
@@ -13983,7 +14963,7 @@ st.markdown('---')
 # ============================================================
 # V68 — KONTROL MERKEZİ
 # ============================================================
-st.caption('⚡ V119 performans modu: tarama sonrası panel özetleri önceden hesaplanır; seçim kutuları tek başına ağır analizleri yeniden çalıştırmaz.')
+st.caption('⚡ V120 performans/kalite modu: tarama sonrası panel özetleri önceden hesaplanır; seçim kutuları tek başına ağır analizleri yeniden çalıştırmaz.')
 st.subheader('🎛️ Kontrol Merkezi')
 st.caption(
     'Bu alan çalışma saatine ve içeriğin niteliğine göre işlem önermektedir: Bilgi Notu için veri/istatistik, '
