@@ -14404,6 +14404,234 @@ def _v123_render_strategic_map(df):
 
 
 # ============================================================
+# V124 — HARİTA NOKTA SEÇİMİ / DETAY SENKRONU
+# Plotly seçim olayı ile alttaki selectbox/session_state senkronize edilir.
+# V123 harita görünümü ve veri mantığı korunur.
+# ============================================================
+
+def _v124_event_value(obj, key, default=None):
+    """Streamlit PlotlyState hem dict-benzeri hem attribute-benzeri olabilir."""
+    if obj is None:
+        return default
+    try:
+        if isinstance(obj, dict):
+            return obj.get(key, default)
+    except Exception:
+        pass
+    try:
+        return getattr(obj, key, default)
+    except Exception:
+        return default
+
+
+def _v124_selected_plotly_point(event):
+    """st.plotly_chart seçim sonucundan son seçilen noktayı güvenli biçimde döndürür."""
+    selection = _v124_event_value(event, 'selection')
+    points = _v124_event_value(selection, 'points', [])
+    try:
+        points = list(points or [])
+    except Exception:
+        points = []
+    return points[-1] if points else None
+
+
+def _v124_map_mode_key(mode):
+    return re.sub(r'[^a-zA-Z0-9]+', '_', str(mode or '')).strip('_')
+
+
+def _v124_map_row_id(row):
+    """Aynı başlık/konum tekrar etse bile seçim için kararlı benzersiz kimlik."""
+    raw = '|'.join([
+        str(row.get('URL', '') or ''),
+        str(row.get('Başlık', '') or ''),
+        str(row.get('Konum', '') or ''),
+        str(row.get('Tarih', '') or ''),
+        str(row.get('Kaynak', '') or ''),
+    ])
+    return hashlib.sha1(raw.encode('utf-8', errors='ignore')).hexdigest()[:18]
+
+
+def _v123_render_strategic_map(df):
+    """V124 — tek harita; nokta tıklaması detay kartını doğrudan günceller."""
+    st.markdown('## 🌍 Küresel Sanayi ve Stratejik Teknoloji Haritası')
+    st.caption(
+        'Harita mevcut tarama dönemiyle otomatik senkronizedir. Konum, yayıncının merkezine göre değil; '
+        'haber başlığı/özetinde açıkça geçen olay coğrafyasına göre belirlenir.'
+    )
+    mode = st.radio(
+        'Harita modu',
+        ['🌍 Global Stratejik Gelişmeler', '🇹🇷 Türkiye Bağlantılı Global', '🚨 Kritik Sanayi Olayları'],
+        index=1,
+        horizontal=True,
+        key='v123_strategic_map_mode',
+    )
+    data, unmapped = _v123_map_dataset(df, mode)
+
+    if data.empty:
+        st.info(
+            'Bu modda açık coğrafi konum içeren gelişme bulunamadı. '
+            'Belirsiz konumlar yanlış nokta oluşturmamak için haritaya eklenmez.'
+        )
+        return
+
+    categories = sorted(x for x in data['Kategori'].dropna().astype(str).unique() if x.strip())
+    selected_categories = st.multiselect(
+        'Kategori filtresi',
+        categories,
+        default=categories,
+        key=f"v123_map_categories_{_v124_map_mode_key(mode)}",
+        help='Harita tek kalır; seçilen kategorilere göre noktalar anlık filtrelenir.',
+    )
+    if selected_categories:
+        data = data[data['Kategori'].astype(str).isin(selected_categories)].copy()
+    else:
+        data = data.iloc[0:0].copy()
+    if data.empty:
+        st.info('Seçilen kategori filtresinde haritalanabilir gelişme bulunmuyor.')
+        return
+
+    data = data.reset_index(drop=True)
+    data['_Map_ID'] = data.apply(_v124_map_row_id, axis=1)
+
+    location_count = int(data['Konum'].nunique())
+    event_count = int(len(data))
+    turkey_count = int((data['Türkiye Bağlantısı'].astype(str) != '—').sum())
+    high_count = int((pd.to_numeric(data['Risk'], errors='coerce').fillna(0) >= 70).sum())
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric('Haritalanan Konum', location_count)
+    m2.metric('Tekil Gelişme', event_count)
+    m3.metric('Türkiye Bağlantılı', turkey_count)
+    m4.metric('Yüksek Risk', high_count)
+
+    selected_map_id = None
+    try:
+        import plotly.express as px
+
+        fig = px.scatter_geo(
+            data,
+            lat='lat',
+            lon='lon',
+            color='Kategori',
+            size='Boyut',
+            hover_name='Kısa Başlık',
+            hover_data={
+                'Konum': True,
+                'Kaynak': True,
+                'Kaynak Teyidi': True,
+                'Risk': True,
+                'Türkiye Bağlantısı': True,
+                'Tarih': True,
+                'lat': False,
+                'lon': False,
+                'Boyut': False,
+                'Kategori': False,
+                '_Map_ID': False,
+            },
+            projection='natural earth',
+            height=560,
+            # İlk alan benzersiz kimliktir. Kategori ayrı trace oluştursa bile
+            # pointNumber'a güvenmek zorunda kalmayız.
+            custom_data=['_Map_ID', 'Başlık', 'Konum'],
+        )
+        if mode == '🚨 Kritik Sanayi Olayları':
+            fig.update_geos(fitbounds='locations', visible=True, showcountries=True, showcoastlines=True)
+        else:
+            fig.update_geos(showcountries=True, showcoastlines=True, showland=True)
+        fig.update_layout(
+            margin=dict(l=0, r=0, t=8, b=0),
+            legend_title_text='Kategori',
+            clickmode='event+select',
+        )
+
+        try:
+            event = st.plotly_chart(
+                fig,
+                use_container_width=True,
+                key='v124_strategic_geo_chart',
+                on_select='rerun',
+                selection_mode='points',
+            )
+            point = _v124_selected_plotly_point(event)
+            if point is not None:
+                custom = _v124_event_value(point, 'customdata')
+                try:
+                    custom = list(custom or [])
+                except Exception:
+                    custom = []
+                if custom:
+                    selected_map_id = str(custom[0] or '')
+
+                # Bazı Streamlit/Plotly sürümleri customdata döndürmez.
+                # Bu durumda curve/point bilgisi yerine başlık/konum alanlarını dene.
+                if not selected_map_id:
+                    hover_text = _v124_event_value(point, 'hovertext')
+                    if hover_text:
+                        hit = data[data['Kısa Başlık'].astype(str) == str(hover_text)]
+                        if len(hit) == 1:
+                            selected_map_id = str(hit.iloc[0]['_Map_ID'])
+        except TypeError:
+            st.plotly_chart(fig, use_container_width=True, key='v124_strategic_geo_chart_fallback')
+    except Exception:
+        st.map(data[['lat', 'lon']].rename(columns={'lat': 'latitude', 'lon': 'longitude'}))
+        st.caption('Gelişmiş harita bileşeni kullanılamadığı için temel konum görünümü gösterilmektedir.')
+
+    labels = [
+        f"{row['Konum']} · {row['Kısa Başlık']}"
+        for _, row in data.iterrows()
+    ]
+    mode_key = _v124_map_mode_key(mode)
+    select_key = f'v123_map_event_{mode_key}'
+    click_state_key = f'_v124_last_map_click_{mode_key}'
+    active_id_key = f'_v124_active_map_id_{mode_key}'
+
+    # HARİTA -> SESSION STATE -> SELECTBOX
+    # Widget daha önce oluşturulmuş olsa bile index parametresine güvenmeyiz;
+    # seçilen noktanın etiketini widget state'e yazıyoruz.
+    if selected_map_id and selected_map_id in set(data['_Map_ID'].astype(str)):
+        old_click = str(st.session_state.get(click_state_key, '') or '')
+        if selected_map_id != old_click:
+            selected_idx = int(data.index[data['_Map_ID'].astype(str) == selected_map_id][0])
+            selected_label_from_map = labels[selected_idx]
+            st.session_state[click_state_key] = selected_map_id
+            st.session_state[active_id_key] = selected_map_id
+            st.session_state[select_key] = selected_label_from_map
+
+    # Mod/kategori değişince daha önceki seçim artık listede yoksa ilk satıra dön.
+    if st.session_state.get(select_key) not in labels:
+        st.session_state[select_key] = labels[0]
+        st.session_state[active_id_key] = str(data.iloc[0]['_Map_ID'])
+
+    st.caption('Haritada bir noktayı seçebilir veya aşağıdaki listeden gelişmeyi açabilirsiniz.')
+    selected_label = st.selectbox(
+        'Haritadaki gelişme',
+        labels,
+        key=select_key,
+    )
+    try:
+        selected_idx = labels.index(selected_label)
+    except ValueError:
+        selected_idx = 0
+
+    selected_row = data.iloc[selected_idx]
+    selected_id = str(selected_row['_Map_ID'])
+    st.session_state[active_id_key] = selected_id
+    _v123_render_map_detail(selected_row.to_dict())
+
+    if unmapped:
+        st.caption(
+            f'ℹ️ {unmapped} tekil gelişmede güvenilir şehir/ülke ifadesi bulunmadığı için haritaya nokta eklenmedi.'
+        )
+    st.caption(
+        'Konum çıkarımı yalnız açık metin eşleşmesine dayanır; tahminî geocoding yapılmaz. '
+        'Bu yaklaşım sunumda yanlış ülke/şehir göstermeyi öncelikli olarak engeller.'
+    )
+
+# ============================================================
+# /V124 HARİTA NOKTA SEÇİMİ
+# ============================================================
+
+
+# ============================================================
 # V122 — YÖNETİCİ ÖZETİ + TEYİT + TÜRKİYE BAĞLANTILI GLOBAL
 # 1) Ana başlık: STB-Açık Kaynak Tarama Merkezi
 # 2) Ana haber görünümüne ayrı "Global Sanayi / Teknoloji" bölümü eklendi.
