@@ -8641,10 +8641,19 @@ def _section_select_table(section_key, data, columns, height=420):
         return pd.DataFrame()
 
     tbl=_v63_add_status_badges(data.copy())
+    tbl=_v122_add_source_verification(tbl)
+    columns=list(columns)
     if 'Durum' not in columns:
-        columns=list(columns)
         insert_at=columns.index('Başlık')+1 if 'Başlık' in columns else 0
         columns.insert(insert_at,'Durum')
+    if 'Kaynak Teyidi' not in columns and 'Kaynak Teyidi' in tbl.columns:
+        if 'Kaynak' in columns:
+            insert_at=columns.index('Kaynak')+1
+        elif 'Başlık' in columns:
+            insert_at=columns.index('Başlık')
+        else:
+            insert_at=0
+        columns.insert(insert_at,'Kaynak Teyidi')
 
     tbl['_row_key']=_v73_row_keys(tbl).values
     selected_map=st.session_state.section_selections.get(section_key,{})
@@ -8667,6 +8676,7 @@ def _section_select_table(section_key, data, columns, height=420):
                 'Risk':st.column_config.NumberColumn('Risk',format='%d/100'),
                 'Risk_Skoru':st.column_config.NumberColumn('Risk',format='%d/100'),
                 'Durum':st.column_config.TextColumn('Durum',width='large'),
+                'Kaynak Teyidi':st.column_config.TextColumn('Kaynak Teyidi',width='medium'),
                 '_row_key':None
             },
             disabled=[c for c in show_cols if c!='Seç']+['_row_key'],
@@ -13686,7 +13696,270 @@ if st.session_state.get("_report_engine_version") != _V119_ENGINE_VERSION:
 
 
 # ============================================================
-# V121 — GLOBAL KRONOLOJİ GÖRÜNÜMÜ
+# V122 — YÖNETİCİ ÖZETİ / KAYNAK TEYİDİ / TÜRKİYE BAĞLANTILI GLOBAL
+# V121 kararlı çekirdeği korunur; yalnız görünüm ve karar-destek katmanı eklenir.
+# ============================================================
+
+_V122_TURKEY_GLOBAL_TERMS = (
+    'turkey', 'türkiye', 'turkiye', 'turkish', 'ankara', 'istanbul',
+    'aselsan', 'tusaş', 'tusas', 'roketsan', 'havelsan', 'baykar',
+    'bayraktar', 'togg', 'kaan', 'kizilelma', 'kızılelma', 'hisar', 'siper',
+    'turkish aerospace', 'turkish defense', 'turkish defence',
+    'turkish industry', 'turkish manufacturing', 'turkish technology'
+)
+
+
+def _v122_source_verification_lookup():
+    'Mevcut taramayı URL/başlık üzerinden tek kez indeksler.'
+    rows = st.session_state.get('rows') or []
+    scan_id = st.session_state.get('current_scan_id')
+    cache_key = (scan_id, len(rows))
+    cached = st.session_state.get('_v122_verification_lookup')
+    if cached and cached.get('key') == cache_key:
+        return cached.get('lookup', {})
+
+    lookup = {}
+    if rows:
+        rdf = pd.DataFrame(rows)
+        for _, r in rdf.iterrows():
+            try:
+                source_count = int(r.get('Olay_Kaynak_Sayisi', 1) or 1)
+            except Exception:
+                source_count = 1
+            verification = str(r.get('Doğrulama', '') or '')
+            try:
+                official = bool(_is_official_radar_row(r)) or 'resm' in norm(verification)
+            except Exception:
+                official = 'resm' in norm(verification)
+            payload = (max(1, source_count), verification, official)
+            url = str(r.get('URL', '') or '').strip()
+            title = title_key(r.get('Başlık', ''))
+            if url:
+                old_payload = lookup.get('U:' + url)
+                if old_payload is None or payload[0] > old_payload[0]:
+                    lookup['U:' + url] = payload
+            if title:
+                old_payload = lookup.get('T:' + title)
+                if old_payload is None or payload[0] > old_payload[0]:
+                    lookup['T:' + title] = payload
+
+    st.session_state['_v122_verification_lookup'] = {'key': cache_key, 'lookup': lookup}
+    return lookup
+
+
+def _v122_verification_payload(row):
+    'Satır için kaynak sayısı, doğrulama etiketi ve resmî kaynak durumunu döndürür.'
+    def _int_value(value, default=1):
+        try:
+            if pd.isna(value):
+                return default
+        except Exception:
+            pass
+        try:
+            return max(default, int(float(value)))
+        except Exception:
+            return default
+
+    source_count = 1
+    for key in ('Kaynak Sayısı', 'Olay_Kaynak_Sayisi', 'source_count'):
+        if key in row and str(row.get(key, '')).strip() not in ('', 'nan', 'None'):
+            source_count = _int_value(row.get(key), 1)
+            break
+
+    verification = str(row.get('Doğrulama', row.get('verification', '')) or '')
+    try:
+        official = bool(_is_official_radar_row(row))
+    except Exception:
+        official = 'resm' in norm(verification)
+
+    lookup = _v122_source_verification_lookup()
+    candidates = []
+    url = str(row.get('URL', row.get('url', '')) or '').strip()
+    title = title_key(row.get('Başlık', row.get('title', '')))
+    if url:
+        candidates.append(lookup.get('U:' + url))
+    if title:
+        candidates.append(lookup.get('T:' + title))
+    candidates = [x for x in candidates if x]
+    if candidates:
+        best = max(candidates, key=lambda x: x[0])
+        source_count = max(source_count, int(best[0] or 1))
+        if not verification:
+            verification = str(best[1] or '')
+        official = official or bool(best[2])
+
+    return source_count, verification, official
+
+
+def _v122_source_verification_badge(row):
+    'Her panelde tek bakışta anlaşılır kaynak-teyit rozeti üretir.'
+    source_count, verification, official = _v122_verification_payload(row)
+    vrank = _verification_rank(verification)
+    if official and source_count >= 2:
+        return f'🏛️✅ Resmî + {source_count} kaynak'
+    if official:
+        return '🏛️ Resmî kaynak'
+    if source_count >= 4:
+        return f'✅ Güçlü teyit · {source_count} kaynak'
+    if source_count >= 2:
+        return f'🟢 Çoklu kaynak · {source_count}'
+    if vrank >= 3:
+        return '🟡 Güçlü tek kaynak'
+    return '⚪ Tek kaynak'
+
+
+def _v122_add_source_verification(data):
+    if data is None or data.empty:
+        return data
+    out = data.copy()
+    out['Kaynak Teyidi'] = out.apply(_v122_source_verification_badge, axis=1)
+    return out
+
+
+def _v122_is_global_row(row):
+    group = str(row.get('Kaynak_Grubu', '') or '')
+    mode = str(row.get('_mode', '') or '').lower()
+    return group.startswith('🌍') or mode == 'global'
+
+
+def _v122_is_turkey_linked_global(row):
+    if not _v122_is_global_row(row):
+        return False
+    text = norm(
+        f"{row.get('Başlık', '')} {row.get('İçerik_Özeti', '')} "
+        f"{row.get('Kaynak', '')} {row.get('Kategori', '')}"
+    )
+    return any(term in text for term in _V122_TURKEY_GLOBAL_TERMS)
+
+
+def _v122_unique_event_count(data):
+    if data is None or data.empty:
+        return 0
+    if 'Olay_ID' in data.columns:
+        s = data['Olay_ID'].fillna('').astype(str)
+        nonempty = s[s.str.len() > 0]
+        if not nonempty.empty:
+            return int(nonempty.nunique())
+    if 'Başlık' in data.columns:
+        return int(data['Başlık'].fillna('').astype(str).map(title_key).nunique())
+    return int(len(data))
+
+
+def _v122_manager_metrics(df):
+    'Yönetici kartları için mevcut taramadaki son 24 saati olay bazlı özetler.'
+    if df is None or df.empty:
+        return {
+            'news': 0, 'events': 0, 'important': 0, 'high_risk': 0,
+            'critical': 0, 'global_strategic': 0, 'turkey_global': 0
+        }
+
+    x = df.copy()
+    x['Tarih_dt'] = pd.to_datetime(x.get('Tarih_dt'), utc=True, errors='coerce')
+    now = pd.Timestamp.now(tz='UTC')
+    cutoff = now - pd.Timedelta(hours=24)
+    x24 = x[(x['Tarih_dt'].isna()) | (x['Tarih_dt'] >= cutoff)].copy()
+
+    events = _v122_unique_event_count(x24)
+    risk_series = x24.get('Risk_Durumu', pd.Series('', index=x24.index)).fillna('').astype(str)
+    high = x24[risk_series.eq('Yüksek Risk')].copy()
+    high_risk = _v122_unique_event_count(high)
+
+    critical_ids = set()
+    for idx, row in x24.iterrows():
+        try:
+            if critical_industrial_incident(row.get('Başlık', ''), row.get('İçerik_Özeti', '')):
+                event_id = str(row.get('Olay_ID') or title_key(row.get('Başlık', '')) or idx)
+                critical_ids.add(event_id)
+        except Exception:
+            pass
+
+    global_df = x24[x24.apply(_v122_is_global_row, axis=1)].copy()
+    turkey_global_df = x24[x24.apply(_v122_is_turkey_linked_global, axis=1)].copy()
+
+    important = 0
+    try:
+        n_events = max(10, min(300, events or 10))
+        value_tbl = _v52_event_value_table(x24, n=n_events)
+        if not value_tbl.empty:
+            scores = pd.to_numeric(value_tbl['Değer_Skoru'], errors='coerce').fillna(0)
+            important = int((scores >= 55).sum())
+    except Exception:
+        important = high_risk
+
+    return {
+        'news': int(len(x24)),
+        'events': int(events),
+        'important': int(important),
+        'high_risk': int(high_risk),
+        'critical': int(len(critical_ids)),
+        'global_strategic': int(_v122_unique_event_count(global_df)),
+        'turkey_global': int(_v122_unique_event_count(turkey_global_df)),
+    }
+
+
+def _v122_render_manager_summary(df):
+    metrics = _v122_manager_metrics(df)
+    st.markdown('## 🧭 Yönetici Özeti')
+    st.caption('Son 24 saatin yönetici bakışı: hacim, tekil olay, önem, risk ve global stratejik görünüm.')
+    st.markdown(
+        '''
+        <style>
+        .stb-manager-card {
+            border: 1px solid rgba(120,130,150,.20);
+            border-radius: 18px;
+            padding: 18px 18px 15px 18px;
+            min-height: 132px;
+            background: linear-gradient(135deg, rgba(31,41,55,.06), rgba(59,130,246,.08));
+            box-shadow: 0 8px 24px rgba(15,23,42,.08);
+            transition: transform .18s ease, box-shadow .18s ease;
+            margin-bottom: 10px;
+        }
+        .stb-manager-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 12px 28px rgba(15,23,42,.13);
+        }
+        .stb-manager-icon {font-size: 25px; line-height: 1; margin-bottom: 10px;}
+        .stb-manager-value {font-size: 34px; font-weight: 800; line-height: 1.05; letter-spacing: -0.8px;}
+        .stb-manager-label {font-size: 14px; font-weight: 700; margin-top: 7px;}
+        .stb-manager-sub {font-size: 11px; opacity: .72; margin-top: 6px; line-height: 1.25;}
+        </style>
+        ''',
+        unsafe_allow_html=True,
+    )
+
+    cards = [
+        ('📰', metrics['news'], 'Son 24 Saat Haber', 'Tarama havuzundaki güncel haber hacmi'),
+        ('🧩', metrics['events'], 'Tekil Olay', 'Aynı gelişmenin tekrarları tekilleştirilmiştir'),
+        ('⭐', metrics['important'], 'Önemli Gelişme', 'Değer skoru 55 ve üzerindeki tekil gelişmeler'),
+        ('🚨', metrics['high_risk'], 'Yüksek Risk', 'Yüksek risk sınıfındaki tekil olaylar'),
+        ('🏭', metrics['critical'], 'Kritik Sanayi Olayı', 'Yangın / patlama gibi kritik endüstriyel olaylar'),
+        ('🌍', metrics['global_strategic'], 'Global Stratejik Gelişme', f"Türkiye bağlantılı: {metrics['turkey_global']}"),
+    ]
+
+    for start in (0, 3):
+        cols = st.columns(3)
+        for col, card in zip(cols, cards[start:start + 3]):
+            icon, value, label, sub = card
+            with col:
+                card_html = (
+                    '<div class="stb-manager-card">'
+                    f'<div class="stb-manager-icon">{icon}</div>'
+                    f'<div class="stb-manager-value">{value}</div>'
+                    f'<div class="stb-manager-label">{label}</div>'
+                    f'<div class="stb-manager-sub">{sub}</div>'
+                    '</div>'
+                )
+                st.markdown(card_html, unsafe_allow_html=True)
+
+    st.caption(
+        'Not: Yönetici Özeti mevcut tarama verisinin son 24 saatlik bölümünü kullanır. '
+        '“Önemli Gelişme” mevcut değer skoru modelinde 55+; global stratejik gelişme ise '
+        'global tarama kaynaklarındaki tekil olay sayısıdır.'
+    )
+
+
+# ============================================================
+# V122 — YÖNETİCİ ÖZETİ + TEYİT + TÜRKİYE BAĞLANTILI GLOBAL
 # 1) Ana başlık: STB-Açık Kaynak Tarama Merkezi
 # 2) Ana haber görünümüne ayrı "Global Sanayi / Teknoloji" bölümü eklendi.
 # 3) V120 global kaynak/tarama mantığı aynen korunur.
@@ -14039,20 +14312,22 @@ else:
             _know_rows.append(_r)
 
         _know_select=pd.DataFrame(_know_rows)
+        _know_select=_v122_add_source_verification(_know_select)
         if 'Seç' not in _know_select.columns:
             _know_select.insert(0,'Seç',False)
 
         _edited_know=st.data_editor(
-            _know_select[['Seç','Tarih','Başlık','İçerik_Özeti','Değer_Skoru',
+            _know_select[['Seç','Tarih','Başlık','Kaynak Teyidi','İçerik_Özeti','Değer_Skoru',
                           'Neden_Değerli','Kaynak_Sayısı','Risk_Skoru','URL']],
             column_config={
                 'Seç':st.column_config.CheckboxColumn('Seç'),
                 'Değer_Skoru':st.column_config.ProgressColumn('Değer Skoru',min_value=0,max_value=100,format='%d/100'),
                 'Risk_Skoru':st.column_config.NumberColumn('Risk',format='%d/100'),
                 'URL':st.column_config.LinkColumn('Haber Linki'),
-                'İçerik_Özeti':st.column_config.TextColumn('Kısa İçerik',width='large')
+                'İçerik_Özeti':st.column_config.TextColumn('Kısa İçerik',width='large'),
+                'Kaynak Teyidi':st.column_config.TextColumn('Kaynak Teyidi',width='medium')
             },
-            disabled=['Tarih','Başlık','İçerik_Özeti','Değer_Skoru','Neden_Değerli',
+            disabled=['Tarih','Başlık','Kaynak Teyidi','İçerik_Özeti','Değer_Skoru','Neden_Değerli',
                       'Kaynak_Sayısı','Risk_Skoru','URL'],
             hide_index=True,use_container_width=True,
             height=min(480,100+62*len(_know_select)),
@@ -14176,6 +14451,7 @@ else:
         total=len(df); negc=int((df.Duygu=='Negatif').sum()); riskc=int((df.Risk_Durumu=='Yüksek Risk').sum()); trc=int(df.Kaynak_Grubu.astype(str).str.startswith('🇹🇷').sum()); grc=int(df.Kaynak_Grubu.astype(str).str.startswith('🇬🇷').sum()); events=df['Olay_ID'].nunique()
         a,b,c,d,e,f=st.columns(6); a.metric('Toplam',total); b.metric('Olay',events); c.metric('Negatif',negc); d.metric('Yüksek Risk',riskc); e.metric('🇹🇷 Türk',trc); f.metric('🇬🇷 Yunan',grc)
 
+        _v122_render_manager_summary(df)
 
         # ---------------------------------------------------------
         # V34 — VARDİYA BAŞLANGIÇ ÖZETİ
@@ -14393,7 +14669,7 @@ else:
 
         view=st.radio(
             'Görünüm',
-            ['📰 Kronolojik','⚠️ Negatif','🚨 Yüksek Risk','🇹🇷 Türk','🇬🇷 Yunan','🌍 Global Sanayi / Teknoloji','🧩 Olaylar','📈 Trend / Analiz','⭐ Takip Listesi'],
+            ['📰 Kronolojik','⚠️ Negatif','🚨 Yüksek Risk','🇹🇷 Türk','🇬🇷 Yunan','🇹🇷🌍 Türkiye Bağlantılı Global','🌍 Global Sanayi / Teknoloji','🧩 Olaylar','📈 Trend / Analiz','⭐ Takip Listesi'],
             horizontal=True,
             key='main_view'
         )
@@ -14425,8 +14701,9 @@ else:
 
             page_df['İçerik_Özeti']=page_df['İçerik_Özeti'].astype(str).str.slice(0,220)
             page_df=_v63_add_status_badges(page_df)
+            page_df=_v122_add_source_verification(page_df)
             chron_cols=[
-                'Seç','Tarih','Kaynak_Grubu','Kaynak','Kaynak Sayısı','Haber Sayısı',
+                'Seç','Tarih','Kaynak_Grubu','Kaynak','Kaynak Teyidi','Kaynak Sayısı','Haber Sayısı',
                 'Kategori','Başlık','Durum','İçerik_Özeti','Duygu','Risk_Skoru',
                 'Risk_Durumu','Kaynak_Güvenilirliği','Doğrulama','URL'
             ]
@@ -14448,7 +14725,8 @@ else:
                         'Risk_Skoru':st.column_config.NumberColumn('Risk',format='%d/100'),
                         'Kaynak Sayısı':st.column_config.NumberColumn('Kaynak',format='%d'),
                         'Haber Sayısı':st.column_config.NumberColumn('Haber',format='%d'),
-                        'Durum':st.column_config.TextColumn('Durum',width='large')
+                        'Durum':st.column_config.TextColumn('Durum',width='large'),
+                        'Kaynak Teyidi':st.column_config.TextColumn('Kaynak Teyidi',width='medium')
                     },
                     disabled=[x for x in chron_cols if x!='Seç'],
                     hide_index=True,
@@ -14528,7 +14806,7 @@ else:
                             st.info('Bu olay için ayrıntılı kaynak kaydı bulunamadı.')
                         else:
                             st.dataframe(
-                                _event_sources[['Tarih','Kaynak','Başlık','İçerik_Özeti','URL']].head(20),
+                                _v122_add_source_verification(_event_sources)[['Tarih','Kaynak','Kaynak Teyidi','Başlık','İçerik_Özeti','URL']].head(20),
                                 column_config={
                                     'URL':st.column_config.LinkColumn('Haber Linki'),
                                     'İçerik_Özeti':st.column_config.TextColumn('Kısa İçerik',width='large')
@@ -14569,6 +14847,32 @@ else:
                 height=600
             )
 
+        elif view=='🇹🇷🌍 Türkiye Bağlantılı Global':
+            turkey_global_df=df[df.apply(_v122_is_turkey_linked_global,axis=1)].copy()
+            if turkey_global_df.empty:
+                st.info(
+                    'Seçilen zaman aralığında global kaynaklarda Türkiye ile doğrudan bağlantılı '
+                    'sanayi / teknoloji gelişmesi bulunamadı.'
+                )
+            else:
+                turkey_global_df=turkey_global_df.sort_values(
+                    'Tarih_dt',ascending=False,na_position='last'
+                )
+                st.caption(
+                    f'{len(turkey_global_df)} haber · {_v122_unique_event_count(turkey_global_df)} tekil gelişme. '
+                    'Türkiye, Türk şirketleri, savunma/havacılık programları veya stratejik sanayi-teknoloji '
+                    'başlıklarıyla doğrudan bağlantılı global yayınlar.'
+                )
+                _section_select_table(
+                    'turkey_linked_global_view',
+                    turkey_global_df,
+                    [
+                        'Tarih','Kaynak','Kategori','Başlık','İçerik_Özeti',
+                        'Risk_Skoru','Duygu','Kaynak_Güvenilirliği','Doğrulama','URL'
+                    ],
+                    height=650
+                )
+
         elif view=='🌍 Global Sanayi / Teknoloji':
             global_df=df[
                 df.Kaynak_Grubu.astype(str).eq('🌍 Global Sanayi / Teknoloji')
@@ -14600,7 +14904,12 @@ else:
 
         elif view=='🧩 Olaylar':
             ev=build_event_summary(df)
-            st.dataframe(ev,hide_index=True,use_container_width=True,height=480)
+            ev=_v122_add_source_verification(ev)
+            st.dataframe(
+                ev,
+                column_config={'Kaynak Teyidi':st.column_config.TextColumn('Kaynak Teyidi',width='medium')},
+                hide_index=True,use_container_width=True,height=480
+            )
             chosen=st.selectbox('Olay zaman çizelgesini göster:',ev['Olay_ID'].tolist() if not ev.empty else [])
             if chosen:
                 g=df[df.Olay_ID==chosen].sort_values('Tarih_dt',ascending=True)
@@ -14664,6 +14973,7 @@ else:
             # -----------------------------------------------------
             basket_view=basket[['id','news_time','source','category','title','risk_score','risk_status','url']].copy()
             basket_view=_v63_add_status_badges(basket_view)
+            basket_view=_v122_add_source_verification(basket_view)
 
             # A) Sadece silme işlemi için checkbox.
             delete_view=basket_view.copy()
@@ -14675,7 +14985,8 @@ else:
                         'Sil':st.column_config.CheckboxColumn('Sil'),
                         'url':st.column_config.LinkColumn('Haber Linki'),
                         'risk_score':st.column_config.NumberColumn('Risk',format='%d/100'),
-                        'Durum':st.column_config.TextColumn('Durum',width='large')
+                        'Durum':st.column_config.TextColumn('Durum',width='large'),
+                        'Kaynak Teyidi':st.column_config.TextColumn('Kaynak Teyidi',width='medium')
                     },
                     disabled=[c for c in delete_view.columns if c!='Sil'],
                     hide_index=True,use_container_width=True,
@@ -14839,6 +15150,7 @@ else:
             # -----------------------------------------------------
             osint_view=osint_basket[['id','news_time','source','category','title','risk_score','risk_status','url']].copy()
             osint_view=_v63_add_status_badges(osint_view)
+            osint_view=_v122_add_source_verification(osint_view)
 
             # A) Silme işlemi ayrı checkbox formunda kalır.
             delete_osint_view=osint_view.copy()
@@ -14850,7 +15162,8 @@ else:
                         'Sil':st.column_config.CheckboxColumn('Sil'),
                         'url':st.column_config.LinkColumn('Haber Linki'),
                         'risk_score':st.column_config.NumberColumn('Risk',format='%d/100'),
-                        'Durum':st.column_config.TextColumn('Durum',width='large')
+                        'Durum':st.column_config.TextColumn('Durum',width='large'),
+                        'Kaynak Teyidi':st.column_config.TextColumn('Kaynak Teyidi',width='medium')
                     },
                     disabled=[c for c in delete_osint_view.columns if c!='Sil'],
                     hide_index=True,use_container_width=True,
@@ -15001,12 +15314,14 @@ else:
         else:
             _pv=_pb[['id','news_time','source','title','url']].copy()
             _pv=_v63_add_status_badges(_pv)
+            _pv=_v122_add_source_verification(_pv)
             _pv.insert(0,'Seç',False)
             with st.form('v81_presentation_basket_form',clear_on_submit=False):
                 _ped=st.data_editor(_pv,column_config={
                     'Seç':st.column_config.CheckboxColumn('Seç'),
                     'url':st.column_config.LinkColumn('Haber Linki'),
-                    'Durum':st.column_config.TextColumn('Durum',width='large')
+                    'Durum':st.column_config.TextColumn('Durum',width='large'),
+                    'Kaynak Teyidi':st.column_config.TextColumn('Kaynak Teyidi',width='medium')
                 },
                     disabled=[c for c in _pv.columns if c!='Seç'],hide_index=True,use_container_width=True,height=min(420,80+36*len(_pv)))
                 p1,p2,p3,p4=st.columns(4)
