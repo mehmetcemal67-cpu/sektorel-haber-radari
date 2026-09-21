@@ -20,7 +20,7 @@ from docx.oxml.ns import qn
 
 
 # ============================================================
-# V104 — MEVCUT BÖLÜMLERİ OLGUNLAŞTIRMA
+# V119 FINAL — V104+ çekirdeği / performans ve rapor kalite katmanı
 # 1) Aynı olayın daha güçlü tekilleştirilmesi
 # 2) Durum bilgisinin URL'ye değil olay kimliğine de dayanması
 # 3) "Dünden Beri Ne Değişti?" yalnız gerçek/maddi değişiklikler
@@ -12321,6 +12321,1254 @@ if st.session_state.get('_report_engine_version') != _V118_ENGINE_VERSION:
 # /V118
 # ============================================================
 
+# ============================================================
+# V119 — FINAL QUALITY / PERFORMANCE ENGINE
+# ============================================================
+# Goals
+# -----
+# 1. Vardiya Başlangıç Özeti must not block normal page rendering.
+# 2. "Dünden Beri Ne Değişti?" uses an O(n) / indexed comparison path.
+# 3. Report generation uses a common evidence-enrichment pipeline.
+# 4. Weak, headline-only reports are rejected instead of producing filler text.
+# 5. Turkish surface normalization must not corrupt numeric suffixes
+#    (e.g. 476.934'e -> 476.934'E).
+# ============================================================
+
+_V119_ENGINE_VERSION = "V119-FINAL-2026-09-21-A"
+
+
+class ReportQualityError(ValueError):
+    """Raised when there is not enough verified text to build a proper report."""
+
+
+def _v119_turkish_lower_char(char):
+    table = str.maketrans({"I": "ı", "İ": "i"})
+    return str(char).translate(table).lower()
+
+
+def _v119_fix_surface(text):
+    """Normalize report prose without damaging numbers, units or Turkish suffixes."""
+    value = _clean_note_text(text)
+    if not value:
+        return ""
+
+    value = re.sub(r"\s+([,.;:!?])", r"\1", value)
+    value = re.sub(r"([({\[])\s+", r"\1", value)
+    value = re.sub(r"\s+([)}\]])", r"\1", value)
+    value = re.sub(r"\s+(['’])", r"\1", value)
+    value = re.sub(r"(['’])\s+", r"\1", value)
+    value = re.sub(r"\s{2,}", " ", value).strip()
+
+    # A previous surface normalizer treated every period as a sentence boundary,
+    # which turned 476.934'e into 476.934'E and 185.513 adet into 185.513 Adet.
+    value = re.sub(
+        r"(?<=\d)(['’])([A-ZÇĞİÖŞÜ])\b",
+        lambda match: match.group(1) + _v119_turkish_lower_char(match.group(2)),
+        value,
+    )
+    value = re.sub(
+        r"(?<=\d\.\d{3})\s+(Adet|Olarak|Oranında|Seviyesinde|İse)\b",
+        lambda match: " " + match.group(1).lower(),
+        value,
+        flags=re.IGNORECASE,
+    )
+
+    entities = (
+        ("türkiye", "Türkiye"),
+        ("rusya", "Rusya"),
+        ("ukrayna", "Ukrayna"),
+        ("amerika birleşik devletleri", "Amerika Birleşik Devletleri"),
+        ("avrupa birliği", "Avrupa Birliği"),
+        ("google", "Google"),
+        ("apple", "Apple"),
+        ("microsoft", "Microsoft"),
+        ("openai", "OpenAI"),
+        ("anthropic", "Anthropic"),
+        ("meta", "Meta"),
+    )
+    for old, new in entities:
+        value = re.sub(
+            rf"(?<!\w){re.escape(old)}(?!\w)",
+            new,
+            value,
+            flags=re.IGNORECASE,
+        )
+    value = re.sub(r"(?<!\w)aI(?!\w)", "AI", value)
+
+    # Remove typical by-line remnants that were observed in generated documents.
+    value = re.sub(
+        r"\b[A-ZÇĞİÖŞÜ]{2,}(?:\s+[A-ZÇĞİÖŞÜ]{2,}){1,4}\s*[-–—]\s*"
+        r"(?=[A-ZÇĞİÖŞÜ][a-zçğıöşü])",
+        "",
+        value,
+    )
+
+    # Capitalize only real sentence starts. Numeric decimal/thousand separators
+    # are intentionally not treated as boundaries.
+    value = re.sub(
+        r"(^|(?<=[!?])\s+|(?<=\.)\s+)([a-zçğıöşü])",
+        lambda match: match.group(1) + match.group(2).upper(),
+        value,
+    )
+    return re.sub(r"\s{2,}", " ", value).strip()
+
+
+# All later V117/V118 helpers resolve this name dynamically.
+_v118_fix_surface = _v119_fix_surface
+
+
+def _v119_direct_scan_time(scan_id):
+    """Read only scan metadata; do not load a whole snapshot for one timestamp."""
+    if not scan_id:
+        return None
+    try:
+        with _history_connect() as conn:
+            row = conn.execute(
+                "SELECT scanned_at FROM scans WHERE scan_id=? LIMIT 1",
+                (int(scan_id),),
+            ).fetchone()
+        return str(row[0]) if row else None
+    except Exception:
+        return None
+
+
+def _shift_baseline(current_scan_id=None):
+    """V119 lightweight shift baseline."""
+    mark = _latest_shift_mark()
+    if mark:
+        try:
+            timestamp = pd.to_datetime(mark["marked_at"], utc=True)
+            return (
+                timestamp,
+                f"Devir noktası: {mark['marked_at']}",
+                mark.get("scan_id"),
+            )
+        except Exception:
+            pass
+
+    previous_id = _previous_scan_id(current_scan_id)
+    scanned_at = _v119_direct_scan_time(previous_id)
+    if scanned_at:
+        try:
+            return (
+                pd.to_datetime(scanned_at, utc=True),
+                f"Önceki tarama: {scanned_at}",
+                previous_id,
+            )
+        except Exception:
+            pass
+    return None, "Henüz devir noktası yok", None
+
+
+def _v119_current_events(df):
+    """Create one representative row per already-clustered event without reclustering."""
+    columns = [
+        "event_id",
+        "title",
+        "source",
+        "url",
+        "category",
+        "summary",
+        "risk_score",
+        "risk_status",
+        "verification",
+        "source_count",
+    ]
+    if df is None or df.empty:
+        return pd.DataFrame(columns=columns)
+
+    frame = df.copy()
+
+    def series(name, default=""):
+        if name in frame.columns:
+            return frame[name]
+        return pd.Series(default, index=frame.index)
+
+    frame["Tarih_dt"] = pd.to_datetime(
+        series("Tarih_dt"), utc=True, errors="coerce"
+    )
+    frame = frame.sort_values("Tarih_dt", ascending=False, na_position="last")
+    group_column = "Olay_ID" if "Olay_ID" in frame.columns else None
+
+    if group_column:
+        reps = frame.drop_duplicates(group_column, keep="first").copy()
+        risk_values = pd.to_numeric(
+            series("Risk_Skoru", 0), errors="coerce"
+        ).fillna(0)
+        source_values = pd.to_numeric(
+            series("Olay_Kaynak_Sayisi", 1), errors="coerce"
+        ).fillna(1)
+        risk_max = risk_values.groupby(frame[group_column]).max()
+        source_max = source_values.groupby(frame[group_column]).max()
+        reps["_risk_max"] = reps[group_column].map(risk_max).fillna(0)
+        reps["_source_max"] = reps[group_column].map(source_max).fillna(1)
+        event_ids = reps[group_column].astype(str)
+    else:
+        reps = frame.copy()
+        reps["_risk_max"] = pd.to_numeric(
+            series("Risk_Skoru", 0), errors="coerce"
+        ).fillna(0)
+        reps["_source_max"] = pd.to_numeric(
+            series("Olay_Kaynak_Sayisi", 1), errors="coerce"
+        ).fillna(1)
+        event_ids = pd.Series(
+            [f"ROW-{index}" for index in reps.index], index=reps.index
+        )
+
+    def rep_series(name, default=""):
+        if name in reps.columns:
+            return reps[name].fillna(default).astype(str)
+        return pd.Series(str(default), index=reps.index)
+
+    return pd.DataFrame(
+        {
+            "event_id": event_ids.values,
+            "title": rep_series("Başlık").values,
+            "source": rep_series("Kaynak").values,
+            "url": rep_series("URL").values,
+            "category": rep_series("Kategori").values,
+            "summary": rep_series("İçerik_Özeti").values,
+            "risk_score": reps["_risk_max"].astype(int).values,
+            "risk_status": rep_series("Risk_Durumu").values,
+            "verification": rep_series("Doğrulama").values,
+            "source_count": reps["_source_max"].astype(int).values,
+        }
+    )
+
+
+def _v119_previous_events(scan_id):
+    """Load only fields required for indexed previous-scan comparison."""
+    if not scan_id:
+        return pd.DataFrame()
+    key = f"v119_prev:{scan_id}"
+    cache = st.session_state.setdefault("_v119_previous_event_cache", {})
+    if key in cache:
+        return cache[key].copy()
+    try:
+        with _history_connect() as conn:
+            previous = pd.read_sql_query(
+                """
+                SELECT
+                    event_id, title, source, url, category,
+                    substr(summary, 1, 2400) AS summary,
+                    risk_score, risk_status, verification, source_count,
+                    tokens_json
+                FROM event_snapshots
+                WHERE scan_id=?
+                """,
+                conn,
+                params=(int(scan_id),),
+            )
+    except Exception:
+        previous = pd.DataFrame()
+    cache.clear()
+    cache[key] = previous.copy()
+    return previous
+
+
+def _v119_candidate_indices(tokens, token_index, limit=14):
+    """Use the rarest title tokens first to keep candidate sets very small."""
+    ranked = sorted(
+        (token for token in tokens if token in token_index),
+        key=lambda token: len(token_index[token]),
+    )
+    candidates = set()
+    for token in ranked[:6]:
+        candidates.update(token_index[token])
+        if len(candidates) >= limit:
+            break
+    if len(candidates) <= limit:
+        return candidates
+    return set(sorted(candidates)[:limit])
+
+
+def _compare_since_previous(df, current_scan_id=None):
+    """V119 indexed change comparison; avoids heavy event reclustering on page render."""
+    columns = [
+        "Ne Değişti?",
+        "Tür",
+        "Değişim",
+        "Başlık",
+        "Kaynak",
+        "Kategori",
+        "Risk",
+        "Önceki Risk",
+        "Kaynak Sayısı",
+        "URL",
+    ]
+    cache_key = _v113_scan_key(df, current_scan_id) + ":v119"
+    cache = st.session_state.setdefault("_v119_compare_cache", {})
+    if cache_key in cache:
+        output, previous_id, previous_time = cache[cache_key]
+        return output.copy(), previous_id, previous_time
+
+    current = _v119_current_events(df)
+    previous_id = _previous_scan_id(current_scan_id)
+    previous = _v119_previous_events(previous_id)
+    previous_time = _v119_direct_scan_time(previous_id)
+
+    if current.empty:
+        return pd.DataFrame(columns=columns), None, None
+    if previous.empty:
+        result = pd.DataFrame(columns=columns)
+        cache.clear()
+        cache[cache_key] = (result.copy(), previous_id, previous_time)
+        return result, previous_id, previous_time
+
+    previous_records = []
+    token_index = {}
+    url_index = {}
+    title_index = {}
+    for index, row in previous.iterrows():
+        record = row.to_dict()
+        try:
+            tokens = set(json.loads(record.get("tokens_json") or "[]"))
+        except Exception:
+            tokens = set(_history_tokens(record.get("title", "")))
+        if not tokens:
+            tokens = set(_history_tokens(record.get("title", "")))
+        record["_tokens"] = tokens
+        previous_records.append(record)
+        record_index = len(previous_records) - 1
+        for token in tokens:
+            token_index.setdefault(token, set()).add(record_index)
+        url = str(record.get("url") or "").strip()
+        if url:
+            url_index.setdefault(url, set()).add(record_index)
+        key = title_key(record.get("title", ""))
+        if key:
+            title_index.setdefault(key, set()).add(record_index)
+
+    changes = []
+    for _, row in current.iterrows():
+        current_record = row.to_dict()
+        title = current_record.get("title", "")
+        summary = current_record.get("summary", "")
+        url = str(current_record.get("url") or "").strip()
+        title_tokens = set(_history_tokens(title))
+
+        candidates = set()
+        if url:
+            candidates.update(url_index.get(url, set()))
+        current_title_key = title_key(title)
+        if current_title_key:
+            candidates.update(title_index.get(current_title_key, set()))
+        candidates.update(
+            _v119_candidate_indices(title_tokens, token_index, limit=14)
+        )
+
+        best = None
+        best_similarity = 0.0
+        for candidate_index in candidates:
+            previous_record = previous_records[candidate_index]
+            if url and url == str(previous_record.get("url") or ""):
+                similarity = 1.0
+            elif current_title_key and current_title_key == title_key(
+                previous_record.get("title", "")
+            ):
+                similarity = 0.98
+            else:
+                previous_tokens = previous_record.get("_tokens", set())
+                union = len(title_tokens | previous_tokens)
+                jaccard = (
+                    len(title_tokens & previous_tokens) / union if union else 0.0
+                )
+                similarity = jaccard
+                if len(title_tokens & previous_tokens) >= 3:
+                    similarity += 0.12
+            if similarity > best_similarity:
+                best_similarity = similarity
+                best = previous_record
+
+        risk_score = int(current_record.get("risk_score") or 0)
+        if best is None or best_similarity < 0.43:
+            kind = "🆕 YENİ OLAY"
+            previous_risk = "—"
+            difference = (
+                "Bu olaya ilişkin kayıt önceki karşılaştırma taramasında "
+                "bulunmamaktadır."
+            )
+            priority = 100 + risk_score
+        else:
+            comparable = {
+                "title": title,
+                "summary": summary,
+                "risk_score": risk_score,
+                "risk_status": str(current_record.get("risk_status") or ""),
+                "verification": str(current_record.get("verification") or ""),
+                "source_count": int(current_record.get("source_count") or 1),
+            }
+            risk_up, verify_up, material, _, _ = _v104_material_change(
+                best, comparable
+            )
+            if risk_up:
+                kind = "⚠️ RİSK ARTTI"
+                priority = 95 + risk_score
+            elif verify_up:
+                kind = "✅ TEYİT GÜÇLENDİ"
+                priority = 90 + risk_score
+            elif material:
+                kind = "🔄 YENİ BİLGİ"
+                priority = 80 + risk_score
+            else:
+                continue
+            previous_risk = int(best.get("risk_score") or 0)
+            difference = _v109_direct_difference(best, comparable, kind)
+
+        changes.append(
+            {
+                "Ne Değişti?": difference,
+                "Tür": kind,
+                "Değişim": kind,
+                "Başlık": title,
+                "Kaynak": current_record.get("source", ""),
+                "Kategori": current_record.get("category", ""),
+                "Risk": risk_score,
+                "Önceki Risk": previous_risk,
+                "Kaynak Sayısı": int(current_record.get("source_count") or 1),
+                "URL": current_record.get("url", ""),
+                "_priority": priority,
+            }
+        )
+
+    output = pd.DataFrame(changes)
+    if output.empty:
+        output = pd.DataFrame(columns=columns)
+    else:
+        output = output.sort_values(
+            ["_priority", "Risk"], ascending=[False, False]
+        ).drop(columns=["_priority"], errors="ignore")
+        output = output.drop_duplicates(
+            subset=["Tür", "Başlık", "URL"], keep="first"
+        ).reset_index(drop=True)
+        output = output[columns]
+
+    cache.clear()
+    cache[cache_key] = (output.copy(), previous_id, previous_time)
+    return output, previous_id, previous_time
+
+
+def _shift_start_summary(df, current_scan_id=None):
+    """V119 shift summary: all expensive work is cached/precomputed before render."""
+    if df is None or df.empty:
+        return {}, pd.DataFrame(), ""
+
+    key = (
+        _v113_scan_key(df, current_scan_id)
+        + ":"
+        + _v113_shift_mark_key()
+        + ":v119"
+    )
+    cached = _v113_get_cached("shift_summary_v119", key)
+    if cached is not None:
+        stats, top, label = cached
+        return dict(stats), top.copy(), label
+
+    baseline, baseline_label, _ = _shift_baseline(current_scan_id)
+    frame = df.copy()
+    frame["Tarih_dt"] = pd.to_datetime(
+        frame.get("Tarih_dt"), utc=True, errors="coerce"
+    )
+    if baseline is not None:
+        since = frame[
+            frame["Tarih_dt"].isna() | (frame["Tarih_dt"] >= baseline)
+        ].copy()
+    else:
+        since = frame.copy()
+
+    changes, _, _ = _compare_since_previous(df, current_scan_id)
+    if changes.empty:
+        new_events = risk_up = verify_up = 0
+    else:
+        kinds = changes["Tür"].astype(str)
+        new_events = int(kinds.str.contains("YENİ OLAY").sum())
+        risk_up = int(kinds.str.contains("RİSK ARTTI").sum())
+        verify_up = int(kinds.str.contains("TEYİT").sum())
+
+    high_risk = int(
+        (
+            since.get("Risk_Durumu", pd.Series("", index=since.index))
+            == "Yüksek Risk"
+        ).sum()
+    )
+    titles = since.get("Başlık", pd.Series("", index=since.index)).fillna("")
+    summaries = since.get(
+        "İçerik_Özeti", pd.Series("", index=since.index)
+    ).fillna("")
+    osb_count = sum(
+        bool(is_osb_fire(title, summary))
+        for title, summary in zip(titles.astype(str), summaries.astype(str))
+    )
+    top = _v115_fast_shift_top(since, 8)
+    stats = {
+        "new_news": len(since),
+        "new_important_events": new_events,
+        "high_risk": high_risk,
+        "risk_up": risk_up,
+        "verify_up": verify_up,
+        "osb": int(osb_count),
+        "baseline_label": baseline_label,
+    }
+    _v113_set_cached(
+        "shift_summary_v119", key, (dict(stats), top.copy(), baseline_label)
+    )
+    return stats, top, baseline_label
+
+
+def _v119_search_evidence(title, preferred_url=""):
+    """Collect bounded fallback evidence for sources that expose only a headline."""
+    title = _clean_note_text(title)
+    if not title:
+        return []
+
+    cache_key = hashlib.sha1(
+        f"{title}|{preferred_url}".encode("utf-8", "ignore")
+    ).hexdigest()
+    cache = st.session_state.setdefault("_v119_evidence_cache", {})
+    if cache_key in cache:
+        return list(cache[cache_key])
+
+    evidence = []
+
+    def add(text, url="", source="", weight=0):
+        cleaned = _v119_fix_surface(text)
+        if not cleaned or norm(cleaned) == norm(title):
+            return
+        if len(cleaned) < 45:
+            return
+        relevance = _v118_title_relevance(title, cleaned)
+        if relevance < 1.8:
+            return
+        evidence.append(
+            {
+                "text": cleaned,
+                "url": str(url or "").strip(),
+                "source": _clean_note_text(source),
+                "weight": int(weight),
+                "relevance": float(relevance),
+            }
+        )
+
+    # Google News RSS is already part of the application's normal source stack.
+    # It is useful as a fallback because the selected publisher may block scraping.
+    queries = [f'"{title[:210]}"']
+    compact_terms = list(_v117_tokens(title))[:8]
+    if compact_terms:
+        queries.append(" ".join(compact_terms))
+
+    seen_links = set()
+    for query in queries[:2]:
+        try:
+            results = rss(query, timeout=5)[:8]
+        except Exception:
+            results = []
+        for item in results:
+            item_title = _clean_note_text(item.get("title", ""))
+            if _v118_title_relevance(title, item_title) < 2.0:
+                continue
+            add(
+                item.get("snippet", ""),
+                item.get("url", ""),
+                item.get("source", ""),
+                250,
+            )
+            google_url = str(item.get("url") or "").strip()
+            if not google_url or google_url in seen_links:
+                continue
+            seen_links.add(google_url)
+            try:
+                direct_url = _v116_decode_google_news_url(google_url)
+            except Exception:
+                direct_url = ""
+            if direct_url and _v116_valid_direct_url(direct_url):
+                page = _v117_fetch_clean_page(direct_url, title)
+                add(
+                    page.get("text", ""),
+                    direct_url,
+                    page.get("source", "") or item.get("source", ""),
+                    700,
+                )
+
+    # Optional DDG package path, if available on the deployment.
+    try:
+        for result in ddgs_text(f'"{title[:210]}"')[:8]:
+            add(
+                result.get("body", ""),
+                result.get("href", "") or result.get("url", ""),
+                result.get("title", ""),
+                300,
+            )
+    except Exception:
+        pass
+
+    # Existing HTML-search fallback. Fetch only a few highly relevant pages.
+    try:
+        for url in _v118_search_urls(title, preferred_url)[:3]:
+            page = _v117_fetch_clean_page(url, title)
+            add(page.get("text", ""), url, page.get("source", ""), 550)
+    except Exception:
+        pass
+
+    # Existing search snippets are cheap and can rescue blocked publisher pages.
+    try:
+        for snippet in _v117_search_snippets(title, preferred_url)[:4]:
+            add(snippet, "", "", 180)
+    except Exception:
+        pass
+
+    evidence.sort(
+        key=lambda item: (
+            item["weight"],
+            item["relevance"],
+            len(item["text"]),
+        ),
+        reverse=True,
+    )
+    unique = []
+    seen = set()
+    for item in evidence:
+        key = title_key(item["text"])
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(item)
+        if len(unique) >= 8:
+            break
+
+    cache.clear()
+    cache[cache_key] = list(unique)
+    return unique
+
+
+_v119_article_detail_base = article_detail
+
+
+def _v119_strip_title_echo(title, sentence):
+    """Remove a headline or colon-suffix repeated at the start of article text."""
+    clean_title = _clean_note_text(title)
+    clean_sentence = _clean_note_text(sentence)
+    segments = [clean_title]
+    if ':' in clean_title:
+        segments.append(clean_title.split(':', 1)[1].strip())
+    for separator in (' - ', ' – ', ' — '):
+        if separator in clean_title:
+            segments.append(clean_title.split(separator, 1)[0].strip())
+    for segment in sorted(set(segments), key=len, reverse=True):
+        if len(segment) < 24:
+            continue
+        pattern = r'^\s*' + r'\s+'.join(
+            re.escape(part) for part in segment.split()
+        )
+        match = re.match(pattern, clean_sentence, flags=re.IGNORECASE)
+        if match:
+            remainder = clean_sentence[match.end():].lstrip(' .;:–—-')
+            if len(remainder) >= 30:
+                return remainder
+    return clean_sentence
+
+
+def _v119_fact_texts(title, body, limit=12):
+    """Return de-duplicated, formal, event-related factual sentences."""
+    facts = []
+    seen_tokens = []
+    for candidate in _v118_strict_facts(title, body, max_items=limit * 2):
+        raw_sentence = _v119_strip_title_echo(
+            title, candidate.get("text", "")
+        )
+        sentence = _v119_fix_surface(
+            _v117_formal_sentence(raw_sentence)
+        )
+        if not sentence or len(sentence) < 35:
+            continue
+        normalized = norm(sentence)
+        if any(
+            marker in normalized
+            for marker in (
+                "mevcut açık kaynak kaydında",
+                "mevcut veriler çerçevesinde bilgi notu",
+                "ayrıntılı bilgi sınırlı",
+                "yeterli gövde metni",
+            )
+        ):
+            continue
+        if re.search(r"\b[A-ZÇĞİÖŞÜ]{3,}(?:\s+[A-ZÇĞİÖŞÜ]{3,}){2,}\b", sentence):
+            continue
+        tokens = _v117_tokens(sentence)
+        duplicate = False
+        for old_tokens in seen_tokens:
+            union = len(tokens | old_tokens)
+            if union and len(tokens & old_tokens) / union >= 0.72:
+                duplicate = True
+                break
+        if duplicate:
+            continue
+        facts.append(sentence)
+        seen_tokens.append(tokens)
+        if len(facts) >= limit:
+            break
+    return facts
+
+
+def article_detail(row):
+    """V119 common evidence pipeline used by AKT, ÖGN and information notes."""
+    if isinstance(row, str):
+        row = {"URL": row}
+    elif hasattr(row, "to_dict"):
+        row = row.to_dict()
+    elif row is None:
+        row = {}
+    else:
+        row = dict(row)
+
+    tr, local_text = _v117_local_context(row)
+    title_hint = _clean_note_text(tr.get("Başlık", ""))
+    cache_key = hashlib.sha1(
+        (
+            title_hint
+            + "|"
+            + str(tr.get("URL", ""))
+            + "|"
+            + local_text[:900]
+            + "|v119"
+        ).encode("utf-8", "ignore")
+    ).hexdigest()
+    cache = st.session_state.setdefault("_v119_article_cache", {})
+    if cache_key in cache:
+        return dict(cache[cache_key])
+
+    try:
+        base = _v119_article_detail_base(tr) or {}
+    except Exception:
+        base = {}
+
+    source = _v117_source_short(
+        base.get("source") or tr.get("Kaynak", ""),
+        base.get("canonical") or tr.get("URL", ""),
+    )
+    title = _v116_clean_headline(
+        base.get("title") or title_hint,
+        source,
+    )
+    canonical = str(base.get("canonical") or tr.get("URL") or "").strip()
+
+    text_candidates = []
+
+    def add_candidate(text, bonus, candidate_url="", candidate_source=""):
+        cleaned = _clean_note_text(text)
+        if not cleaned or norm(cleaned) == norm(title):
+            return
+        facts = _v119_fact_texts(title, cleaned, limit=12)
+        if not facts:
+            return
+        score = (
+            len(facts) * 1200
+            + min(len(cleaned), 6500)
+            + int(bonus)
+            + sum(40 for fact in facts if re.search(r"\d", fact))
+        )
+        text_candidates.append(
+            {
+                "score": score,
+                "text": cleaned,
+                "facts": facts,
+                "url": candidate_url,
+                "source": candidate_source,
+            }
+        )
+
+    add_candidate(base.get("text", ""), 500, canonical, source)
+    add_candidate(local_text, 650, tr.get("URL", ""), tr.get("Kaynak", ""))
+    add_candidate(
+        tr.get("İçerik_Özeti", ""),
+        180,
+        tr.get("URL", ""),
+        tr.get("Kaynak", ""),
+    )
+
+    best_fact_count = max(
+        (len(item["facts"]) for item in text_candidates), default=0
+    )
+    if best_fact_count < 4:
+        for item in _v119_search_evidence(title, canonical or tr.get("URL", "")):
+            add_candidate(
+                item["text"],
+                item["weight"],
+                item.get("url", ""),
+                item.get("source", ""),
+            )
+
+    if text_candidates:
+        text_candidates.sort(key=lambda item: item["score"], reverse=True)
+        best = text_candidates[0]
+        # If the best source is still thin, safely merge only de-duplicated facts
+        # from the next sources. This avoids headline-only notes without inventing facts.
+        merged_facts = list(best["facts"])
+        merged_tokens = [_v117_tokens(fact) for fact in merged_facts]
+        for candidate in text_candidates[1:5]:
+            for fact in candidate["facts"]:
+                tokens = _v117_tokens(fact)
+                if any(
+                    len(tokens | old) > 0
+                    and len(tokens & old) / len(tokens | old) >= 0.70
+                    for old in merged_tokens
+                ):
+                    continue
+                if _v118_title_relevance(title, fact) < 1.5:
+                    continue
+                merged_facts.append(fact)
+                merged_tokens.append(tokens)
+                if len(merged_facts) >= 10:
+                    break
+            if len(merged_facts) >= 10:
+                break
+        final_text = " ".join(merged_facts)
+        if best.get("url") and _v116_valid_direct_url(best.get("url")):
+            canonical = best["url"]
+        if best.get("source"):
+            source = _v117_source_short(best["source"], canonical)
+    else:
+        final_text = ""
+        merged_facts = []
+
+    result = dict(base)
+    result["title"] = title or title_hint
+    result["source"] = source
+    result["canonical"] = canonical
+    result["text"] = final_text
+    result["quality_facts"] = len(merged_facts)
+    result["quality_ready"] = (
+        len(merged_facts) >= 3 and len(final_text) >= 180
+    )
+    cache[cache_key] = dict(result)
+    return result
+
+
+def _v119_note_paragraphs(title, body):
+    """Build natural introduction-development-conclusion paragraphs from evidence only."""
+    facts = _v119_fact_texts(title, body, limit=10)
+    if len(facts) < 3:
+        raise ReportQualityError(
+            f'"{title}" için en az üç bağımsız olgu elde edilemedi. '
+            "Başlık tekrarı veya yapay dolgu üretmek yerine rapor oluşturulmadı."
+        )
+
+    if len(facts) >= 8:
+        groups = [facts[:2], facts[2:5], facts[5:7], facts[7:]]
+    elif len(facts) >= 6:
+        groups = [facts[:2], facts[2:4], facts[4:]]
+    elif len(facts) >= 4:
+        groups = [facts[:1], facts[1:3], facts[3:]]
+    else:
+        groups = [[facts[0]], [facts[1]], [facts[2]]]
+
+    paragraphs = []
+    for group in groups:
+        paragraph = " ".join(item for item in group if item).strip()
+        if paragraph:
+            paragraphs.append(_v119_fix_surface(paragraph))
+    return paragraphs[:5]
+
+
+def make_analyst_docx(df, title="BİLGİ NOTU"):
+    """V119: quality-gated information note with consistent 3–5 paragraph structure."""
+    frame = df.copy() if df is not None else pd.DataFrame()
+    rows = [] if frame.empty else _v115_dedupe_rows(frame.to_dict("records"))
+    if not rows:
+        raise ReportQualityError("Bilgi notu oluşturmak için haber bulunamadı.")
+
+    all_paragraphs = []
+    weak_titles = []
+    for row in rows:
+        tr, local_text = _v117_local_context(row)
+        detail = article_detail(tr)
+        source = _v117_source_short(
+            _real_source(tr, detail, detail.get("canonical", "")),
+            detail.get("canonical", ""),
+        )
+        clean_title = _v116_clean_headline(
+            detail.get("title") or tr.get("Başlık", ""), source
+        )
+        body = _clean_note_text(
+            detail.get("text") or local_text or tr.get("İçerik_Özeti") or ""
+        )
+        try:
+            paragraphs = _v119_note_paragraphs(clean_title, body)
+        except ReportQualityError:
+            weak_titles.append(clean_title)
+            continue
+        all_paragraphs.extend(paragraphs)
+
+    if weak_titles:
+        names = "; ".join(weak_titles[:3])
+        raise ReportQualityError(
+            "Bilgi notu kalite eşiği sağlanamadı: " + names + ". "
+            "Sistem eksik bilgiyi uydurmadı; farklı bir haber seçin veya yeniden deneyin."
+        )
+    if len(all_paragraphs) < 3:
+        raise ReportQualityError(
+            "Bilgi notu için yeterli doğrulanabilir içerik elde edilemedi."
+        )
+
+    document = _v116_doc_defaults(Document(), 2.5, 2.5, 2.5, 2.5)
+    section = document.sections[0]
+    section.header_distance = Cm(1.25)
+    section.footer_distance = Cm(1.25)
+    for paragraph_text in all_paragraphs[:5]:
+        paragraph = document.add_paragraph()
+        paragraph.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+        paragraph.paragraph_format.space_before = Pt(0)
+        paragraph.paragraph_format.space_after = Pt(6)
+        paragraph.paragraph_format.line_spacing = 1.15
+        _v116_run(paragraph.add_run(_v119_fix_surface(paragraph_text)), 12)
+
+    buffer = BytesIO()
+    document.save(buffer)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
+def _v119_ogn_item(row):
+    tr, local_text = _v117_local_context(row)
+    detail = article_detail(tr)
+    source = _v117_source_short(
+        _real_source(tr, detail, detail.get("canonical", "")),
+        detail.get("canonical", ""),
+    )
+    title = _v116_clean_headline(
+        detail.get("title") or tr.get("Başlık", ""), source
+    )
+    body = _clean_note_text(
+        detail.get("text") or local_text or tr.get("İçerik_Özeti") or ""
+    )
+    facts = _v119_fact_texts(title, body, limit=5)
+    if len(facts) < 2:
+        raise ReportQualityError(
+            f'ÖGN için "{title}" haberinde başlığın ötesinde yeterli içerik elde edilemedi.'
+        )
+
+    chosen = []
+    total = 0
+    for fact in facts:
+        if chosen and (len(chosen) >= 3 or total + len(fact) > 760):
+            break
+        if title_key(fact.rstrip(".")) == title_key(title.rstrip(".")):
+            continue
+        chosen.append(fact)
+        total += len(fact) + 1
+
+    if len(chosen) < 2:
+        # A rich first sentence may legitimately contain the whole development, but
+        # a bare headline may not. Keep the quality threshold deterministic.
+        if chosen and len(chosen[0]) >= 180 and re.search(r"\d", chosen[0]):
+            return _v119_fix_surface(chosen[0])
+        raise ReportQualityError(
+            f'ÖGN için "{title}" maddesi yeterli ayrıntıya ulaşamadı.'
+        )
+    return _v119_fix_surface(" ".join(chosen))
+
+
+def make_important_basket_docx_v101(basket_df):
+    """V119 quality-gated ÖGN matching the supplied institutional template."""
+    rows = _v115_dedupe_rows(
+        [] if basket_df is None else basket_df.to_dict("records")
+    )
+    outputs = [None] * len(rows)
+    errors = []
+    if rows:
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=min(4, len(rows))
+        ) as executor:
+            futures = {
+                executor.submit(_v119_ogn_item, row): index
+                for index, row in enumerate(rows)
+            }
+            for future in concurrent.futures.as_completed(futures):
+                index = futures[future]
+                try:
+                    outputs[index] = future.result()
+                except Exception as exc:
+                    title = _clean_note_text(
+                        rows[index].get("title", rows[index].get("Başlık", ""))
+                    )
+                    errors.append(f"{title}: {exc}")
+
+    if errors:
+        raise ReportQualityError(
+            "Önemli Gelişmeler Notu oluşturulmadı. Kalite eşiğini geçemeyen "
+            "maddeler: " + " | ".join(errors[:3])
+        )
+
+    document = _v116_doc_defaults(
+        Document(), top=2.25, bottom=1.50, left=1.905, right=1.905
+    )
+    section = document.sections[0]
+    section.header_distance = Cm(0.1)
+    section.footer_distance = Cm(0.45)
+    try:
+        no_spacing = document.styles["No Spacing"]
+        no_spacing.font.name = "Times New Roman"
+        no_spacing.font.size = Pt(12)
+        no_spacing._element.get_or_add_rPr().rFonts.set(
+            qn("w:eastAsia"), "Times New Roman"
+        )
+    except Exception:
+        pass
+    _v116_ogn_footer(section)
+
+    today = datetime.now().astimezone().date()
+    yesterday = today - timedelta(days=1)
+    paragraph = document.add_paragraph(style="No Spacing")
+    paragraph.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    paragraph.paragraph_format.line_spacing = 1.15
+    paragraph.paragraph_format.space_before = Pt(6)
+    paragraph.paragraph_format.space_after = Pt(6)
+    _v116_run(
+        paragraph.add_run(
+            f'{yesterday.strftime("%d/%m/%Y")} – {today.strftime("%d/%m/%Y")}'
+        ),
+        12,
+    )
+
+    paragraph = document.add_paragraph(style="No Spacing")
+    paragraph.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+    paragraph.paragraph_format.line_spacing = 1.15
+    paragraph.paragraph_format.space_before = Pt(6)
+    paragraph.paragraph_format.space_after = Pt(6)
+    _v116_run(paragraph.add_run("Konu: "), 12, True)
+    _v116_run(
+        paragraph.add_run("STB Temsilciliği Önemli Gelişmeler Notu"), 12
+    )
+
+    for text in outputs:
+        paragraph = document.add_paragraph(style="No Spacing")
+        paragraph.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+        paragraph.paragraph_format.line_spacing = 1.15
+        paragraph.paragraph_format.space_before = Pt(6)
+        paragraph.paragraph_format.space_after = Pt(6)
+        clean = _v119_fix_surface(text).rstrip(".")
+        _v116_run(paragraph.add_run(clean + " (STB)."), 12)
+
+    paragraph = document.add_paragraph(style="No Spacing")
+    paragraph.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+    paragraph.paragraph_format.line_spacing = 1.15
+    paragraph.paragraph_format.space_before = Pt(6)
+    paragraph.paragraph_format.space_after = Pt(6)
+    _v116_run(paragraph.add_run("Arz olunur."), 12)
+
+    buffer = BytesIO()
+    document.save(buffer)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
+def _v119_akt_summary(title, body):
+    facts = _v119_fact_texts(title, body, limit=6)
+    if len(facts) < 3:
+        raise ReportQualityError(
+            f'AKT için "{title}" haberinde ayrıntılı içerik kalite eşiğinin altında kaldı.'
+        )
+    clauses = []
+    for fact in facts:
+        clean = _v119_fix_surface(fact).strip().rstrip(" .;:")
+        if clean:
+            clauses.append(clean)
+    return "; ".join(clauses)
+
+
+def _v119_prepare_akt_row(row):
+    tr, local_text = _v117_local_context(row)
+    detail = article_detail(tr)
+    real_url = str(detail.get("canonical") or tr.get("URL") or "").strip()
+    source = _v117_source_short(
+        _real_source(tr, detail, real_url), real_url
+    )
+    title = _v116_clean_headline(
+        detail.get("title") or tr.get("Başlık", ""), source
+    )
+    body = _clean_note_text(
+        detail.get("text") or local_text or tr.get("İçerik_Özeti") or ""
+    )
+    summary = _v119_akt_summary(title, body)
+    if not _v116_valid_direct_url(real_url):
+        real_url = str(tr.get("URL") or "")
+
+    image = None
+    for candidate in list(detail.get("images") or [])[:8]:
+        image = _v117_valid_report_image(candidate)
+        if image:
+            break
+    return {
+        "title": title,
+        "source": source,
+        "url": real_url,
+        "summary": summary,
+        "image": image,
+    }
+
+
+def make_docx(rows):
+    """V119 quality-gated AKT report; weak headline-only items stop generation."""
+    source_rows = []
+    for row in rows or []:
+        translated, _ = _v117_local_context(row)
+        source_rows.append(translated)
+    source_rows = _v115_dedupe_rows(source_rows)
+
+    prepared = [None] * len(source_rows)
+    errors = []
+    if source_rows:
+        with concurrent.futures.ThreadPoolExecutor(
+            max_workers=min(4, len(source_rows))
+        ) as executor:
+            futures = {
+                executor.submit(_v119_prepare_akt_row, row): index
+                for index, row in enumerate(source_rows)
+            }
+            for future in concurrent.futures.as_completed(futures):
+                index = futures[future]
+                try:
+                    prepared[index] = future.result()
+                except Exception as exc:
+                    title = _clean_note_text(source_rows[index].get("Başlık", ""))
+                    errors.append(f"{title}: {exc}")
+
+    if errors:
+        raise ReportQualityError(
+            "AKT raporu oluşturulmadı. Ayrıntılı içerik elde edilemeyen maddeler: "
+            + " | ".join(errors[:3])
+        )
+
+    document = _v116_doc_defaults(
+        Document(), top=2.5, bottom=1.25, left=2.5, right=2.5
+    )
+    section = document.sections[0]
+    section.header_distance = Cm(1.25)
+    section.footer_distance = Cm(1.25)
+
+    paragraph = document.add_paragraph()
+    paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    paragraph.paragraph_format.space_after = Pt(0)
+    _v116_run(paragraph.add_run("AÇIK KAYNAK TARAMA ÇALIŞMASI"), 16, True)
+    _v116_add_akt_info_table(document)
+
+    intro = document.add_paragraph()
+    intro.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+    intro.paragraph_format.first_line_indent = Cm(0.63)
+    intro.paragraph_format.line_spacing = 1.5
+    intro.paragraph_format.space_before = Pt(0)
+    intro.paragraph_format.space_after = Pt(0)
+    intro_text = _v116_akt_intro_text(source_rows)
+    topics = _v116_topic_labels(source_rows)
+    cursor = 0
+    spans = []
+    position = 0
+    for topic in topics:
+        quoted = f"“{topic}”"
+        index = intro_text.find(quoted, position)
+        if index >= 0:
+            spans.append((index, index + len(quoted)))
+            position = index + len(quoted)
+    for start, end in spans:
+        if start > cursor:
+            _v116_run(intro.add_run(intro_text[cursor:start]), 12)
+        _v116_run(intro.add_run(intro_text[start:end]), 12, italic=True)
+        cursor = end
+    if cursor < len(intro_text):
+        _v116_run(intro.add_run(intro_text[cursor:]), 12)
+
+    for number, item in enumerate(prepared, start=1):
+        paragraph = document.add_paragraph()
+        paragraph.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+        paragraph.paragraph_format.first_line_indent = Cm(0.63)
+        paragraph.paragraph_format.line_spacing = 1.5
+        paragraph.paragraph_format.space_before = Pt(4)
+        paragraph.paragraph_format.space_after = Pt(6)
+        _v116_run(paragraph.add_run(f'{number}. “{item["source"]}”'), 12, True)
+        _v116_run(paragraph.add_run(" isimli internet sitesinde, "), 12)
+        _v116_run(paragraph.add_run(f'“{item["title"]}”'), 12, True, True)
+        _v116_run(paragraph.add_run(" başlığıyla bir haber yayımlanmıştır. ("), 12)
+        _word_hyperlink(paragraph, item["url"], item["url"] or "Haber bağlantısı")
+        _v116_run(paragraph.add_run(") Söz konusu haber içeriğinde, "), 12)
+        _v116_run(
+            paragraph.add_run(
+                _v119_fix_surface(item["summary"]).strip().rstrip(" .;")
+            ),
+            12,
+        )
+        _v116_run(paragraph.add_run(" hususları ifade edilmiştir."), 12)
+
+        if item.get("image"):
+            caption = document.add_paragraph()
+            caption.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            caption.paragraph_format.first_line_indent = Cm(0.63)
+            caption.paragraph_format.line_spacing = 1.5
+            caption.paragraph_format.space_before = Pt(4)
+            caption.paragraph_format.space_after = Pt(4)
+            _v116_run(
+                caption.add_run(
+                    f'Görsel {number}: “{item["source"]}” Sitesinde Yer Alan Görsel'
+                ),
+                12,
+                True,
+            )
+            image_paragraph = document.add_paragraph()
+            image_paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            image_paragraph.paragraph_format.space_after = Pt(8)
+            try:
+                run = image_paragraph.add_run()
+                shape = run.add_picture(item["image"])
+                max_width = Cm(15.3)
+                max_height = Cm(12.7)
+                scale = min(
+                    1.0,
+                    max_width / shape.width,
+                    max_height / shape.height,
+                )
+                if scale < 1.0:
+                    shape.width = int(shape.width * scale)
+                    shape.height = int(shape.height * scale)
+            except Exception:
+                pass
+
+    paragraph = document.add_paragraph()
+    paragraph.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+    paragraph.paragraph_format.line_spacing = 1.5
+    _v116_run(paragraph.add_run("Arz olunur."), 12)
+
+    buffer = BytesIO()
+    document.save(buffer)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
+# Clear report and panel caches when V119 is first loaded.
+if st.session_state.get("_report_engine_version") != _V119_ENGINE_VERSION:
+    for key in (
+        "docx_bytes",
+        "note_bytes",
+        "basket_docx_bytes",
+        "v78_ogn_note_bytes",
+        "v79_akt_note_bytes",
+        "v90_ogn_docx_bytes",
+        "v81_pres_note_bytes",
+    ):
+        st.session_state.pop(key, None)
+    for key in (
+        "_v117_article_cache",
+        "_v117_page_cache",
+        "_v119_article_cache",
+        "_v119_evidence_cache",
+        "_v119_compare_cache",
+        "_v119_previous_event_cache",
+    ):
+        st.session_state.pop(key, None)
+    st.session_state["_report_engine_version"] = _V119_ENGINE_VERSION
+
+# ============================================================
+# /V119
+# ============================================================
+
+
 # -----------------------------
 # UI
 # -----------------------------
@@ -12372,6 +13620,8 @@ if not st.session_state['_v60_catchup_done']:
 
 
 if run:
+    import time as _v119_time
+    _v119_scan_started=_v119_time.perf_counter()
     cutoff=(datetime.now(timezone.utc)-timedelta(hours=hours)).astimezone(timezone.utc)
     when=period_window(hours)
     batches=[('🇹🇷 Türk medya / sanayi-teknoloji',build_turkish_queries(when,query),'turkish')]
@@ -12517,8 +13767,8 @@ if run:
         )
 
     status_box.update(
-        label=f'✅ Tarama tamamlandı — {len(all_rows)} haber / {stat["Olay"]} olay',
-        state='complete'
+        label='🧩 Tarama tamamlandı; panel özetleri hazırlanıyor...',
+        state='running'
     )
     # V101 — Tarama sonucu daha session_state'e yazılmadan gerçek yayın tarih-saatine göre sıralanır.
     # Böylece özellikle Son 24 Saat taramasında Kronolojik ekran ilk açılışta en yeni -> en eski gelir.
@@ -12570,6 +13820,42 @@ if run:
     # Tarama sonucu ve geçmiş verisi korunur.
     st.session_state['_v113_panel_cache']={}
     st.session_state['_v113_panel_cache_active_key']=None
+    st.session_state['_v119_compare_cache']={}
+    st.session_state['_v119_previous_event_cache']={}
+
+    # V119: expensive derived data is computed while the scan status is still
+    # visible, before the page starts rendering section by section. The Vardiya
+    # section therefore reads from cache instead of appearing to freeze midway.
+    _v119_panel_started=_v119_time.perf_counter()
+    try:
+        _v119_scan_df=pd.DataFrame(all_rows)
+        if not _v119_scan_df.empty:
+            _v119_scan_df['Tarih_dt']=pd.to_datetime(
+                _v119_scan_df.get('Tarih_dt'),utc=True,errors='coerce'
+            )
+            _compare_since_previous(
+                _v119_scan_df,st.session_state.get('current_scan_id')
+            )
+            _shift_start_summary(
+                _v119_scan_df,st.session_state.get('current_scan_id')
+            )
+    except Exception:
+        pass
+
+    stat['Panel ön hesaplama ms']=int(
+        (_v119_time.perf_counter()-_v119_panel_started)*1000
+    )
+    stat['Toplam tarama sn']=round(
+        _v119_time.perf_counter()-_v119_scan_started,2
+    )
+    st.session_state.stats=stat
+    status_box.update(
+        label=(
+            f'✅ Tarama tamamlandı — {len(all_rows)} haber / {stat["Olay"]} olay '
+            f'• panel {stat["Panel ön hesaplama ms"]} ms'
+        ),
+        state='complete'
+    )
 
 
 # V114 — ŞU AN BİLMEN GEREKENLER: ek ağ isteği yok; son ana tarama verisinden hazırlanır.
@@ -12697,7 +13983,7 @@ st.markdown('---')
 # ============================================================
 # V68 — KONTROL MERKEZİ
 # ============================================================
-st.caption('⚡ V75 ultra hızlı mod: checkbox işlemleri form içinde tutulmakta; tik atmak tek başına uygulamayı yeniden çalıştırmamaktadır.')
+st.caption('⚡ V119 performans modu: tarama sonrası panel özetleri önceden hesaplanır; seçim kutuları tek başına ağır analizleri yeniden çalıştırmaz.')
 st.subheader('🎛️ Kontrol Merkezi')
 st.caption(
     'Bu alan çalışma saatine ve içeriğin niteliğine göre işlem önermektedir: Bilgi Notu için veri/istatistik, '
@@ -13337,7 +14623,14 @@ else:
                     # Her basışta eski çıktı silinir ve V90 motoruyla baştan hazırlanır.
                     st.session_state.pop('v90_ogn_docx_bytes',None)
                     with st.spinner('Önemli gelişmeler gerçek haber içeriklerinden resmî biçimde özetleniyor...'):
-                        st.session_state['v90_ogn_docx_bytes']=make_important_basket_docx_v101(basket)
+                        try:
+                            st.session_state['v90_ogn_docx_bytes']=make_important_basket_docx_v101(basket)
+                        except ReportQualityError as _quality_error:
+                            st.session_state['v90_ogn_docx_bytes']=None
+                            st.error(str(_quality_error))
+                        except Exception as _ogn_error:
+                            st.session_state['v90_ogn_docx_bytes']=None
+                            st.error(f'Önemli Gelişmeler Notu hazırlanamadı: {_ogn_error}')
                 if st.session_state.get('v90_ogn_docx_bytes'):
                     st.download_button(
                         '⬇️ 24 SAATLİK ÖNEMLİ GELİŞMELER / WORD',
@@ -13440,7 +14733,14 @@ else:
             with ob1:
                 if st.button('📝 AKT SEPETİNDEN WORD HAZIRLA',use_container_width=True,key='v79_akt_report'):
                     with st.spinner('AKT sepetindeki haberler rapora hazırlanıyor...'):
-                        st.session_state.docx_bytes=make_docx(osint_rows)
+                        try:
+                            st.session_state.docx_bytes=make_docx(osint_rows)
+                        except ReportQualityError as _quality_error:
+                            st.session_state.docx_bytes=None
+                            st.error(str(_quality_error))
+                        except Exception as _akt_error:
+                            st.session_state.docx_bytes=None
+                            st.error(f'AKT raporu hazırlanamadı: {_akt_error}')
                 if st.session_state.get('docx_bytes'):
                     st.download_button(
                         '⬇️ AKT SEPETİNDEN AÇIK KAYNAK RAPORU / WORD',
