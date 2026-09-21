@@ -20,7 +20,7 @@ from docx.oxml.ns import qn
 
 
 # ============================================================
-# V119 FINAL — V104+ çekirdeği / performans ve rapor kalite katmanı
+# V120 ADAY — V119 KARARLI tabanı + hedefli global basın genişletmesi
 # 1) Aynı olayın daha güçlü tekilleştirilmesi
 # 2) Durum bilgisinin URL'ye değil olay kimliğine de dayanması
 # 3) "Dünden Beri Ne Değişti?" yalnız gerçek/maddi değişiklikler
@@ -690,14 +690,14 @@ HIGH_RISK_TERMS = [
 ]
 
 CATEGORIES={
- 'Savunma & Havacılık':['savunma','aselsan','tusaş','tusas','roketsan','havelsan','baykar','bayraktar','iha','siha','kaan','kızılelma','füze','roket','havacılık'],
- 'Dijital & Yapay Zeka':['yapay zeka','yapay zekâ','siber','yazılım','5g','6g','veri merkezi','bulut','kuantum'],
- 'Yarı İletken & Elektronik':['çip','mikroçip','yarı iletken','işlemci','elektronik','wafer','pcb'],
- 'Otomotiv & Mobilite':['otomotiv','togg','elektrikli araç','batarya','şarj'],
- 'Enerji':['enerji','hidrojen','güneş','rüzgar','nükleer','enerji depolama'],
- 'Sanayi & Üretim':['sanayi','imalat','üretim','fabrika','osb','makine','robotik','otomasyon','demir çelik','kimya'],
- 'Uzay & İleri Teknoloji':['uzay','uydu','tua','nanoteknoloji','biyoteknoloji'],
- 'Kurumsal Ekosistem':['tübitak','kosgeb','sanayi ve teknoloji bakanlığı','türkpatent','teknopark','teknofest']
+ 'Savunma & Havacılık':['savunma','aselsan','tusaş','tusas','roketsan','havelsan','baykar','bayraktar','iha','siha','kaan','kızılelma','füze','roket','havacılık','defense','defence','aerospace','aviation','missile','uav'],
+ 'Dijital & Yapay Zeka':['yapay zeka','yapay zekâ','siber','yazılım','5g','6g','veri merkezi','bulut','kuantum','artificial intelligence','machine learning','cybersecurity','cyber attack','data breach','software','cloud','quantum'],
+ 'Yarı İletken & Elektronik':['çip','mikroçip','yarı iletken','işlemci','elektronik','wafer','pcb','chip','microchip','semiconductor','processor','electronics'],
+ 'Otomotiv & Mobilite':['otomotiv','togg','elektrikli araç','batarya','şarj','automotive','electric vehicle','electric vehicles','battery','mobility'],
+ 'Enerji':['enerji','hidrojen','güneş','rüzgar','nükleer','enerji depolama','energy','hydrogen','solar','wind','nuclear','energy storage'],
+ 'Sanayi & Üretim':['sanayi','imalat','üretim','fabrika','osb','makine','robotik','otomasyon','demir çelik','kimya','industry','industrial','manufacturing','factory','robotics','automation','supply chain','advanced manufacturing'],
+ 'Uzay & İleri Teknoloji':['uzay','uydu','tua','nanoteknoloji','biyoteknoloji','space','satellite','launch','nanotechnology','biotechnology','advanced materials'],
+ 'Kurumsal Ekosistem':['tübitak','kosgeb','sanayi ve teknoloji bakanlığı','türkpatent','teknopark','teknofest','innovation','startup','venture capital','research and development','r&d']
 }
 
 TR_MAIN=[
@@ -722,6 +722,38 @@ GR=[
 ]
 SOCIAL=['x.com','twitter.com','youtube.com','linkedin.com','facebook.com','instagram.com']
 
+# V120 — Hedefli global sanayi/teknoloji kaynakları.
+GLOBAL_TECH_SOURCES=[
+ 'technologyreview.com','spectrum.ieee.org','arstechnica.com'
+]
+GLOBAL_INDUSTRY_SOURCES=[
+ 'industryweek.com','automationworld.com','manufacturingtomorrow.com'
+]
+GLOBAL_ECON_TECH_SOURCES=[
+ 'ft.com','bloomberg.com','nikkei.com'
+]
+GLOBAL_DEFENSE_AERO_SOURCES=[
+ 'defensenews.com','aviationweek.com'
+]
+GLOBAL_PRIORITY_SOURCES=(
+ GLOBAL_TECH_SOURCES+GLOBAL_INDUSTRY_SOURCES+
+ GLOBAL_ECON_TECH_SOURCES+GLOBAL_DEFENSE_AERO_SOURCES
+)
+
+# İngilizce içeriklerin global modda konu dışı diye elenmesini önleyen kontrollü evren.
+GLOBAL_TOPIC_TERMS=[
+ 'industry','industrial','manufacturing','factory','advanced manufacturing',
+ 'automation','robotics','supply chain','smart factory','digital twin','industrial software',
+ 'technology','innovation','artificial intelligence','machine learning','generative ai',
+ 'cybersecurity','cyber attack','data breach','cloud','quantum','telecom','5g','6g',
+ 'semiconductor','semiconductors','chip','chips','microchip','processor','electronics',
+ 'defense','defence','aerospace','aviation','missile','drone','uav','radar','space','satellite',
+ 'automotive','electric vehicle','electric vehicles','battery','mobility',
+ 'energy','nuclear','hydrogen','solar','wind','energy storage',
+ 'critical minerals','rare earth','advanced materials','export controls','sanctions',
+ 'startup','venture capital','research and development','r&d'
+]
+
 SOURCE_ALIASES={
  'aa':'aa.com.tr','anadolu ajansı':'aa.com.tr','anadolu agency':'aa.com.tr','trt haber':'trthaber.com','trt':'trthaber.com',
  'ntv':'ntv.com.tr','cnn türk':'cnnturk.com','cnn turk':'cnnturk.com','habertürk':'haberturk.com','hürriyet':'hurriyet.com.tr',
@@ -732,7 +764,14 @@ SOURCE_ALIASES={
  'savunma sanayi':'savunmasanayist.com','defence türk':'defenceturk.net','defence turk':'defenceturk.net','defencehere':'defencehere.com',
  'c4 defence':'c4defence.com','c4defence':'c4defence.com','sanayi ve teknoloji bakanlığı':'sanayi.gov.tr','tübitak':'tubitak.gov.tr',
  'kosgeb':'kosgeb.gov.tr','türkpatent':'turkpatent.gov.tr','türkiye uzay ajansı':'tua.gov.tr','aselsan':'aselsan.com',
- 'tusaş':'tusas.com','tusas':'tusas.com','roketsan':'roketsan.com.tr','havelsan':'havelsan.com.tr','baykar':'baykartech.com','togg':'togg.com.tr'
+ 'tusaş':'tusas.com','tusas':'tusas.com','roketsan':'roketsan.com.tr','havelsan':'havelsan.com.tr','baykar':'baykartech.com','togg':'togg.com.tr',
+ 'mit technology review':'technologyreview.com','technology review':'technologyreview.com',
+ 'ieee spectrum':'spectrum.ieee.org','ars technica':'arstechnica.com',
+ 'industryweek':'industryweek.com','industry week':'industryweek.com',
+ 'automation world':'automationworld.com','manufacturing tomorrow':'manufacturingtomorrow.com',
+ 'financial times':'ft.com','bloomberg technology':'bloomberg.com','bloomberg':'bloomberg.com',
+ 'nikkei asia':'nikkei.com','nikkei':'nikkei.com','defense news':'defensenews.com',
+ 'aviation week':'aviationweek.com'
 }
 
 def norm(s):
@@ -806,7 +845,7 @@ def infer_source(source_name='',source_url='',article_url=''):
     for a,d in SOURCE_ALIASES.items():
         if a in n: return d
     # domain adının yayıncı adına gömülü olması
-    for d in TR_MAIN+TR_TECH+TR_OFFICIAL+GR:
+    for d in TR_MAIN+TR_TECH+TR_OFFICIAL+GR+GLOBAL_PRIORITY_SOURCES:
         stem=d.split('.')[0]
         if stem and stem in re.sub(r'[^a-z0-9ğüşöçıİĞÜŞÖÇ]','',n): return d
     return domain(article_url)
@@ -816,6 +855,7 @@ def source_group(d):
     if d in TR_OFFICIAL: return '🇹🇷 Resmi / Kurumsal'
     if d in TR_TECH: return '🇹🇷 Türk Teknoloji / Savunma'
     if d in TR_MAIN: return '🇹🇷 Türk Medyası / Ekonomi'
+    if d in GLOBAL_PRIORITY_SOURCES: return '🌍 Global Sanayi / Teknoloji'
     if d in GR: return '🇬🇷 Yunan Medyası — Türk Savunma'
     if d in SOCIAL: return '📱 Açık Sosyal / İndeks'
     return '🌍 Diğer / Açık Kaynak'
@@ -825,6 +865,7 @@ def source_rank(d):
     if d in TR_OFFICIAL: return 500
     if d in TR_TECH: return 450
     if d in TR_MAIN: return 400
+    if d in GLOBAL_PRIORITY_SOURCES: return 360
     if d in GR: return 300
     if d in SOCIAL: return 250
     return 100
@@ -835,6 +876,16 @@ def relevant(text,user_query=''):
     uq=re.split(r'\bOR\b|,|\n',user_query or '',flags=re.I)
     generic={'sanayi','teknoloji','üretim','yatırım','enerji','türkiye','türk','haber'}
     return any(len(x.strip())>2 and norm(x.strip()) not in generic and norm(x.strip()) in t for x in uq)
+
+
+def global_relevant(text, user_query=''):
+    """Global İngilizce kaynaklarda sanayi/teknoloji ilgisini koruyarak filtreler."""
+    t=norm(text)
+    if any(term in t for term in GLOBAL_TOPIC_TERMS):
+        return True
+    # Türkçe/özel kullanıcı sorgusu geçen global haberleri de kaybetme.
+    return relevant(text,user_query)
+
 
 def greek_defense(text):
     t=norm(text)
@@ -1397,6 +1448,34 @@ def rss(query, timeout=7):
         return out
     except Exception:
         return []
+
+
+def rss_global(query, timeout=7):
+    """Global kaynaklar için İngilizce Google News dizinini tarar."""
+    try:
+        r=requests.get(
+            'https://news.google.com/rss/search',
+            params={'q':query,'hl':'en-US','gl':'US','ceid':'US:en'},
+            headers=HEADERS,
+            timeout=timeout
+        )
+        r.raise_for_status()
+        root=ET.fromstring(r.content)
+        out=[]
+        for it in root.findall('.//item'):
+            src=it.find('source')
+            out.append({
+                'title':html.unescape(it.findtext('title') or ''),
+                'url':it.findtext('link') or '',
+                'date':it.findtext('pubDate') or '',
+                'snippet':BeautifulSoup(it.findtext('description') or '','html.parser').get_text(' ',strip=True),
+                'source':src.text if src is not None else '',
+                'source_url':src.get('url','') if src is not None else ''
+            })
+        return out
+    except Exception:
+        return []
+
 
 def ddgs_text(q):
     try:
@@ -2289,6 +2368,37 @@ def build_social_queries(when):
         f'(iflas OR üretim durdu OR fabrika kapandı OR soruşturma OR siber saldırı OR yaptırım) (sanayi OR teknoloji OR savunma) {site} when:{when}'
     ]
 
+
+def build_global_queries(when):
+    """V120 — hedefli global basını kaynak bazlı ve İngilizce terimlerle tarar."""
+    source_topics={
+        'technologyreview.com':'(artificial intelligence OR semiconductor OR quantum OR robotics OR cybersecurity OR biotechnology OR climate technology)',
+        'spectrum.ieee.org':'(semiconductor OR electronics OR robotics OR artificial intelligence OR aerospace OR energy OR telecom)',
+        'arstechnica.com':'(artificial intelligence OR cybersecurity OR semiconductor OR space OR technology OR energy)',
+        'industryweek.com':'(manufacturing OR factory OR industrial OR automation OR supply chain OR workforce OR reshoring)',
+        'automationworld.com':'(automation OR robotics OR industrial software OR smart factory OR manufacturing OR digital twin)',
+        'manufacturingtomorrow.com':'(manufacturing OR automation OR robotics OR additive manufacturing OR supply chain OR factory)',
+        'ft.com':'(technology OR semiconductor OR manufacturing OR industry OR supply chain OR artificial intelligence OR energy OR defense)',
+        'bloomberg.com':'(technology OR semiconductor OR manufacturing OR artificial intelligence OR industry OR supply chain OR energy OR defense)',
+        'nikkei.com':'(technology OR semiconductor OR manufacturing OR supply chain OR automotive OR battery OR artificial intelligence)',
+        'defensenews.com':'(defense OR defence OR aerospace OR missile OR drone OR radar OR military technology OR space)',
+        'aviationweek.com':'(aerospace OR aviation OR defense OR defence OR aircraft OR space OR missile OR drone)'
+    }
+    queries=[f'site:{domain_name} {terms} when:{when}' for domain_name,terms in source_topics.items()]
+
+    # Hedef 11 yayın dışında kalan nitelikli küresel basını da kaçırmamak için
+    # beş geniş tema sorgusu çalıştırılır. Kaynak önceliği hedef yayınlarda kalır,
+    # ancak global katman yalnız bu 11 alan adıyla sınırlandırılmaz.
+    queries.extend([
+        f'(manufacturing OR industrial automation OR robotics OR supply chain OR smart factory) (investment OR production OR factory OR capacity OR technology) when:{when}',
+        f'(semiconductor OR artificial intelligence OR cybersecurity OR quantum) (industry OR technology OR investment OR regulation OR production) when:{when}',
+        f'(defense OR defence OR aerospace OR aviation OR space OR automotive OR electric vehicle OR battery OR energy) (technology OR industry OR manufacturing OR supply chain OR investment) when:{when}',
+        f'(Turkey OR Türkiye OR Turkish) (industry OR manufacturing OR technology OR semiconductor OR aerospace OR defense OR automotive OR energy) when:{when}',
+        f'(ASELSAN OR TUSAŞ OR TUSAS OR ROKETSAN OR HAVELSAN OR Baykar OR Bayraktar OR KAAN OR TOGG) when:{when}'
+    ])
+    return queries
+
+
 def normalize_rows(raw, cutoff, mode, user_query):
     out=[]; reasons={'zaman':0,'konu':0,'kaynak':0,'yunan':0,'gecersiz':0}
     for r in raw:
@@ -2326,7 +2436,11 @@ def normalize_rows(raw, cutoff, mode, user_query):
             if d not in SOCIAL: reasons['kaynak']+=1; continue
             if not relevant(t,user_query): reasons['konu']+=1; continue
         elif mode=='global':
-            if not relevant(t,user_query): reasons['konu']+=1; continue
+            # Global katman hedef 11 yayını özel sorgularla önceliklendirir; ayrıca
+            # diğer küresel kaynaklardan sanayi/teknoloji açısından ilgili haberleri kabul eder.
+            if not global_relevant(t,user_query):
+                reasons['konu']+=1
+                continue
         else:
             # Türk batch'inde kaynak filtresi YOK. Arama zaten Türkiye odaklı.
             # Bu, Google News'in yayıncı URL'sini Google domaininde tuttuğu durumlarda
@@ -2349,6 +2463,7 @@ def source_reliability(domain_name, source_name=''):
     d=domain(domain_name); n=norm(source_name)
     if d in TR_OFFICIAL: return '🟢 A — Birincil / resmî'
     if d in TR_MAIN or d in TR_TECH: return '🟢 A — Güvenilir medya'
+    if d in GLOBAL_PRIORITY_SOURCES: return '🟢 A — Hedefli global kaynak'
     if d in GR: return '🔵 B — Yunan medya'
     if d in SOCIAL: return '🟠 C — Sosyal / indeks'
     return '🟡 B — Açık kaynak'
@@ -2417,6 +2532,7 @@ def source_reliability(source_domain,source_name=''):
     d=domain(source_domain); n=norm(source_name)
     if d in TR_OFFICIAL: return '🟢 A — Birincil / resmî'
     if d in TR_MAIN or d in TR_TECH: return '🟢 A — Güvenilir medya'
+    if d in GLOBAL_PRIORITY_SOURCES: return '🟢 A — Hedefli global kaynak'
     if d in GR: return '🔵 B — Yunan medya'
     if d in SOCIAL: return '🟠 C — Sosyal / indeks'
     return '🟡 B — Açık kaynak'
@@ -13573,7 +13689,7 @@ if st.session_state.get("_report_engine_version") != _V119_ENGINE_VERSION:
 # UI
 # -----------------------------
 st.title('🛡️ T.C. Sanayi ve Teknoloji Bakanlığı Açık Kaynak Tarama Merkezi')
-st.caption('Hızlı ilk bakış · olay kümeleri · risk/negatif ayrımı · Türk medya önceliği · Yunan/Türk savunma · kaynak güvenilirliği · trend · alarm · seçilen haberlerden DOCX')
+st.caption('Hızlı ilk bakış · olay kümeleri · risk/negatif ayrımı · Türk medya önceliği · hedefli global sanayi/teknoloji basını · Yunan/Türk savunma · kaynak güvenilirliği · trend · alarm · seçilen haberlerden DOCX')
 with st.sidebar:
     st.header('⚙️ Tarama Ayarları')
     default=('sanayi OR teknoloji OR üretim OR imalat OR fabrika OR OSB OR makine OR otomasyon OR robotik OR Ar-Ge OR patent OR yapay zeka OR yazılım OR siber güvenlik OR çip OR yarı iletken OR elektronik OR telekom OR kuantum OR biyoteknoloji OR nanoteknoloji OR savunma sanayii OR ASELSAN OR TUSAŞ OR ROKETSAN OR HAVELSAN OR Baykar OR İHA OR SİHA OR KAAN OR havacılık OR uzay OR uydu OR otomotiv OR TOGG OR batarya OR enerji OR hidrojen OR kimya OR petrokimya OR demir çelik OR madencilik OR tekstil OR gıda teknolojisi OR tarım teknolojisi OR lojistik OR tedarik zinciri OR TÜBİTAK OR KOSGEB OR teknopark OR yatırım teşvik OR yerlileştirme')
@@ -13582,7 +13698,11 @@ with st.sidebar:
     neg=st.checkbox('⚠️ Negatif haberleri ayrıca tespit et',True)
     greek=st.checkbox('🇬🇷 Yunan medyası — yalnızca Türk savunma sanayii',True)
     social=st.checkbox('📱 Türk açık sosyal / indeks kaynakları',True)
-    global_on=st.checkbox('🌍 Global basın (opsiyonel)',False)
+    global_on=st.checkbox(
+        '🌍 Global sanayi / teknoloji basını',
+        True,
+        help='MIT Technology Review, IEEE Spectrum, Ars Technica, IndustryWeek, Automation World, Manufacturing Tomorrow, Financial Times, Bloomberg, Nikkei Asia, Defense News ve Aviation Week hedefli taranır.'
+    )
     instant_alerts=st.checkbox('🔔 Tarama sırasında negatif/yüksek risk bildirimi göster',True,
                                help='Tarama devam ederken yeni negatif veya yüksek riskli içerik yakalanırsa ekranda anlık bildirim gösterir.')
     period=st.selectbox('🕒 Haber dönemi',['⚡ Son 3 saat','📅 Son 24 saat','📆 Son 48 saat','📆 Son 1 hafta','🗓️ Son 1 ay'],index=1)
@@ -13631,10 +13751,12 @@ if run:
     if neg: batches.append(('⚠️ Negatif haber taraması',build_negative_queries(when),'negative'))
     if greek: batches.append(('🇬🇷 Yunan medyası / Türk savunma',build_greek_queries(when),'greek'))
     if social: batches.append(('📱 Açık sosyal / indeks',build_social_queries(when),'social'))
-    if global_on: batches.append(('🌍 Global basın',[
-        f'(Turkey OR Türkiye) (industry OR manufacturing OR technology OR semiconductor OR defense OR aerospace OR automotive) timespan:{when}',
-        f'(Turkey OR Turkish) (Baykar OR ASELSAN OR TUSAŞ OR ROKETSAN OR HAVELSAN OR KAAN OR drone OR missile) timespan:{when}'
-    ],'global'))
+    if global_on:
+        batches.append((
+            '🌍 Global sanayi / teknoloji basını',
+            build_global_queries(when),
+            'global'
+        ))
     all_rows=[]; stat={'Ham sonuç':0,'Zaman dışı':0,'Konu dışı':0,'Yunan dışı':0,'Kaynak dışı':0,'Sonuç':0,'Olay':0}
     live_alarm_box=st.empty()
     status_box=st.status('🔎 Tarama başlıyor...',expanded=True)
@@ -13691,7 +13813,10 @@ if run:
         workers=min(12,len(jobs))
         status_box.write(f'⚡ Paralel tarama — {len(jobs)} sorgu / {workers} eşzamanlı')
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
-            future_map={ex.submit(rss,q):(label,mode) for label,q,mode in jobs}
+            future_map={
+                ex.submit(rss_global if mode=='global' else rss,q):(label,mode)
+                for label,q,mode in jobs
+            }
             for fut in concurrent.futures.as_completed(future_map):
                 label,mode=future_map[fut]
                 try:
