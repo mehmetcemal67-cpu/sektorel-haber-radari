@@ -20,6 +20,13 @@ from docx.oxml.ns import qn
 
 
 # ============================================================
+# V130 ADAY — V129 KARARLI taban korunur.
+# 1) Risk ve Değer skorları için sayısal, açıklanabilir puan kırılımı
+# 2) Resmî Kaynak Radarı: Bakanlık bağlı/ilgili kuruluşları için ayrı site taramaları
+#    + TÜBA/TUA/Bölge Kalkınma İdareleri ve stratejik kamu kaynakları
+# ============================================================
+
+# ============================================================
 # V120 ADAY — V119 KARARLI tabanı + hedefli global basın genişletmesi
 # 1) Aynı olayın daha güçlü tekilleştirilmesi
 # 2) Durum bilgisinin URL'ye değil olay kimliğine de dayanması
@@ -562,9 +569,13 @@ def _v109_official_source_type(r):
     if 'tuik' in text or 'tüik' in text or 'turkiye istatistik' in text: return 'TÜİK'
     if 'tubitak' in text or 'tübitak' in text: return 'TÜBİTAK'
     if 'kosgeb' in text: return 'KOSGEB'
-    if 'turkpatent' in text or 'türkpatent' in text: return 'TÜRKPATENT'
-    if re.search(r'\btse\b',text) or 'türk standartları' in text: return 'TSE'
-    if 'ssb.gov' in text or 'savunma sanayii başkan' in text or 'savunma sanayii baskan' in text: return 'SSB'
+    if 'turkpatent' in text or 'türkpatent' in text or 'türk patent' in text: return 'TÜRKPATENT'
+    if re.search(r'\btse\b',text) or 'türk standardları' in text: return 'TSE'
+    if 'tua.gov' in text or 'türkiye uzay ajansı' in text: return 'TUA'
+    if 'tuba.gov' in text or 'tüba' in text or 'türkiye bilimler akademisi' in text: return 'TÜBA'
+    if any(x in text for x in ['gap.gov','dap.gov','dokap.gov','kop.gov','bölge kalkınma idaresi']): return 'Bölge Kalkınma İdareleri'
+    if 'kalkınma ajansı' in text or 'kalkınma ajansları' in text: return 'Kalkınma Ajansları'
+    if 'ssb.gov' in text or 'ssbülten' in text or 'ssbulten' in text or 'savunma sanayii başkan' in text or 'savunma sanayii baskan' in text: return 'SSB'
     if 'sanayi.gov' in text or 'sanayi ve teknoloji bakan' in text: return 'Bakanlık'
     if 'resmigazete' in text or 'resmî gazete' in text or 'resmi gazete' in text: return 'Resmî Gazete'
     return 'Diğer Resmî'
@@ -904,8 +915,10 @@ TR_TECH=[
  'defencehere.com','c4defence.com','savunmahaber.com','gdh.digital','stratejikortak.com','m5dergi.com','mavivatan.net'
 ]
 TR_OFFICIAL=[
- 'sanayi.gov.tr','tubitak.gov.tr','kosgeb.gov.tr','tse.org.tr','turkpatent.gov.tr','tua.gov.tr','ticaret.gov.tr',
- 'uab.gov.tr','aselsan.com','tusas.com','roketsan.com.tr','havelsan.com.tr','baykartech.com','togg.com.tr','tei.com.tr','tai.com.tr'
+ 'sanayi.gov.tr','tubitak.gov.tr','kosgeb.gov.tr','tse.org.tr','turkpatent.gov.tr','tua.gov.tr','tuba.gov.tr',
+ 'gap.gov.tr','dap.gov.tr','dokap.gov.tr','kop.gov.tr','ssb.gov.tr','tuik.gov.tr','tcmb.gov.tr','ticaret.gov.tr',
+ 'epdk.gov.tr','teias.gov.tr','uab.gov.tr','aselsan.com','tusas.com','roketsan.com.tr','havelsan.com.tr',
+ 'baykartech.com','togg.com.tr','tei.com.tr','tai.com.tr'
 ]
 GR=[
  'kathimerini.gr','protothema.gr','news247.gr','tovima.gr','enikos.gr','naftemporiki.gr','skai.gr','capital.gr',
@@ -954,7 +967,13 @@ SOURCE_ALIASES={
  'shiftdelete':'shiftdelete.net','donanımhaber':'donanimhaber.com','technopat':'technopat.net','savunma sanayi st':'savunmasanayist.com',
  'savunma sanayi':'savunmasanayist.com','defence türk':'defenceturk.net','defence turk':'defenceturk.net','defencehere':'defencehere.com',
  'c4 defence':'c4defence.com','c4defence':'c4defence.com','sanayi ve teknoloji bakanlığı':'sanayi.gov.tr','tübitak':'tubitak.gov.tr',
- 'kosgeb':'kosgeb.gov.tr','türkpatent':'turkpatent.gov.tr','türkiye uzay ajansı':'tua.gov.tr','aselsan':'aselsan.com',
+ 'kosgeb':'kosgeb.gov.tr','türkpatent':'turkpatent.gov.tr','türk patent ve marka kurumu':'turkpatent.gov.tr',
+ 'tse':'tse.org.tr','türk standardları enstitüsü':'tse.org.tr','türkiye uzay ajansı':'tua.gov.tr','tua':'tua.gov.tr',
+ 'türkiye bilimler akademisi':'tuba.gov.tr','tüba':'tuba.gov.tr','tuba':'tuba.gov.tr',
+ 'savunma sanayii başkanlığı':'ssb.gov.tr','ssbülten':'ssb.gov.tr','ssbulten':'ssb.gov.tr',
+ 'gap bölge kalkınma idaresi':'gap.gov.tr','dap bölge kalkınma idaresi':'dap.gov.tr',
+ 'dokap bölge kalkınma idaresi':'dokap.gov.tr','kop bölge kalkınma idaresi':'kop.gov.tr',
+ 'aselsan':'aselsan.com',
  'tusaş':'tusas.com','tusas':'tusas.com','roketsan':'roketsan.com.tr','havelsan':'havelsan.com.tr','baykar':'baykartech.com','togg':'togg.com.tr',
  'mit technology review':'technologyreview.com','technology review':'technologyreview.com',
  'ieee spectrum':'spectrum.ieee.org','ars technica':'arstechnica.com',
@@ -1605,6 +1624,100 @@ def classify(title,snippet,source_domain=''):
 
     return sentiment,score,status,neg,risk,cat,reasons
 
+
+def _v130_score_num(v):
+    """Puan kırılımında 5.0 yerine 5; gerektiğinde tek ondalık gösterir."""
+    try:
+        fv=float(v)
+        if abs(fv-round(fv))<1e-9:
+            return str(int(round(fv)))
+        return f'{fv:.1f}'.rstrip('0').rstrip('.')
+    except Exception:
+        return str(v)
+
+
+def _v130_risk_score_detail(title, snippet, final_score=None):
+    """
+    V130 — Risk skorunun hangi bileşenlerden toplandığını açıklayan metin.
+    classify() ile aynı kuralları kullanır; olasılık/yüzde değildir.
+    """
+    full=f'{title} {snippet}'
+    t=norm(full)
+    neg_set,risk_set,title_neg,title_risk,strong_event,directional,structural,persistent,critical_negative=_negative_sentence_analysis(title,snippet)
+    neg=sorted(neg_set); risk=sorted(risk_set)
+
+    parts=[('Başlangıç',5)]
+    score=5
+
+    def add(label,value):
+        nonlocal score
+        if value:
+            score += value
+            parts.append((label,value))
+
+    if neg:
+        add('Negatif sinyal',min(30,6*len(neg)))
+        add('Başlıktaki negatif sinyal',min(14,5*len(title_neg)))
+    if directional:
+        add('Ölçülebilir düşüş/gerileme',8)
+    if structural:
+        add('Yapısal/eleştirel olumsuzluk',min(16,7+3*len(structural)))
+    if critical_negative:
+        add('Eleştirel/uyarıcı yaklaşım',min(15,8+2*len(critical_negative)))
+    if persistent and (structural or critical_negative or neg_set):
+        add('Olumsuzluğun sürekliliği',8)
+    if risk:
+        add('Yüksek risk sinyali',min(32,9*len(risk)))
+        add('Başlıktaki yüksek risk sinyali',min(14,5*len(title_risk)))
+    if strong_event:
+        add('Ağır olumsuz olay',14)
+    if neg or risk:
+        if any(x in t for x in ['üretim','fabrika','tesis','istihdam','kapasite','ihracat','tedarik','satış','sipariş']):
+            add('Üretim/ekonomi etkisi',6)
+        if any(x in t for x in ['savunma','kritik altyapı','enerji','siber','yarı iletken','çip']):
+            add('Stratejik/kritik sektör etkisi',7)
+
+    positive_count=_positive_strength(full)
+    severe_active=strong_event or any(x in norm(full) for x in V48_STRONG_NEGATIVE)
+    if positive_count and neg and not severe_active:
+        reduction=min(8,2*positive_count)
+        score=max(0,score-reduction)
+        parts.append(('Olumlu/karma unsur dengelemesi',-reduction))
+
+    score=max(0,min(100,score))
+
+    # classify() içindeki açık başarı / normal test ilerlemesi korumasını aynala.
+    _hn=norm(title)
+    _positive_head=bool(re.search(
+        r'(madalya\s+kazan|ödül\s+kazan|şampiyon|rekor\s+kır|başarıyla|'
+        r'başarı\s+elde|testleri?\s+devam\s+ediyor|test\s+süreci\s+devam)',
+        _hn,re.I
+    ))
+    _bad_head=bool(re.search(
+        r'(başarısız|kaza|yangın|patlama|ölüm|yaralan|iptal|gecik|arıza|'
+        r'iflas|saldırı|eleştir|yetersiz|kriz|sorun|tehlike|zarar|kayıp|'
+        r'geriledi|azaldı|düştü|ceza|yaptırım)',
+        _hn,re.I
+    ))
+    if _positive_head and not _bad_head and score>12:
+        reduction=score-12
+        score=12
+        parts.append(('Pozitif başlık koruması',-reduction))
+
+    target=int(final_score) if final_score is not None else int(score)
+    if int(score)!=target:
+        parts.append(('Nihai kural düzeltmesi',target-int(score)))
+        score=target
+
+    rendered=[]
+    for label,value in parts:
+        if value < 0:
+            rendered.append(f'{label} −{_v130_score_num(abs(value))}')
+        else:
+            rendered.append(f'{label} {_v130_score_num(value)}')
+    return ' + '.join(rendered).replace('+ Olumlu/karma unsur dengelemesi −','− Olumlu/karma unsur dengelemesi ').replace('+ Pozitif başlık koruması −','− Pozitif başlık koruması ').replace('+ Nihai kural düzeltmesi −','− Nihai kural düzeltmesi ') + f' = {target}/100'
+
+
 def _v89_negative_selfcheck():
     """Basit regresyon kontrolleri; panelde gösterilmez."""
     cases=[
@@ -1742,11 +1855,24 @@ def build_turkish_queries(when, user_query=''):
 # -----------------------------
 # V41 — RESMÎ KAYNAK / İSTATİSTİK RADARI
 # -----------------------------
-OFFICIAL_RADAR_DOMAINS = [
-    'sanayi.gov.tr','tubitak.gov.tr','kosgeb.gov.tr','turkpatent.gov.tr','tse.org.tr',
-    'ssb.gov.tr','tuik.gov.tr','tcmb.gov.tr','ticaret.gov.tr','epdk.gov.tr','teias.gov.tr',
-    'tua.gov.tr'
+# V130 — Bakanlığın bağlı/ilgili kuruluşlarını ayrı ayrı tarayan resmî kaynak evreni.
+# Site bazlı ayrı sorgu kullanılmasının amacı büyük OR sorgularında bazı kurumların
+# Google News tarafından geri planda kalmasını azaltmaktır.
+MINISTRY_AFFILIATED_DOMAINS = [
+    'sanayi.gov.tr',
+    'tubitak.gov.tr','kosgeb.gov.tr','turkpatent.gov.tr','tse.org.tr','tuba.gov.tr','tua.gov.tr',
+    'gap.gov.tr','dap.gov.tr','dokap.gov.tr','kop.gov.tr'
 ]
+
+# Bakanlığın bağlı/ilgili kuruluşlarına ek olarak panelde stratejik birincil kamu
+# kaynakları da ayrı görünmeye devam eder.
+STRATEGIC_OFFICIAL_DOMAINS = [
+    'ssb.gov.tr','tuik.gov.tr','tcmb.gov.tr','ticaret.gov.tr','epdk.gov.tr','teias.gov.tr'
+]
+
+OFFICIAL_RADAR_DOMAINS = list(dict.fromkeys(
+    MINISTRY_AFFILIATED_DOMAINS + STRATEGIC_OFFICIAL_DOMAINS
+))
 
 PRIMARY_STATS_DOMAINS = [
     'tuik.gov.tr','tcmb.gov.tr','ticaret.gov.tr','sanayi.gov.tr','ssb.gov.tr',
@@ -1766,12 +1892,36 @@ STATISTIC_TERMS = [
 ]
 
 def build_official_radar_queries(when):
-    """Genel medya taramasından ayrı, birincil/resmî kaynak sorguları."""
-    gov_sites='('+' OR '.join('site:'+d for d in OFFICIAL_RADAR_DOMAINS)+')'
-    return [
-        f'(sanayi OR teknoloji OR üretim OR yatırım OR ihracat OR savunma OR Ar-Ge OR patent) {gov_sites} when:{when}',
-        f'("basın açıklaması" OR duyuru OR açıklandı OR yayımlandı OR rapor OR veri OR istatistik) {gov_sites} when:{when}'
-    ]
+    """
+    V130 — Resmî Kaynak Radarı.
+
+    Bakanlık ve bağlı/ilgili kuruluşlar tek dev OR sorgusuna sıkıştırılmaz;
+    her kurum ayrı site sorgusuyla taranır. Böylece TÜBİTAK, KOSGEB, TUA,
+    TSE, TÜRKPATENT, TÜBA ve bölge kalkınma idarelerinin güncel içeriklerinin
+    büyük sorguda görünmez kalma ihtimali azaltılır.
+    """
+    queries=[]
+
+    # Kurumsal alanlarda, konu filtresi koymadan o zaman penceresindeki Google News
+    # indeksli yeni içerikleri iste. normalize_rows(mode='official') aşağıda kaynağın
+    # gerçekten resmî alanlardan gelmesini ayrıca doğrular.
+    for d in MINISTRY_AFFILIATED_DOMAINS:
+        queries.append(f'site:{d} when:{when}')
+
+    # Stratejik kamu kaynakları için daha dar, görev alanıyla ilgili sorgular korunur.
+    strategic_sites='('+' OR '.join('site:'+d for d in STRATEGIC_OFFICIAL_DOMAINS)+')'
+    queries.extend([
+        f'(sanayi OR teknoloji OR üretim OR yatırım OR ihracat OR savunma OR Ar-Ge OR enerji OR veri OR istatistik) {strategic_sites} when:{when}',
+        f'("basın açıklaması" OR duyuru OR açıklandı OR yayımlandı OR rapor OR veri OR istatistik) {strategic_sites} when:{when}'
+    ])
+
+    # Kalkınma Ajanslarının Bakanlıkça veya ulusal indekslerde yayımlanan güncel
+    # çağrı/duyurularını da yakalamak için düşük maliyetli tek ek sorgu.
+    queries.append(
+        f'("kalkınma ajansı" OR "kalkınma ajansları") '
+        f'(duyuru OR çağrı OR destek OR program OR başvuru OR proje OR ihale) when:{when}'
+    )
+    return list(dict.fromkeys(queries))
 
 def build_statistics_queries(when):
     """Günlük sayısal veri yayımlarını yakalamaya dönük dar ve hızlı ek sorgular."""
@@ -1787,8 +1937,11 @@ def _is_official_radar_row(r):
     if d in OFFICIAL_RADAR_DOMAINS or d in PRIMARY_STATS_DOMAINS:
         return True
     names=['sanayi ve teknoloji bakanlığı','tübitak','tubitak','kosgeb','türkpatent','turkpatent',
-           'tse','savunma sanayii başkanlığı','ssb','tüik','tuik','tcmb','ticaret bakanlığı',
-           'epdk','teiaş','teias','türkiye uzay ajansı']
+           'tse','türk standardları enstitüsü','savunma sanayii başkanlığı','ssb','ssbülten','ssbulten',
+           'tüik','tuik','tcmb','ticaret bakanlığı','epdk','teiaş','teias','türkiye uzay ajansı','tua',
+           'türkiye bilimler akademisi','tüba','tuba','gap bölge kalkınma idaresi',
+           'dap bölge kalkınma idaresi','dokap bölge kalkınma idaresi','kop bölge kalkınma idaresi',
+           'kalkınma ajansı','kalkınma ajansları']
     return any(x in srcn for x in names)
 
 
@@ -1811,7 +1964,7 @@ def _v52_event_value_table(df,n=10):
     önem/risk, kaynak yayılımı, resmî teyit, güncellik, stratejik önem,
     negatif/eleştirel etki ve aynı olayın haber yoğunluğu.
     """
-    cols=['Sıra','Değer_Skoru','Tarih','Gelişme','Neden_Değerli',
+    cols=['Sıra','Değer_Skoru','Değer_Puan_Detayı','Tarih','Gelişme','Neden_Değerli',
           'Kaynak_Sayısı','Haber_Sayısı','Resmî_Teyit','Risk','URL']
     if df is None or df.empty:
         return pd.DataFrame(columns=cols)
@@ -1858,6 +2011,16 @@ def _v52_event_value_table(df,n=10):
         score=int(round(min(100,risk_part+spread_part+official_part+recency_part+
                             strategic_part+impact_part+popularity_proxy)))
 
+        value_detail=(
+            f"Risk {_v130_score_num(risk_part)}/25 + "
+            f"Kaynak yayılımı {_v130_score_num(spread_part)}/20 + "
+            f"Resmî teyit {_v130_score_num(official_part)}/15 + "
+            f"Güncellik {_v130_score_num(recency_part)}/10 + "
+            f"Stratejik önem {_v130_score_num(strategic_part)}/15 + "
+            f"Etki {_v130_score_num(impact_part)}/10 + "
+            f"Haber yoğunluğu {_v130_score_num(popularity_proxy)}/5 = {score}/100"
+        )
+
         why=[]
         if source_count>=4: why.append(f'{source_count} farklı kaynakta geniş yankı')
         elif source_count>=2: why.append(f'{source_count} farklı kaynakta yer aldı')
@@ -1872,6 +2035,7 @@ def _v52_event_value_table(df,n=10):
 
         items.append({
             'Değer_Skoru':score,
+            'Değer_Puan_Detayı':value_detail,
             'Tarih':rep.get('Tarih',''),
             'Gelişme':rep.get('Başlık',''),
             'Neden_Değerli':' • '.join(why[:5]),
@@ -2632,6 +2796,22 @@ def normalize_rows(raw, cutoff, mode, user_query):
             if not global_relevant(t,user_query):
                 reasons['konu']+=1
                 continue
+        elif mode=='official':
+            # V130: Resmî Kaynak Radarı konu anahtar kelimesine mahkûm değildir.
+            # Kaynak gerçekten tanımlı resmî alanlardan/kurum adlarından geliyorsa
+            # güncel duyuru/haber doğrudan kabul edilir.
+            srcn=norm(src)
+            official_names=(
+                'sanayi ve teknoloji bakanlığı','tübitak','tubitak','kosgeb','türkpatent','turkpatent',
+                'tse','türk standardları enstitüsü','türkiye uzay ajansı','tua','türkiye bilimler akademisi',
+                'tüba','tuba','savunma sanayii başkanlığı','ssb','ssbülten','ssbulten','tüik','tuik','tcmb',
+                'ticaret bakanlığı','epdk','teiaş','teias','gap bölge kalkınma idaresi',
+                'dap bölge kalkınma idaresi','dokap bölge kalkınma idaresi','kop bölge kalkınma idaresi',
+                'kalkınma ajansı','kalkınma ajansları'
+            )
+            if d not in OFFICIAL_RADAR_DOMAINS and not any(x in srcn for x in official_names):
+                reasons['kaynak']+=1
+                continue
         else:
             # Türk batch'inde kaynak filtresi YOK. Arama zaten Türkiye odaklı.
             # Bu, Google News'in yayıncı URL'sini Google domaininde tuttuğu durumlarda
@@ -2644,7 +2824,9 @@ def normalize_rows(raw, cutoff, mode, user_query):
             'Yayıncı_URL':(r.get('source_url') or '').strip(),'Yayıncı':src or d or 'Açık Kaynak',
             'Domain':d,'Kaynak_Grubu':source_group(d),
             'Kategori':cat,'Duygu':sentiment,'Skor':score,'Risk_Skoru':score,'Risk_Durumu':status,
-            'Risk_Gerekçesi':'; '.join(risk_reasons),'Negatif_Sinyaller':neg,'Risk_Sinyalleri':risk,
+            'Risk_Gerekçesi':'; '.join(risk_reasons),
+            'Risk_Puan_Detayı':_v130_risk_score_detail(title,snippet,score),
+            'Negatif_Sinyaller':neg,'Risk_Sinyalleri':risk,
             'Seç':False,'Görsel_URL':'','_mode':mode
         })
     return out,reasons
@@ -2652,7 +2834,7 @@ def normalize_rows(raw, cutoff, mode, user_query):
 
 def source_reliability(domain_name, source_name=''):
     d=domain(domain_name); n=norm(source_name)
-    if d in TR_OFFICIAL: return '🟢 A — Birincil / resmî'
+    if d in TR_OFFICIAL or d in OFFICIAL_RADAR_DOMAINS: return '🟢 A — Birincil / resmî'
     if d in TR_MAIN or d in TR_TECH: return '🟢 A — Güvenilir medya'
     if d in GLOBAL_PRIORITY_SOURCES: return '🟢 A — Hedefli global kaynak'
     if d in GR: return '🔵 B — Yunan medya'
@@ -2721,7 +2903,7 @@ def _jaccard(a,b):
 
 def source_reliability(source_domain,source_name=''):
     d=domain(source_domain); n=norm(source_name)
-    if d in TR_OFFICIAL: return '🟢 A — Birincil / resmî'
+    if d in TR_OFFICIAL or d in OFFICIAL_RADAR_DOMAINS: return '🟢 A — Birincil / resmî'
     if d in TR_MAIN or d in TR_TECH: return '🟢 A — Güvenilir medya'
     if d in GLOBAL_PRIORITY_SOURCES: return '🟢 A — Hedefli global kaynak'
     if d in GR: return '🔵 B — Yunan medya'
@@ -2751,6 +2933,9 @@ def enrich_rows(rows):
         r['Negatif_Sinyaller']=neg
         r['Risk_Sinyalleri']=risk
         r['Risk_Gerekçesi']='; '.join(reasons)
+        r['Risk_Puan_Detayı']=_v130_risk_score_detail(
+            r.get('Başlık',''),r.get('İçerik_Özeti',''),score
+        )
         r['Kaynak_Güvenilirliği']=source_reliability(r.get('Domain',''),r.get('Kaynak',''))
         r['_tokens']=_title_tokens(r.get('Başlık',''))
 
@@ -8864,8 +9049,10 @@ def _section_select_table(section_key, data, columns, height=420):
                 'Resmî_URL':st.column_config.LinkColumn('Resmî Açıklama'),
                 'Eşleşme':st.column_config.NumberColumn('Eşleşme',format='%d%%'),
                 'Değer_Skoru':st.column_config.ProgressColumn('Değer Skoru',min_value=0,max_value=100,format='%d/100'),
+                'Değer_Puan_Detayı':st.column_config.TextColumn('Değer Puanı Nasıl Oluştu?',width='large'),
                 'Risk':st.column_config.NumberColumn('Risk',format='%d/100'),
                 'Risk_Skoru':st.column_config.NumberColumn('Risk',format='%d/100'),
+                'Risk_Puan_Detayı':st.column_config.TextColumn('Risk Puanı Nasıl Oluştu?',width='large'),
                 'Durum':st.column_config.TextColumn('Durum',width='large'),
                 'Kaynak Teyidi':st.column_config.TextColumn('Kaynak Teyidi',width='medium'),
                 '_row_key':None
@@ -15231,6 +15418,10 @@ else:
                     'İçerik_Özeti':'','Kaynak':'','Kategori':''
                 }
             _r['Değer_Skoru']=int(_v.get('Değer_Skoru',0) or 0)
+            _r['Değer_Puan_Detayı']=_v.get('Değer_Puan_Detayı','')
+            _r['Risk_Puan_Detayı']=_r.get('Risk_Puan_Detayı','') or _v130_risk_score_detail(
+                _r.get('Başlık',''),_r.get('İçerik_Özeti',''),_r.get('Risk_Skoru',0)
+            )
             _r['Neden_Değerli']=_v.get('Neden_Değerli','')
             _r['Kaynak_Sayısı']=int(_v.get('Kaynak_Sayısı',0) or 0)
             _know_rows.append(_r)
@@ -15241,18 +15432,20 @@ else:
             _know_select.insert(0,'Seç',False)
 
         _edited_know=st.data_editor(
-            _know_select[['Seç','Tarih','Başlık','Kaynak Teyidi','İçerik_Özeti','Değer_Skoru',
-                          'Neden_Değerli','Kaynak_Sayısı','Risk_Skoru','URL']],
+            _know_select[['Seç','Tarih','Başlık','Kaynak Teyidi','İçerik_Özeti','Değer_Skoru','Değer_Puan_Detayı',
+                          'Neden_Değerli','Kaynak_Sayısı','Risk_Skoru','Risk_Puan_Detayı','URL']],
             column_config={
                 'Seç':st.column_config.CheckboxColumn('Seç'),
                 'Değer_Skoru':st.column_config.ProgressColumn('Değer Skoru',min_value=0,max_value=100,format='%d/100'),
+                'Değer_Puan_Detayı':st.column_config.TextColumn('Değer Puanı Nasıl Oluştu?',width='large'),
                 'Risk_Skoru':st.column_config.NumberColumn('Risk',format='%d/100'),
+                'Risk_Puan_Detayı':st.column_config.TextColumn('Risk Puanı Nasıl Oluştu?',width='large'),
                 'URL':st.column_config.LinkColumn('Haber Linki'),
                 'İçerik_Özeti':st.column_config.TextColumn('Kısa İçerik',width='large'),
                 'Kaynak Teyidi':st.column_config.TextColumn('Kaynak Teyidi',width='medium')
             },
-            disabled=['Tarih','Başlık','Kaynak Teyidi','İçerik_Özeti','Değer_Skoru','Neden_Değerli',
-                      'Kaynak_Sayısı','Risk_Skoru','URL'],
+            disabled=['Tarih','Başlık','Kaynak Teyidi','İçerik_Özeti','Değer_Skoru','Değer_Puan_Detayı','Neden_Değerli',
+                      'Kaynak_Sayısı','Risk_Skoru','Risk_Puan_Detayı','URL'],
             hide_index=True,use_container_width=True,
             height=min(480,100+62*len(_know_select)),
             key='v61_now_to_know_editor'
@@ -15483,7 +15676,7 @@ else:
             _section_select_table(
                 'priority_alarms',
                 alarm_view,
-                ['Tarih','Kaynak','Kategori','Başlık','Risk_Skoru','Risk_Gerekçesi','Doğrulama','URL'],
+                ['Tarih','Kaynak','Kategori','Başlık','Risk_Skoru','Risk_Puan_Detayı','Risk_Gerekçesi','Doğrulama','URL'],
                 height=min(470,70+38*len(alarm_view))
             )
 
@@ -15501,7 +15694,7 @@ else:
             _section_select_table(
                 'critical_industrial_events',
                 critical_events,
-                ['Tarih','Kritik_Olay','Kaynak','Başlık','Risk_Skoru','URL'],
+                ['Tarih','Kritik_Olay','Kaynak','Başlık','Risk_Skoru','Risk_Puan_Detayı','URL'],
                 height=min(340,70+36*len(critical_events))
             )
         else:
@@ -15512,7 +15705,8 @@ else:
         st.caption(
             'Aynı olaya ait haberlar tek gelişmede birleştirilir. Değer Skoru; önem/risk, farklı kaynak sayısı, '
             'resmî teyit, güncellik, stratejik sanayi-teknoloji önemi, negatif/eleştirel etki ve haber yoğunluğunu birlikte değerlendirir. '
-            'Kaynak gerçek okunma/tıklanma verisi sağlıyorsa ileride ayrıca eklenebilir; mevcut sistem erişilemeyen okunma sayılarını tahmin etmez.'
+            'Kaynak gerçek okunma/tıklanma verisi sağlıyorsa ileride ayrıca eklenebilir; mevcut sistem erişilemeyen okunma sayılarını tahmin etmez. '
+            '“Değer Puan Detayı” sütunu toplam puanın hangi ölçütlerden geldiğini sayısal olarak gösterir.'
         )
         value10=_v52_event_value_table(df,10)
         if value10.empty:
@@ -15521,7 +15715,7 @@ else:
             _section_select_table(
                 'daily_top10_value',
                 value10,
-                ['Sıra','Değer_Skoru','Tarih','Gelişme','Neden_Değerli',
+                ['Sıra','Değer_Skoru','Değer_Puan_Detayı','Tarih','Gelişme','Neden_Değerli',
                  'Kaynak_Sayısı','Haber_Sayısı','Resmî_Teyit','Risk','URL'],
                 height=min(680,105+55*len(value10))
             )
@@ -15589,7 +15783,7 @@ else:
             _section_select_table(
                 'v63_missed',
                 _missed.rename(columns={'Gelişme':'Başlık'}),
-                ['Tarih','Başlık','Değer_Skoru','Neden_Değerli','Kaynak_Sayısı','Risk','URL'],
+                ['Tarih','Başlık','Değer_Skoru','Değer_Puan_Detayı','Neden_Değerli','Kaynak_Sayısı','Risk','URL'],
                 height=min(620,100+48*len(_missed))
             )
 
@@ -15630,7 +15824,7 @@ else:
             page_df=_v122_add_source_verification(page_df)
             chron_cols=[
                 'Seç','Tarih','Kaynak_Grubu','Kaynak','Kaynak Teyidi','Kaynak Sayısı','Haber Sayısı',
-                'Kategori','Başlık','Durum','İçerik_Özeti','Duygu','Risk_Skoru',
+                'Kategori','Başlık','Durum','İçerik_Özeti','Duygu','Risk_Skoru','Risk_Puan_Detayı',
                 'Risk_Durumu','Kaynak_Güvenilirliği','Doğrulama','URL'
             ]
             chron_cols=[c for c in chron_cols if c in page_df.columns]
@@ -15649,6 +15843,7 @@ else:
                         'URL':st.column_config.LinkColumn('Haber Linki'),
                         'İçerik_Özeti':st.column_config.TextColumn('Kısa İçerik',width='large'),
                         'Risk_Skoru':st.column_config.NumberColumn('Risk',format='%d/100'),
+                        'Risk_Puan_Detayı':st.column_config.TextColumn('Risk Puanı Nasıl Oluştu?',width='large'),
                         'Kaynak Sayısı':st.column_config.NumberColumn('Kaynak',format='%d'),
                         'Haber Sayısı':st.column_config.NumberColumn('Haber',format='%d'),
                         'Durum':st.column_config.TextColumn('Durum',width='large'),
@@ -15745,7 +15940,7 @@ else:
             _section_select_table(
                 'negative_view',
                 df[df.Duygu=='Negatif'],
-                ['Tarih','Kaynak','Kategori','Başlık','Risk_Skoru','Risk_Gerekçesi','Doğrulama','URL'],
+                ['Tarih','Kaynak','Kategori','Başlık','Risk_Skoru','Risk_Puan_Detayı','Risk_Gerekçesi','Doğrulama','URL'],
                 height=600
             )
 
@@ -15753,7 +15948,7 @@ else:
             _section_select_table(
                 'highrisk_view',
                 df[df.Risk_Durumu=='Yüksek Risk'],
-                ['Tarih','Kaynak','Kategori','Başlık','Risk_Skoru','Risk_Gerekçesi','Doğrulama','URL'],
+                ['Tarih','Kaynak','Kategori','Başlık','Risk_Skoru','Risk_Puan_Detayı','Risk_Gerekçesi','Doğrulama','URL'],
                 height=600
             )
 
@@ -15761,7 +15956,7 @@ else:
             _section_select_table(
                 'turkish_view',
                 df[df.Kaynak_Grubu.astype(str).str.startswith('🇹🇷')],
-                ['Tarih','Kaynak','Kategori','Başlık','Risk_Skoru','Duygu','URL'],
+                ['Tarih','Kaynak','Kategori','Başlık','Risk_Skoru','Risk_Puan_Detayı','Duygu','URL'],
                 height=600
             )
 
@@ -15769,7 +15964,7 @@ else:
             _section_select_table(
                 'greek_view',
                 df[df.Kaynak_Grubu.astype(str).str.startswith('🇬🇷')],
-                ['Tarih','Kaynak','Kategori','Başlık','Risk_Skoru','Duygu','URL'],
+                ['Tarih','Kaynak','Kategori','Başlık','Risk_Skoru','Risk_Puan_Detayı','Duygu','URL'],
                 height=600
             )
 
@@ -15794,7 +15989,7 @@ else:
                     turkey_global_df,
                     [
                         'Tarih','Kaynak','Kategori','Başlık','İçerik_Özeti',
-                        'Risk_Skoru','Duygu','Kaynak_Güvenilirliği','Doğrulama','URL'
+                        'Risk_Skoru','Risk_Puan_Detayı','Duygu','Kaynak_Güvenilirliği','Doğrulama','URL'
                     ],
                     height=650
                 )
@@ -15823,7 +16018,7 @@ else:
                     global_df,
                     [
                         'Tarih','Kaynak','Kategori','Başlık','İçerik_Özeti',
-                        'Risk_Skoru','Duygu','Kaynak_Güvenilirliği','Doğrulama','URL'
+                        'Risk_Skoru','Risk_Puan_Detayı','Duygu','Kaynak_Güvenilirliği','Doğrulama','URL'
                     ],
                     height=650
                 )
@@ -15842,7 +16037,7 @@ else:
                 _section_select_table(
                     f'event_{chosen}',
                     g,
-                    ['Tarih','Kaynak','Kategori','Başlık','Risk_Skoru','Doğrulama','URL'],
+                    ['Tarih','Kaynak','Kategori','Başlık','Risk_Skoru','Risk_Puan_Detayı','Doğrulama','URL'],
                     height=min(500,80+40*len(g))
                 )
 
@@ -15867,7 +16062,7 @@ else:
                 _section_select_table(
                     'watchlist_view',
                     hits,
-                    ['Tarih','Kaynak','Kategori','Başlık','Risk_Skoru','Duygu','URL'],
+                    ['Tarih','Kaynak','Kategori','Başlık','Risk_Skoru','Risk_Puan_Detayı','Duygu','URL'],
                     height=550
                 )
 
@@ -16278,7 +16473,10 @@ else:
 
         st.markdown('---')
         st.subheader('🏛️ Resmî Kaynak Radarı')
-        st.caption('Sanayi ve Teknoloji Bakanlığı, TÜBİTAK, KOSGEB, TÜRKPATENT, TSE, SSB, TÜİK ve diğer birincil kamu kaynaklarından gelen içerikleri ayrı gösterir.')
+        st.caption(
+            'Bakanlık ile TÜBİTAK, KOSGEB, TÜRKPATENT, TSE, TÜBA, TUA ve Bölge Kalkınma İdarelerinin '
+            'güncel içerikleri kurum bazında ayrı sorgulanır; SSB, TÜİK ve diğer stratejik birincil kamu kaynakları da izlenir.'
+        )
         official_radar=_official_radar_rows(df)
         if official_radar.empty:
             st.info('Bu taramada resmî/birincil kaynaklardan eşleşen yeni içerik bulunamadı.')
@@ -16287,7 +16485,8 @@ else:
                 official_radar=official_radar.copy()
                 official_radar['Kurum Türü']=official_radar.apply(_v109_official_source_type,axis=1)
             _types=['Tümü']+[
-                x for x in ['Bakanlık','TÜİK','TÜBİTAK','KOSGEB','TÜRKPATENT','TSE','SSB','Resmî Gazete','Diğer Resmî']
+                x for x in ['Bakanlık','TÜBİTAK','KOSGEB','TÜRKPATENT','TSE','TÜBA','TUA',
+                            'Bölge Kalkınma İdareleri','Kalkınma Ajansları','SSB','TÜİK','Resmî Gazete','Diğer Resmî']
                 if x in set(official_radar['Kurum Türü'].astype(str))
             ]
             _official_type=st.radio('Kaynak türü',_types,horizontal=True,key='v109_official_source_type')
@@ -16295,7 +16494,8 @@ else:
             _section_select_table(
                 'official_radar_'+re.sub(r'[^a-zA-Z0-9]+','_',norm(_official_type)),
                 _official_show.head(30),
-                ['Tarih','Kurum Türü','Kaynak','Kategori','Başlık','İçerik_Özeti','Risk_Skoru','Doğrulama','URL'],
+                ['Tarih','Kurum Türü','Kaynak','Kategori','Başlık','İçerik_Özeti',
+                 'Risk_Skoru','Risk_Puan_Detayı','Doğrulama','URL'],
                 height=min(600,90+38*min(len(_official_show),30))
             )
 
