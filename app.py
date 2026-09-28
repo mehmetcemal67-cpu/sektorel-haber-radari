@@ -27,6 +27,11 @@ from docx.oxml.ns import qn
 # ============================================================
 
 # ============================================================
+# V131 ADAY — V130 KARARLI tabanı + harita bölümünde işlevsel hızlı sepet işlemleri
+# V130 kararlı sürüme dokunulmamıştır.
+# ============================================================
+
+# ============================================================
 # V120 ADAY — V119 KARARLI tabanı + hedefli global basın genişletmesi
 # 1) Aynı olayın daha güçlü tekilleştirilmesi
 # 2) Durum bilgisinin URL'ye değil olay kimliğine de dayanması
@@ -14588,6 +14593,18 @@ def _v123_map_dataset(df, mode):
             'Kaynak Sayısı': int(source_count),
             'Doğrulama': verification,
             'Risk': risk,
+            # V131 — harita üzerinden yapılan hızlı sepet işlemlerinin ana kronolojiyle
+            # aynı kayıt yapısını kullanabilmesi için gerekli alanları koru.
+            'Risk_Skoru': risk,
+            'Risk_Durumu': str(row.get('Risk_Durumu', '') or ''),
+            'Risk_Gerekçesi': str(row.get('Risk_Gerekçesi', '') or ''),
+            'Risk_Puan_Detayı': str(row.get('Risk_Puan_Detayı', '') or ''),
+            'İçerik_Özeti': summary,
+            'Olay_ID': str(row.get('Olay_ID', '') or ''),
+            'Domain': str(row.get('Domain', '') or ''),
+            'Kaynak_Grubu': str(row.get('Kaynak_Grubu', '') or ''),
+            '_mode': str(row.get('_mode', '') or ''),
+            'Tarih_dt': row.get('Tarih_dt'),
             'Türkiye Bağlantısı': turkey_link,
             'Tarih': time_text,
             'URL': str(row.get('URL', '') or ''),
@@ -15053,6 +15070,35 @@ def _v123_render_strategic_map(df):
     selected_id = str(selected_row['_Map_ID'])
     st.session_state[active_id_key] = selected_id
     _v123_render_map_detail(selected_row.to_dict())
+
+    # V131 — HARİTA HIZLI SEPET
+    # Haritada görünen gelişmeleri başka bir bölümde tekrar aramadan doğrudan
+    # Önemli Gelişmeler / AKT / Sunum sepetine veya Bilgi Notuna aktar.
+    st.markdown('### 🧺 Haritadaki Gelişmeler — Hızlı Sepet İşlemleri')
+    st.caption(
+        'İşlem yapmak istediğiniz haberin yanındaki kutucuğu işaretleyin ve aşağıdaki işlemlerden birini seçin. '
+        'Yalnızca mevcut harita modu ve kategori filtresinde görünen gelişmeler listelenir.'
+    )
+
+    map_basket_data = data.copy()
+    if 'İçerik_Özeti' not in map_basket_data.columns:
+        map_basket_data['İçerik_Özeti'] = map_basket_data.get('Özet', '')
+    if 'Risk_Skoru' not in map_basket_data.columns:
+        map_basket_data['Risk_Skoru'] = pd.to_numeric(
+            map_basket_data.get('Risk', 0), errors='coerce'
+        ).fillna(0).astype(int)
+    if 'Risk_Durumu' not in map_basket_data.columns:
+        map_basket_data['Risk_Durumu'] = ''
+
+    # Harita teknik alanlarını kullanıcıya göstermeden mevcut, test edilmiş
+    # sepet işlem motorunu yeniden kullanıyoruz. Böylece eklenen kayıtlar ana
+    # sepetlerle tamamen aynı SQLite tablolarına gider.
+    _section_select_table(
+        f'v131_map_basket_{mode_key}',
+        map_basket_data,
+        ['Konum','Tarih','Kaynak','Kategori','Başlık','Risk_Skoru','Risk_Puan_Detayı','Kaynak Teyidi','URL'],
+        height=min(520, 105 + 48 * len(map_basket_data)),
+    )
 
     if unmapped:
         st.caption(
