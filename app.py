@@ -32,13 +32,6 @@ from docx.oxml.ns import qn
 # ============================================================
 
 # ============================================================
-# V132 ADAY — V131 KARARLI tabanı + Yönetici Karar Kartı
-# Haritada seçilen gelişme için: Ne oldu? / Neden önemli? / açıklanabilir risk-değer /
-# kaynak teyidi / ilk-son görülme / doğrudan sepet ve bilgi notu işlemleri.
-# V131 kararlı sürüme dokunulmamıştır.
-# ============================================================
-
-# ============================================================
 # V120 ADAY — V119 KARARLI tabanı + hedefli global basın genişletmesi
 # 1) Aynı olayın daha güçlü tekilleştirilmesi
 # 2) Durum bilgisinin URL'ye değil olay kimliğine de dayanması
@@ -14625,270 +14618,24 @@ def _v123_map_dataset(df, mode):
     return result, unmapped
 
 
-def _v132_event_group(source_df, row):
-    """Seçili harita kaydının ana taramadaki olay kümesini güvenli biçimde bulur."""
-    if source_df is None or getattr(source_df, 'empty', True):
-        return pd.DataFrame()
-    x=source_df.copy()
-    oid=str(row.get('Olay_ID','') or '').strip()
-    if oid and 'Olay_ID' in x.columns:
-        hit=x[x['Olay_ID'].astype(str)==oid]
-        if not hit.empty:
-            return hit.copy()
-    url=str(row.get('URL','') or '').strip()
-    if url and 'URL' in x.columns:
-        hit=x[x['URL'].astype(str)==url]
-        if not hit.empty:
-            return hit.copy()
-    title_n=norm(row.get('Başlık',''))
-    if title_n and 'Başlık' in x.columns:
-        hit=x[x['Başlık'].astype(str).map(norm)==title_n]
-        if not hit.empty:
-            return hit.copy()
-    return pd.DataFrame()
-
-
-def _v132_value_payload(source_df, row, event_group=None):
-    """Mevcut Değer Skoru motorundan seçili olaya ait açıklamayı getirir; yeni puan uydurmaz."""
-    empty={'score':None,'detail':'','why':''}
-    if source_df is None or getattr(source_df, 'empty', True):
-        return empty
-    try:
-        event_count=int(source_df['Olay_ID'].nunique(dropna=False)) if 'Olay_ID' in source_df.columns else len(source_df)
-        tbl=_v52_event_value_table(source_df,n=max(60,event_count))
-        if tbl is None or tbl.empty:
-            return empty
-        candidates=[]
-        url=str(row.get('URL','') or '').strip()
-        if url:
-            candidates.append(('URL',url))
-        title=str(row.get('Başlık','') or '').strip()
-        if title:
-            candidates.append(('Gelişme',title))
-        if event_group is not None and not event_group.empty:
-            g=event_group.copy()
-            if 'Tarih_dt' in g.columns:
-                g['Tarih_dt']=pd.to_datetime(g['Tarih_dt'],utc=True,errors='coerce')
-                g=g.sort_values('Tarih_dt',ascending=False,na_position='last')
-            rep=g.iloc[0]
-            rep_url=str(rep.get('URL','') or '').strip()
-            rep_title=str(rep.get('Başlık','') or '').strip()
-            if rep_url:
-                candidates.append(('URL',rep_url))
-            if rep_title:
-                candidates.append(('Gelişme',rep_title))
-        for col,val in candidates:
-            if col not in tbl.columns:
-                continue
-            if col=='Gelişme':
-                hit=tbl[tbl[col].astype(str).map(norm)==norm(val)]
-            else:
-                hit=tbl[tbl[col].astype(str)==val]
-            if not hit.empty:
-                vr=hit.iloc[0]
-                return {
-                    'score':int(vr.get('Değer_Skoru',0) or 0),
-                    'detail':str(vr.get('Değer_Puan_Detayı','') or ''),
-                    'why':str(vr.get('Neden_Değerli','') or ''),
-                }
-    except Exception:
-        pass
-    return empty
-
-
-def _v132_event_times(event_group, row):
-    first=str(row.get('Olay_İlk_Görülme','') or '').strip()
-    last=str(row.get('Olay_Son_Görülme','') or '').strip()
-    if event_group is None or event_group.empty:
-        return first or str(row.get('Tarih','') or '—'), last or str(row.get('Tarih','') or '—')
-    try:
-        dts=pd.to_datetime(event_group.get('Tarih_dt'),utc=True,errors='coerce').dropna()
-        if len(dts):
-            first=fmt_dt(dts.min())
-            last=fmt_dt(dts.max())
-    except Exception:
-        pass
-    if not first:
-        vals=[str(x or '').strip() for x in event_group.get('Olay_İlk_Görülme',pd.Series(dtype=str)).tolist() if str(x or '').strip()]
-        first=vals[0] if vals else str(row.get('Tarih','') or '—')
-    if not last:
-        vals=[str(x or '').strip() for x in event_group.get('Olay_Son_Görülme',pd.Series(dtype=str)).tolist() if str(x or '').strip()]
-        last=vals[0] if vals else str(row.get('Tarih','') or '—')
-    return first,last
-
-
-def _v132_action_row(row, event_group):
-    """Sepet/rapor işlemleri için mümkünse ana dataframe'deki tam satırı döndürür."""
-    if event_group is not None and not event_group.empty:
-        url=str(row.get('URL','') or '').strip()
-        if url and 'URL' in event_group.columns:
-            hit=event_group[event_group['URL'].astype(str)==url]
-            if not hit.empty:
-                return hit.iloc[0].to_dict()
-        g=event_group.copy()
-        if 'Tarih_dt' in g.columns:
-            g['Tarih_dt']=pd.to_datetime(g['Tarih_dt'],utc=True,errors='coerce')
-            g=g.sort_values('Tarih_dt',ascending=False,na_position='last')
-        return g.iloc[0].to_dict()
-    return dict(row)
-
-
-def _v123_render_map_detail(row, source_df=None, context_key='v132_map_decision'):
-    """V132 — harita seçimini sunuma uygun, işlevsel Yönetici Karar Kartına dönüştürür."""
+def _v123_render_map_detail(row):
     if row is None:
         return
-
-    event_group=_v132_event_group(source_df,row)
-    value=_v132_value_payload(source_df,row,event_group)
-    action_row=_v132_action_row(row,event_group)
-
-    source_count=int(row.get('Kaynak Sayısı',0) or 0)
-    if event_group is not None and not event_group.empty:
-        try:
-            domains={domain(x) for x in event_group.get('Domain',pd.Series(dtype=str)).astype(str) if str(x).strip()}
-            source_count=max(source_count,len(domains))
-        except Exception:
-            pass
-    source_count=max(1,source_count)
-
-    official=False
-    if event_group is not None and not event_group.empty:
-        try:
-            official=any(_is_official_radar_row(r) for _,r in event_group.iterrows())
-        except Exception:
-            official=False
-    if not official:
-        try:
-            official=_is_official_radar_row(pd.Series(action_row))
-        except Exception:
-            official=False
-
-    first_seen,last_seen=_v132_event_times(event_group,row)
-    risk=int(row.get('Risk_Skoru',row.get('Risk',0)) or 0)
-    risk_detail=str(row.get('Risk_Puan_Detayı','') or action_row.get('Risk_Puan_Detayı','') or '').strip()
-    if not risk_detail:
-        risk_detail=str(row.get('Risk_Gerekçesi','') or action_row.get('Risk_Gerekçesi','') or '').strip()
-
-    summary=_clean_note_text(row.get('İçerik_Özeti','') or row.get('Özet','') or '')
-    title=_clean_note_text(row.get('Başlık',''))
-    if not summary or norm(summary)==norm(title):
-        summary=title
-    if len(summary)>720:
-        summary=summary[:717].rstrip(' ,;')+'…'
-
-    why=str(value.get('why','') or '').strip()
-    if not why:
-        fallback=[]
-        if risk>=70: fallback.append('yüksek risk/önem')
-        elif risk>=35: fallback.append('dikkat gerektiren etki')
-        if source_count>=2: fallback.append(f'{source_count} farklı kaynakta yer aldı')
-        if official: fallback.append('resmî/birincil kaynak teyidi')
-        cat=str(row.get('Kategori','') or '').strip()
-        if cat: fallback.append(f'{cat} başlığıyla ilişkili')
-        why=' • '.join(fallback) if fallback else 'Güncel gelişme olarak izlenmektedir.'
-
-    verification=(f'{source_count} kaynak + resmî kaynak' if official else f'{source_count} kaynak')
-    badge=str(row.get('Kaynak Teyidi','') or row.get('Doğrulama','') or '').strip()
-
-    st.markdown('### 🎯 Yönetici Karar Kartı')
-    st.markdown(
-        """
-        <style>
-        .v132-decision-card{background:linear-gradient(135deg,rgba(5,15,32,.94),rgba(10,30,52,.88));
-        border:1px solid rgba(56,189,248,.36);border-radius:16px;padding:18px 20px 16px 20px;
-        box-shadow:0 10px 30px rgba(0,0,0,.20);margin-bottom:10px;}
-        .v132-decision-kicker{font-size:.74rem;letter-spacing:.13em;text-transform:uppercase;color:#7dd3fc;font-weight:700;}
-        .v132-decision-title{font-size:1.16rem;line-height:1.35;color:#f8fbff;font-weight:750;margin-top:5px;}
-        .v132-decision-meta{font-size:.82rem;color:#a9bdd4;margin-top:8px;}
-        </style>
-        """,
-        unsafe_allow_html=True,
+    st.markdown('#### 🔎 Seçili Gelişme')
+    st.markdown(f"**{row.get('Başlık', '')}**")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.markdown(f"**Konum**  \n{row.get('Konum', '—')}")
+    c2.markdown(f"**Kategori**  \n{row.get('Kategori', '—')}")
+    c3.markdown(f"**Risk**  \n{row.get('Risk', 0)}/100")
+    c4.markdown(f"**Teyit**  \n{row.get('Kaynak Teyidi', '—')}")
+    st.caption(
+        f"Kaynak: {row.get('Kaynak', '—')} · Tarih/Saat: {row.get('Tarih', '—')} · "
+        f"Türkiye bağlantısı: {row.get('Türkiye Bağlantısı', '—')}"
     )
-    safe_title=html.escape(title or 'Başlıksız gelişme')
-    safe_meta=html.escape(
-        f"{row.get('Konum','—')} · {row.get('Kategori','—')} · {row.get('Kaynak','—')}"
-    )
-    st.markdown(
-        f'<div class="v132-decision-card"><div class="v132-decision-kicker">SEÇİLİ GELİŞME</div>'
-        f'<div class="v132-decision-title">{safe_title}</div>'
-        f'<div class="v132-decision-meta">{safe_meta}</div></div>',
-        unsafe_allow_html=True,
-    )
-
-    m1,m2,m3,m4=st.columns(4)
-    m1.metric('Risk',f'{risk}/100')
-    value_score=value.get('score')
-    m2.metric('Değer',f'{value_score}/100' if value_score is not None else '—')
-    m3.metric('Teyit',verification)
-    m4.metric('Konum',str(row.get('Konum','—') or '—'))
-
-    c1,c2=st.columns([1.2,1])
-    with c1:
-        st.markdown('**Ne oldu?**')
-        st.write(summary or 'Kısa içerik bulunamadı.')
-    with c2:
-        st.markdown('**Neden önemli?**')
-        st.write(why)
-        if badge:
-            st.caption(f'Kaynak teyidi: {badge}')
-
-    t1,t2=st.columns(2)
-    t1.markdown(f'**İlk görülme**  \n{first_seen or "—"}')
-    t2.markdown(f'**Son güncelleme**  \n{last_seen or "—"}')
-
-    with st.expander('🔎 Puanlar neden bu seviyede?',expanded=False):
-        st.markdown(f'**Risk {risk}/100**')
-        st.write(risk_detail or 'Risk puanı mevcut kural tabanlı sınıflandırma üzerinden hesaplanmıştır.')
-        if value_score is not None:
-            st.markdown(f'**Değer {value_score}/100**')
-            st.write(value.get('detail') or why)
-        st.caption('Bu puanlar yüzde/olasılık değildir; tanımlı ölçütlerin ağırlıklı toplamıdır.')
-
-    # Kartın kendisinden doğrudan çalışan hızlı işlemler.
-    stable_raw='|'.join([
-        str(row.get('URL','') or ''),str(row.get('Başlık','') or ''),str(row.get('Olay_ID','') or ''),str(context_key)
-    ])
-    stable_id=hashlib.sha1(stable_raw.encode('utf-8',errors='ignore')).hexdigest()[:12]
-    a1,a2,a3,a4=st.columns(4)
-    do_imp=a1.button('📌 Önemli Gelişmelere',use_container_width=True,key=f'{context_key}_imp_{stable_id}')
-    do_akt=a2.button('🗂️ AKT Sepetine',use_container_width=True,key=f'{context_key}_akt_{stable_id}')
-    do_pres=a3.button('🖥️ Sunum Sepetine',use_container_width=True,key=f'{context_key}_pres_{stable_id}')
-    do_note=a4.button('📝 Bilgi Notu',use_container_width=True,key=f'{context_key}_note_{stable_id}')
-
-    if do_imp:
-        n=_v74_fast_add_important([action_row])
-        st.success('✅ Önemli Gelişmeler Sepeti’ne eklendi.' if n else 'ℹ️ Bu gelişme Önemli Gelişmeler Sepeti’nde zaten mevcut.')
-    if do_akt:
-        n=_v74_fast_add_osint([action_row])
-        st.success('✅ AKT Sepeti’ne eklendi.' if n else 'ℹ️ Bu gelişme AKT Sepeti’nde zaten mevcut.')
-    if do_pres:
-        n=_v80_add_presentation([action_row])
-        st.success('✅ Sunum Sepeti’ne eklendi.' if n else 'ℹ️ Bu gelişme Sunum Sepeti’nde zaten mevcut.')
-    if do_note:
-        note_df=pd.DataFrame([action_row])
-        with st.spinner('Seçili gelişme için bilgi notu hazırlanmaktadır...'):
-            try:
-                note_bytes=make_analyst_docx(note_df,title='SANAYİ & TEKNOLOJİ BİLGİ NOTU')
-                st.session_state[f'{context_key}_note_bytes_{stable_id}']=note_bytes
-                _v63_mark_notes(note_df.to_dict('records'))
-                _v73_invalidate_status_cache()
-            except Exception as e:
-                st.session_state[f'{context_key}_note_bytes_{stable_id}']=None
-                st.error(f'Bilgi notu hazırlanamadı: {e}')
-
-    note_bytes=st.session_state.get(f'{context_key}_note_bytes_{stable_id}')
-    if note_bytes:
-        st.download_button(
-            '⬇️ Karar Kartı Bilgi Notunu İndir',
-            data=note_bytes,
-            file_name=f'Yonetici_Karar_Karti_Bilgi_Notu_{date.today()}.docx',
-            mime='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-            use_container_width=True,
-            key=f'{context_key}_download_{stable_id}',
-        )
-
-    url=str(row.get('URL','') or '').strip()
-    if url.startswith(('http://','https://')):
+    if row.get('Özet'):
+        st.write(row.get('Özet'))
+    url = str(row.get('URL', '') or '').strip()
+    if url.startswith(('http://', 'https://')):
         st.markdown(f'[🔗 Haberi aç]({url})')
 
 
@@ -15322,11 +15069,7 @@ def _v123_render_strategic_map(df):
     selected_row = data.iloc[selected_idx]
     selected_id = str(selected_row['_Map_ID'])
     st.session_state[active_id_key] = selected_id
-    _v123_render_map_detail(
-        selected_row.to_dict(),
-        source_df=df,
-        context_key=f'v132_map_{mode_key}'
-    )
+    _v123_render_map_detail(selected_row.to_dict())
 
     # V131 — HARİTA HIZLI SEPET
     # Haritada görünen gelişmeleri başka bir bölümde tekrar aramadan doğrudan
@@ -16160,27 +15903,18 @@ else:
                 )
 
                 st.markdown('### ⚡ Seçilen Haberlerle Hızlı İşlem')
-                c1,c2,c3,c4,c5=st.columns(5)
+                c1,c2,c3,c4=st.columns(4)
                 with c1: do_imp=st.form_submit_button('📌 Önemli Gelişmelere Ekle',use_container_width=True)
                 with c2: do_akt=st.form_submit_button('🗂️ AKT Sepetine Ekle',use_container_width=True)
                 with c3: do_pres=st.form_submit_button('🖥️ Sunum Sepetine Ekle',use_container_width=True)
                 with c4: do_note=st.form_submit_button('📝 Detaylı Bilgi Notu Oluştur',use_container_width=True)
-                with c5: do_card=st.form_submit_button('🎯 Karar Kartını Aç',use_container_width=True)
 
-            if do_imp or do_akt or do_note or do_pres or do_card:
+            if do_imp or do_akt or do_note or do_pres:
                 selected_mask=edited['Seç'].astype(bool).to_numpy()
                 selected_page=page_df.loc[selected_mask].copy()
 
                 if selected_page.empty:
                     st.warning('Önce en az bir haberi işaretleyin.')
-                elif do_card:
-                    if len(selected_page)!=1:
-                        st.warning('Yönetici Karar Kartı için yalnızca bir gelişme seçin.')
-                    else:
-                        _card_row=selected_page.iloc[0].to_dict()
-                        if not _card_row.get('Olay_ID') and _card_row.get('_Olay_ID'):
-                            _card_row['Olay_ID']=_card_row.get('_Olay_ID')
-                        st.session_state['_v132_chronology_card_row']=_card_row
                 elif do_imp:
                     n=_v74_fast_add_important(selected_page.to_dict('records'))
                     st.success(f'✅ {n} yeni haber Önemli Gelişmeler Sepeti’ne eklenmiştir.')
@@ -16221,15 +15955,6 @@ else:
                     key='v74_chron_note_download'
                 )
 
-            # V132 — Kronolojiden tek haber seçilip Karar Kartı düğmesine basıldığında
-            # aynı karar kartını ana haber akışında da göster.
-            _chron_card_row=st.session_state.get('_v132_chronology_card_row')
-            if _chron_card_row:
-                _v123_render_map_detail(
-                    _chron_card_row,
-                    source_df=df,
-                    context_key='v132_chronology'
-                )
 
             if group_events and not page_df.empty and '_Olay_ID' in page_df.columns:
                 with st.expander('🔎 Olayın tüm kaynaklarını aç',False):
