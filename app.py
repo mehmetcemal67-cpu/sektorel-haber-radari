@@ -20,6 +20,14 @@ from docx.oxml.ns import qn
 
 
 # ============================================================
+# V132 ADAY — V131 KARARLI tabanı + AKT sepeti silme/state senkron düzeltmesi
+# 1) AKT sepetinden kayıt silindiğinde eski Word çıktısı geçersiz kılınır.
+# 2) Tek haber bilgi notu çıktısı da sepet değişince temizlenir.
+# 3) Silme/temizleme sonrasında Streamlit anında rerun yaparak sepeti DB'den yeniden okur.
+# V131 kararlı sürüme dokunulmamıştır.
+# ============================================================
+
+# ============================================================
 # V130 ADAY — V129 KARARLI taban korunur.
 # 1) Risk ve Değer skorları için sayısal, açıklanabilir puan kırılımı
 # 2) Resmî Kaynak Radarı: Bakanlık bağlı/ilgili kuruluşları için ayrı site taramaları
@@ -16345,7 +16353,21 @@ else:
             if remove_osint:
                 ids=edited_osint.loc[edited_osint['Sil']==True,'id'].astype(int).tolist()
                 removed=_remove_osint_basket_ids(ids)
-                st.success(f'{removed} kayıt AKT sepetinden çıkarıldı.')
+                if removed:
+                    # V132 — Sepet değiştiğinde eski AKT/tek-haber çıktıları artık güncel değildir.
+                    # Bunları geçersiz kıl ve sepeti aynı çalıştırmadaki eski DataFrame yerine
+                    # veritabanından yeniden okutmak için sayfayı anında yenile.
+                    st.session_state.docx_bytes=None
+                    st.session_state.pop('v79_akt_note_bytes',None)
+                    st.session_state.pop('v79_akt_note_title',None)
+                    st.session_state['_v132_akt_basket_message']=f'✅ {removed} kayıt AKT sepetinden çıkarıldı.'
+                    st.rerun()
+                elif ids:
+                    st.warning('Seçilen kayıt AKT sepetinden çıkarılamadı.')
+
+            _v132_akt_message=st.session_state.pop('_v132_akt_basket_message',None)
+            if _v132_akt_message:
+                st.success(_v132_akt_message)
 
             # AKT raporu sepetin tamamından hazırlanabilir; bu davranış korunur.
             osint_rows=[]
@@ -16394,7 +16416,15 @@ else:
             with ob2:
                 if st.button('🧹 AKT SEPETİNİ TAMAMEN TEMİZLE',use_container_width=True,key='v79_clear_akt'):
                     removed=_clear_osint_basket()
-                    st.success(f'{removed} kayıt silindi.')
+                    if removed:
+                        # V132 — Temizlenen sepetle eski Word/Bilgi Notu çıktıları eşleşmez.
+                        st.session_state.docx_bytes=None
+                        st.session_state.pop('v79_akt_note_bytes',None)
+                        st.session_state.pop('v79_akt_note_title',None)
+                        st.session_state['_v132_akt_basket_message']=f'✅ {removed} kayıt AKT sepetinden silindi.'
+                        st.rerun()
+                    else:
+                        st.info('AKT sepetinde silinecek kayıt bulunamadı.')
 
             # B) Bilgi notu için yalnız TEK HABER seçilir.
             st.markdown('### 📝 AKT Sepetinden Seçilen Tek Haberden Detaylı Bilgi Notu')
