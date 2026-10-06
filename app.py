@@ -20,6 +20,15 @@ from docx.oxml.ns import qn
 
 
 # ============================================================
+# V133 ADAY — V131 KARARLI tabanı + AKT rapor güvenilirliği düzeltmesi
+# 1) Google News URL çözümünde alakasız GDELT/DDG sonucu kullanılmaz.
+# 2) AKT Word butonu sepeti tıklama anında veritabanından yeniden okur.
+# 3) Tek bir zayıf/erişilemeyen haber tüm AKT raporunu durdurmaz; geçerli maddelerle rapor oluşur.
+# 4) AKT silme/temizleme sonrası içerik çözüm cache'leri de temizlenir.
+# V131 kararlı sürüme dokunulmamıştır.
+# ============================================================
+
+# ============================================================
 # V132 ADAY — V131 KARARLI tabanı + AKT sepeti silme/state senkron düzeltmesi
 # 1) AKT sepetinden kayıt silindiğinde eski Word çıktısı geçersiz kılınır.
 # 2) Tek haber bilgi notu çıktısı da sepet değişince temizlenir.
@@ -7545,65 +7554,59 @@ def article_detail(row):
         if not title:
             return ""
 
-        # Önce GDELT: sonuçlar doğrudan yayıncı URL'si verir.
+        # V133: Google News bağlantısı doğrudan çözülemezse arama sonuçlarından
+        # rastgele ilk URL'yi kullanma. Yalnız başlıkla güçlü biçimde eşleşen
+        # sonuç güvenli kabul edilir.
+        def safe_title_match(query_title, candidate_title):
+            qn=norm(query_title); cn=norm(candidate_title)
+            if not qn or not cn:
+                return False
+            if qn in cn or cn in qn:
+                return True
+            qt={x for x in re.findall(r'[a-z0-9çğıöşü]+',qn) if len(x)>=3}
+            ct={x for x in re.findall(r'[a-z0-9çğıöşü]+',cn) if len(x)>=3}
+            if not qt or not ct:
+                return False
+            inter=len(qt & ct); union=len(qt | ct)
+            coverage=inter/max(1,len(qt)); jac=inter/max(1,union)
+            min_overlap=3 if len(qt)<=6 else 4
+            return inter>=min_overlap and (coverage>=0.55 or jac>=0.42)
+
+        # Önce GDELT; yalnız güvenli başlık eşleşmesi kabul edilir.
         try:
-            q = '"' + title.replace('"', " ")[:240] + '"'
-            r = requests.get(
+            q='"'+title.replace('"',' ')[:240]+'"'
+            r=requests.get(
                 "https://api.gdeltproject.org/api/v2/doc/doc",
-                params={
-                    "query": q,
-                    "mode": "artlist",
-                    "maxrecords": 20,
-                    "format": "json",
-                    "sort": "HybridRel",
-                    "timespan": "30d",
-                },
-                headers=HEADERS,
-                timeout=8,
+                params={"query":q,"mode":"artlist","maxrecords":20,"format":"json",
+                        "sort":"HybridRel","timespan":"30d"},
+                headers=HEADERS,timeout=8,
             )
             if r.ok:
-                arts = r.json().get("articles", []) or []
-                target = norm(title)
-                for art in arts:
-                    u = art.get("url") or ""
-                    t = norm(art.get("title") or "")
-                    if valid_article_url(u):
-                        # Exact/near exact başlık eşleşmesi öncelikli.
-                        if target and (target in t or t in target):
-                            return u
-                for art in arts:
-                    u = art.get("url") or ""
-                    if valid_article_url(u):
+                for art in (r.json().get("articles",[]) or []):
+                    u=art.get("url") or ""; t=art.get("title") or ""
+                    if valid_article_url(u) and safe_title_match(title,t):
                         return u
         except Exception:
             pass
 
-        # Son fallback: DuckDuckGo doğrudan yayıncı URL'si döndürebilir.
+        # DuckDuckGo da aynı güvenli başlık kuralını kullanır.
         try:
             from ddgs import DDGS
         except Exception:
             try:
                 from duckduckgo_search import DDGS
             except Exception:
-                DDGS = None
-
+                DDGS=None
         if DDGS:
             try:
                 with DDGS() as d:
-                    results = list(d.text(f'"{title}"', region="tr-tr", timelimit="m", max_results=8))
-                target = norm(title)
+                    results=list(d.text(f'"{title}"',region="tr-tr",timelimit="m",max_results=8))
                 for item in results:
-                    u = item.get("href") or item.get("url") or ""
-                    t = norm(item.get("title") or "")
-                    if valid_article_url(u) and target and (target in t or t in target):
-                        return u
-                for item in results:
-                    u = item.get("href") or item.get("url") or ""
-                    if valid_article_url(u):
+                    u=item.get("href") or item.get("url") or ""; t=item.get("title") or ""
+                    if valid_article_url(u) and safe_title_match(title,t):
                         return u
             except Exception:
                 pass
-
         return ""
 
     # 1) Google News bağlantısını çöz.
@@ -13949,11 +13952,17 @@ def make_docx(rows):
                     title = _clean_note_text(source_rows[index].get("Başlık", ""))
                     errors.append(f"{title}: {exc}")
 
-    if errors:
+    # V133: tek bir sorunlu haber bütün raporu durdurmasın.
+    valid_indices=[i for i,item in enumerate(prepared) if item is not None]
+    if not valid_indices:
+        st.session_state['_v133_akt_skipped_errors']=list(errors[:10])
         raise ReportQualityError(
             "AKT raporu oluşturulmadı. Ayrıntılı içerik elde edilemeyen maddeler: "
             + " | ".join(errors[:3])
         )
+    st.session_state['_v133_akt_skipped_errors']=list(errors[:10])
+    source_rows=[source_rows[i] for i in valid_indices]
+    prepared=[prepared[i] for i in valid_indices]
 
     document = _v116_doc_defaults(
         Document(), top=2.5, bottom=1.25, left=2.5, right=2.5
@@ -16360,6 +16369,9 @@ else:
                     st.session_state.docx_bytes=None
                     st.session_state.pop('v79_akt_note_bytes',None)
                     st.session_state.pop('v79_akt_note_title',None)
+                    for _cache_name in ('_v119_article_cache','_v112_article_detail_cache','_v117_page_cache'):
+                        st.session_state.pop(_cache_name,None)
+                    st.session_state.pop('_v133_akt_skipped_errors',None)
                     st.session_state['_v132_akt_basket_message']=f'✅ {removed} kayıt AKT sepetinden çıkarıldı.'
                     st.rerun()
                 elif ids:
@@ -16397,7 +16409,34 @@ else:
                 if st.button('📝 AKT SEPETİNDEN WORD HAZIRLA',use_container_width=True,key='v79_akt_report'):
                     with st.spinner('AKT sepetindeki haberler rapora hazırlanıyor...'):
                         try:
-                            st.session_state.docx_bytes=make_docx(osint_rows)
+                            # V133: rapor oluşturma anında sepeti doğrudan SQLite'tan yeniden oku.
+                            _fresh_osint_basket=_load_osint_basket()
+                            _fresh_osint_rows=[]
+                            for _,_r in _fresh_osint_basket.iterrows():
+                                _fresh_osint_rows.append({
+                                    'Tarih':_clean_note_text(_r.get('news_time','')),
+                                    'Kaynak':_clean_note_text(_r.get('source','')),
+                                    'Başlık':_clean_note_text(_r.get('title','')),
+                                    'İçerik_Özeti':_clean_note_text(_r.get('summary','')),
+                                    'URL':str(_r.get('url','') or ''),
+                                    'Kategori':_clean_note_text(_r.get('category','')),
+                                    'Risk_Skoru':_r.get('risk_score',0),
+                                    'Risk_Durumu':_clean_note_text(_r.get('risk_status','')),
+                                    'Yayıncı':_clean_note_text(_r.get('source','')),
+                                    'Yayıncı_URL':''
+                                })
+                            if not _fresh_osint_rows:
+                                st.session_state.docx_bytes=None
+                                st.warning('AKT sepeti boş.')
+                            else:
+                                st.session_state.pop('_v133_akt_skipped_errors',None)
+                                st.session_state.docx_bytes=make_docx(_fresh_osint_rows)
+                                _skipped=st.session_state.get('_v133_akt_skipped_errors') or []
+                                if _skipped:
+                                    st.warning(
+                                        f'AKT raporu oluşturuldu; ayrıntılı içeriği yeterli olmayan {len(_skipped)} madde rapora alınmadı: ' +
+                                        ' | '.join(_skipped[:3])
+                                    )
                         except ReportQualityError as _quality_error:
                             st.session_state.docx_bytes=None
                             st.error(str(_quality_error))
@@ -16421,6 +16460,9 @@ else:
                         st.session_state.docx_bytes=None
                         st.session_state.pop('v79_akt_note_bytes',None)
                         st.session_state.pop('v79_akt_note_title',None)
+                        for _cache_name in ('_v119_article_cache','_v112_article_detail_cache','_v117_page_cache'):
+                            st.session_state.pop(_cache_name,None)
+                        st.session_state.pop('_v133_akt_skipped_errors',None)
                         st.session_state['_v132_akt_basket_message']=f'✅ {removed} kayıt AKT sepetinden silindi.'
                         st.rerun()
                     else:
